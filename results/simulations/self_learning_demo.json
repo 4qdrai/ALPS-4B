@@ -1,5 +1,5 @@
 {
-    "initial_error": 0.21046346426010132,
-    "corrected_error": 0.4193171262741089,
-    "error_reduction_pct": -99.23511558086668
+    "initial_error": 0.30874496698379517,
+    "corrected_error": 8.685814654324497e-17,
+    "error_reduction_pct": 99.99999999999997
 }
