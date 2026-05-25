@@ -185,3 +185,64 @@ $env:PYTHONPATH="src"
 python src/alps/training/train.py
 ```
 Outputs final trained model weights to `results/h100_training/alps4b_final.pt`.
+
+### 4. Compile the Scientific Paper PDF Locally
+Generate the publication-ready NeurIPS-style academic PDF directly on your computer:
+```bash
+python docs/compile_pdf.py
+```
+Outputs the compiled scientific manuscript directly to `docs/scientific_paper.pdf`.
+
+---
+
+## 🔄 Double-Direction H100 Synchronization (GitHub PAT Workflow)
+
+To synchronize your code, simulation results, and training checkpoints between your local computer and your remote H100 cloud instance in both directions, use a **GitHub Personal Access Token (PAT)**.
+
+### A. Create Your GitHub Personal Access Token (PAT)
+1. Go to your GitHub account: **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**.
+2. Click **Generate new token (classic)**.
+3. Select the `repo` scope (grants full control of private and public repositories).
+4. Generate and copy the token (e.g., `ghp_1a2b3c4d...`).
+
+### B. Configure and Pull on your H100 Cloud Instance
+Configure Git on your H100 instance to push and pull seamlessly without password prompts by using your PAT:
+```bash
+# Clone the repository with the PAT embedded in the URL
+git clone https://<your-github-username>:<your-github-pat>@github.com/4qdrai/4B-JEPA.git
+cd 4B-JEPA
+
+# Or, if already cloned, update the remote URL to embed the PAT
+git remote set-url origin https://<your-github-username>:<your-github-pat>@github.com/4qdrai/4B-JEPA.git
+```
+
+Now, pushing and pulling is fully automated:
+*   **Pull updates from your local computer to the H100**:
+    ```bash
+    git pull origin main
+    ```
+*   **Push H100 training weights and training metrics back to GitHub**:
+    ```bash
+    git add results/h100_training/ results/simulations/
+    git commit -m "Upload H100 training checkpoints and metrics"
+    git push origin main
+    ```
+
+### C. Sync Back to Your Local Computer
+Pull the remote training progress and final model weights back to your local computer instantly:
+```bash
+git pull origin main
+```
+
+---
+
+## 💻 What Parts of the Training Can Be Done Locally?
+
+Thanks to ALPS-4B's highly modular and adaptive configuration, **almost the entire development, debugging, and verification loop can be executed directly on your local computer** (even with standard CPUs or consumer GPUs):
+
+1.  **Unit Tests (100% Local)**: Run `pytest` to verify mathematical layers, contraction checkers, and inverse monitoring loops in under 2 seconds.
+2.  **Empirical Simulations (100% Local)**: Run convergence, rank analysis, MoE scaling, zero-retraining failure correction, and fleet-wide sync demos instantly (saves JSON metrics to `results/simulations/` and plots to `figures/`).
+3.  **Local Micro-Training Pass (100% Local)**: Executing `train.py` locally runs a fast simulated video epoch at a micro-resolution of `32x32` pixels, validating optimization steps, gradient schedules, and weight saving mechanics in seconds.
+4.  **OOM-Proof Local Video Training**: Our **dynamic memory watchdog** enables you to feed full-scale `224x224` resolution videos on your local consumer GPU. It automatically falls back to `Weak-SIGReg` mode, bypassing memory-heavy double summation metrics to ensure your local GPU never encounters a CUDA Out of Memory (OOM) error.
+
+*You only need to reserve the remote H100 cloud instance for high-epoch, large-batch training on the full raw UCF101 dataset.*
