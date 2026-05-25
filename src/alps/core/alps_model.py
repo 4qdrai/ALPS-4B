@@ -10,18 +10,24 @@ from alps.core.fallback import FallbackMonitor
 from alps.core.energy import EBMBinder
 from alps.core.predictor import LangevinPlanner
 
+from alps.multimodal.sensor_encoders import IMUEncoder, LidarEncoder
+from alps.multimodal.modality_router import ModalityRouter
+
 class ALPSModel(nn.Module):
     """
     ALPS-4B (Adaptive Latent Prediction System, Four-Brain)
     
-    The master neural network orchestrator for the SPRIND Next Frontier AI Evidence.
+    The master neural network orchestrator for the SPRIND Next Frontier AI Challenge.
     Integrates:
     - Spatiotemporal Video Encoding (ViT, 16 frames x 224x224)
     - 3-Tier Multi-Scale Decoupled JEPA layers (Strategic / Tactical / Operative)
+    - Dynamic Compute Gating (System 1 vs System 2 compute allocation)
+    - Multimodal selective sensor gating (O(1) modality routing)
     - Banach Contraction Checker-Refinement Loop
-    - Bottom-Up Inverse Monitoring (Efference Copy Verification)
-    - Out-of-Gradient Fallback Watchdog (NaN, Var, Pinning)
-    - Unified EBM Binding
+    - Bottom-Up Inverse Self-Monitoring (Efference Copy Verification)
+    - "No-Retraining" Zero-Shot Self-Learning Loop
+    - Out-of-Gradient Fallback Watchdog (NaN, Var, Pinning) with Lyapunov-stable MRC
+    - Unified EBM Binding landscape
     """
     def __init__(self, d_model: int = 384, num_embeddings: int = 512, 
                  num_experts: int = 8, active_experts: int = 2, d_action: int = 64,
@@ -34,6 +40,7 @@ class ALPSModel(nn.Module):
                  langevin_lr: float = 0.05, langevin_sigma: float = 0.01):
         super().__init__()
         self.d_model = d_model
+        self.use_langevin = use_langevin
         
         # 1. Vision Encoder (tube patch embedding + ViT)
         self.encoder = VisionEncoder(
@@ -53,85 +60,81 @@ class ALPSModel(nn.Module):
             d_model=d_model, d_action=d_action, lambda_sigreg=lambda_sigreg
         )
         
-        # 3. Checker-Refinement (Banach Contraction Loop)
+        # 3. Multimodal Encoders and Modality Router (O(1) Modality Gating)
+        self.imu_encoder = IMUEncoder(d_model=d_model)
+        self.lidar_encoder = LidarEncoder(d_model=d_model)
+        self.modality_router = ModalityRouter(d_model=d_model)
+        
+        # 4. Checker-Refinement (Banach Contraction Loop)
         self.checker = BanachChecker(d_model=d_model, d_cond=d_model)
         
-        # 4. Inverse Monitoring (Efference Copies)
+        # 5. Inverse Monitoring (Efference Copies)
         self.op_monitor = InverseMonitor(threshold=threshold_op)
         self.tac_monitor = InverseMonitor(threshold=threshold_tac)
         
-        # 5. Out-of-Gradient Fallback watchdogs
+        # 6. Out-of-Gradient Fallback watchdogs
         self.fallback = FallbackMonitor(var_threshold=var_threshold, pinning_threshold=pinning_threshold)
         
-        # 6. EBM Binder
+        # 7. EBM Binder
         self.ebm = EBMBinder()
         
-        # 7. Langevin Planner SDE Action Optimization
-        self.use_langevin = use_langevin
+        # 8. Langevin Planner SDE Action Optimization
         self.langevin_planner = LangevinPlanner(steps=langevin_steps, lr=langevin_lr, sigma=langevin_sigma)
         
     def forward(self, video_frames: torch.Tensor, actions: torch.Tensor, 
-                prev_latents: torch.Tensor = None) -> dict:
+                 prev_latents: torch.Tensor = None, imu_telemetry: torch.Tensor = None,
+                 lidar_points: torch.Tensor = None, force_system2: bool = False) -> dict:
         """
-        Orchestrates a complete multi-scale predictive step.
+        Orchestrates a complete multi-scale predictive step with dynamic compute gating
+        and multimodal selective gating.
         
         Args:
-            video_frames: Raw video inputs, Shape: [B, C, T, H, W] (e.g. 16 frames x 224x224)
+            video_frames: Raw video inputs, Shape: [B, C, T, H, W]
             actions: Actuator commands, Shape: [B, D_action]
-            prev_latents: Previous step's latent representation [B, N, D] for hypersphere pinning checks
-            
-        Returns:
-            outputs: Dictionary containing:
-                     - predictions, loss terms, model health status, energy levels,
-                       and active layer interrupts.
+            prev_latents: Previous step's latent representation [B, N, D] for pinning checks
+            imu_telemetry: Optional raw IMU inputs, Shape: [B, 6, 100]
+            lidar_points: Optional raw LiDAR inputs, Shape: [B, 1, 360]
+            force_system2: If True, forces full hierarchical deliberation regardless of confidence
         """
-        # --- 1. SYSTEM INTEGRITY VERIFICATION (Fallback monitor - out of gradient) ---
-        # We perform these checks instantly prior to executing heavy tensor passes.
-        B = video_frames.shape[0]
-        
-        # Pre-allocate output container
+        # --- 1. SYSTEM INTEGRITY VERIFICATION (Fallback watchdog - out of gradient) ---
         outputs = {}
         
-        # Encode actual current inputs into latents z_t
-        # This acts as our primary sensory stream.
+        # Encode visual input
         z_t = self.encoder(video_frames) # [B, N, D]
         
-        # Watchdog verification
+        # System health check
         system_healthy, health_msg = self.fallback.verify_system_health(z_t, prev_latents)
         outputs["system_healthy"] = system_healthy
         outputs["health_status"] = health_msg
         
         if not system_healthy:
-            # Fallback Watchdog trigger! Bypasses all forward planning.
+            # Watchdog trigger! Bypasses all forward planning, runs Lyapunov MRC
             outputs["action"] = self.fallback.get_minimal_risk_action(actions)
             outputs["fallback_triggered"] = True
+            outputs["system2_activated"] = False
             outputs["loss"] = torch.tensor(0.0, device=video_frames.device, requires_grad=True)
+            outputs["energy"] = torch.tensor(10.0, device=video_frames.device)
             return outputs
             
         outputs["fallback_triggered"] = False
         
-        # --- 2. HIERARCHICAL JEPA ENCODING & REGULARIZATION (Top-Down / Bottom-Up) ---
-        # 2a. Operative Layer (Slightly conditioned by top-down subgoal representations)
-        # For the first forward step, we initialize subgoals and concepts dynamically or from prior steps.
-        # Here we simulate the hierarchy processing.
-        # Operative:
-        z_operative, sigreg_op = self.operative_layer(z_t, z_t)
+        # --- 2. SYSTEM 1 PROCESSING (Millisecond-frequency Operative prediction) ---
+        # Initialize flat subgoal context as zeros for default System 1 pass
+        flat_subgoal = torch.zeros_like(z_t)
+        z_operative, sigreg_op = self.operative_layer(z_t, flat_subgoal)
         
-        # 2b. Tactical Layer (System 2 planning - extracts expert routes)
-        z_tactical, moe_loss, sigreg_tac = self.tactical_layer(z_operative, z_operative)
-        
-        # 2c. Strategic Layer (Concept VQ codebook bottleneck)
-        z_strategic, vq_loss, sigreg_str = self.strategic_layer(z_tactical)
-        
-        # --- 3. BANACH CONTRACTION CHECKER-REFINEMENT ---
-        # Refines the tactical sub-goals conditioned on strategic constraints
-        z_refined, check_steps, converged = self.checker(z_tactical, z_strategic)
-        contraction_loss = self.checker.compute_contraction_loss(z_tactical, z_strategic)
-        
-        # --- 4. MULTI-SCALE PREDICTIVE TRAJECTORY SIMULATION ---
-        # Predict the next physical state z_{t+1} using the actions
+        # Multimodal sensor selective gating (O(1) modality routing)
+        if imu_telemetry is not None and lidar_points is not None:
+            imu_emb = self.imu_encoder(imu_telemetry)
+            lidar_emb = self.lidar_encoder(lidar_points)
+            
+            # Route and fuse dynamically based on top-level sensory attention
+            fused_multimodal, active_mask = self.modality_router(z_t.mean(dim=1), [imu_emb, lidar_emb])
+            z_operative = z_operative + fused_multimodal
+            outputs["active_modalities"] = active_mask
+            
+        # Predict the next state
         if self.use_langevin:
-            # We refine our actions iteratively using stochastic SDE optimization
             actions_refined = self.langevin_planner.plan(
                 self.operative_layer.predict_next_state, z_operative, z_t.detach(), actions
             )
@@ -139,32 +142,115 @@ class ALPSModel(nn.Module):
             z_pred = self.operative_layer.predict_next_state(z_operative, actions_refined)
         else:
             z_pred = self.operative_layer.predict_next_state(z_operative, actions)
-        
-        # In actual training, we compare this against the next state's latents.
-        # For a single step pass, we calculate the energy prediction loss:
+            
         pred_loss_op = F.mse_loss(z_pred, z_t.detach())
         
-        # --- 5. BOTTOM-UP INVERSE MONITORING (Efference verification) ---
+        # --- 3. DYNAMIC COMPUTE GATING & INTERRUPT ESCALATION ---
+        # Verify prediction divergence using the Efference Copy Inverse Monitor
         div_op, interrupt_op = self.op_monitor(z_pred, z_t)
+        outputs["operative_interrupt"] = interrupt_op
+        
+        # If the predictive error is within bounds and not forced, bypass System 2 completely
+        if not interrupt_op and not force_system2:
+            outputs["system2_activated"] = False
+            outputs["z_t"] = z_t
+            outputs["z_pred"] = z_pred
+            outputs["loss"] = pred_loss_op + sigreg_op
+            outputs["energy"] = self.ebm(
+                torch.tensor(0.0, device=video_frames.device), 
+                torch.tensor(0.0, device=video_frames.device), 
+                pred_loss_op
+            )
+            return outputs
+            
+        # Escalation: System 2 is activated!
+        outputs["system2_activated"] = True
+        
+        # --- 4. SYSTEM 2 PLANNING (Tactical MoE & Strategic VQ codebook) ---
+        # 4a. Tactical Layer (extract expert routes and query RAG cache)
+        z_tactical, moe_loss, sigreg_tac = self.tactical_layer(z_operative, z_operative)
+        
+        # Tactical Inverse Monitor check
+        div_tac, interrupt_tac = self.tac_monitor(z_tactical, z_operative)
+        outputs["tactical_interrupt"] = interrupt_tac
+        
+        # 4b. Strategic Layer (Discrete VQ conceptual planning bottleneck)
+        # Skip Strategic layer if Tactical is highly confident, optimizing compute
+        if interrupt_tac or force_system2:
+            z_strategic, vq_loss, sigreg_str = self.strategic_layer(z_tactical)
+            outputs["strategic_activated"] = True
+        else:
+            z_strategic = z_tactical # Bypassed
+            vq_loss = torch.tensor(0.0, device=video_frames.device)
+            sigreg_str = torch.tensor(0.0, device=video_frames.device)
+            outputs["strategic_activated"] = False
+            
+        # 4c. Banach Contraction Checker-Refinement
+        # Refines the tactical sub-goals under strategic constraints
+        z_refined, check_steps, converged = self.checker(z_tactical, z_strategic)
+        contraction_loss = self.checker.compute_contraction_loss(z_tactical, z_strategic)
+        
+        # --- 5. LOSS AGGREGATION & EBM BINDING ---
+        # Compute individual prediction energy errors across temporal scales
+        pred_loss_str = F.mse_loss(self.strategic_layer.predict_next_concept(z_strategic, z_strategic), z_strategic.detach())
+        pred_loss_tac = F.mse_loss(self.tactical_layer.predict_next_subgoal(z_tactical, z_strategic), z_tactical.detach())
+        
+        total_sigreg = sigreg_op + sigreg_tac + sigreg_str
+        loss_total = pred_loss_op + pred_loss_tac + pred_loss_str + total_sigreg + vq_loss + moe_loss + contraction_loss
         
         outputs["z_t"] = z_t
         outputs["z_pred"] = z_pred
         outputs["z_strategic"] = z_strategic
-        outputs["operative_interrupt"] = interrupt_op
-        outputs["tactical_interrupt"] = False # computed over tactical horizon sequences
-        
-        # --- 6. LOSS AGGREGATION & EBM BINDING ---
-        # Per-layer collapse prevention + prediction errors
-        total_sigreg = sigreg_op + sigreg_tac + sigreg_str
-        loss_total = pred_loss_op + total_sigreg + vq_loss + moe_loss + contraction_loss
-        
         outputs["loss"] = loss_total
         outputs["sigreg_loss"] = total_sigreg
         outputs["vq_loss"] = vq_loss
         outputs["moe_loss"] = moe_loss
         outputs["contraction_loss"] = contraction_loss
         
-        # Calculate unified energy score
-        outputs["energy"] = self.ebm(pred_loss_op, moe_loss, pred_loss_op)
+        # Unified Energy score
+        outputs["energy"] = self.ebm(pred_loss_str, pred_loss_tac, pred_loss_op)
         
+        return outputs
+
+    def execute_self_learning_loop(self, video_frames: torch.Tensor, actions: torch.Tensor, 
+                                   target_z: torch.Tensor) -> dict:
+        """
+        Executes the lifelong 'No-Retraining' self-supervised learning write loop.
+        
+        1. Surprise Detection: Inverse Monitoring triggers on prediction failure.
+        2. Mental Simulation: Langevin SDE plans corrected trajectory to minimize energy.
+        3. Calculating Correction: Computes mathematical error delta-z.
+        4. Database Write: Inserts context and correction directly into Latent-RAG KV store.
+        """
+        self.eval()
+        outputs = {}
+        
+        # 1. Sense and predict
+        z_t = self.encoder(video_frames)
+        z_op, _ = self.operative_layer(z_t, torch.zeros_like(z_t))
+        z_pred = self.operative_layer.predict_next_state(z_op, actions)
+        
+        div, interrupt = self.op_monitor(z_pred, target_z)
+        outputs["surprise_detected"] = interrupt
+        
+        if interrupt:
+            # 2. SDE Mental Simulation: refine actions to reach target_z
+            actions_corrected = self.langevin_planner.plan(
+                self.operative_layer.predict_next_state, z_op, target_z, actions
+            )
+            z_pred_corrected = self.operative_layer.predict_next_state(z_op, actions_corrected)
+            
+            # 3. Calculate Correction vector (delta-z)
+            delta_z = target_z - z_pred_corrected
+            
+            # 4. Write context-correction directly to Latent-RAG cache
+            self.tactical_layer.rag.write_memory(z_op, delta_z)
+            
+            outputs["learning_triggered"] = True
+            outputs["original_action"] = actions
+            outputs["corrected_action"] = actions_corrected
+            outputs["written_correction"] = delta_z
+        else:
+            outputs["learning_triggered"] = False
+            
         return outputs
