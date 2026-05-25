@@ -31,6 +31,26 @@ def slow_print(text, delay=0.03):
         time.sleep(delay)
     print()
 
+import cv2
+import numpy as np
+
+def load_video_tensor(filepath, device):
+    """Decodes a real .mp4 video file into an ALPS-4B tensor."""
+    cap = cv2.VideoCapture(filepath)
+    frames = []
+    for _ in range(16):
+        ret, frame = cap.read()
+        if not ret: break
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = cv2.resize(frame, (112, 112))
+        frames.append(frame)
+    cap.release()
+    
+    # Shape: (16, 112, 112, 3) -> (1, 3, 16, 112, 112)
+    frames_np = np.array(frames, dtype=np.float32) / 255.0
+    tensor = torch.from_numpy(frames_np).permute(3, 0, 1, 2).unsqueeze(0)
+    return tensor.to(device)
+
 def simulate_jury_demo():
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== ALPS-4B: COGNITIVE INFERENCE & PREDICTOR DEMONSTRATION ==={Colors.ENDC}\n")
     time.sleep(0.5)
@@ -65,14 +85,16 @@ def simulate_jury_demo():
     # 1. INGEST UNLABELED VIDEO STREAM
     # ---------------------------------------------------------
     slow_print(f"{Colors.BOLD}1. INGESTING UNLABELED VIDEO STREAM{Colors.ENDC}")
-    print(f"  > Generating simulated UCF101 video tensor [Batch=1, Channels=3, Frames=16, Res=112x112]...")
+    print(f"  > Decoding real .mp4 video files via OpenCV -> [Batch=1, Channels=3, Frames=16, Res=112x112]...")
     
-    # Create synthetic test videos to demonstrate contrast
-    # Video A: Perfect, predictable "Sunny Case" (e.g. constant velocity, no surprises)
-    video_A = torch.ones(1, 3, 16, 112, 112).to(device) 
+    # Load the real video files from disk
+    # Video A: Perfect, predictable "Sunny Case" (e.g. smooth moving object)
+    video_A = load_video_tensor('data/sample_A.mp4', device)
+    print(f"  > Video A (Sunny Case) loaded from 'data/sample_A.mp4'")
     
-    # Video B: Chaotic, unpredictable "Surprise" (e.g. sudden crash, high variance)
-    video_B = torch.randn(1, 3, 16, 112, 112).to(device) * 10.0 
+    # Video B: Chaotic, unpredictable "Surprise" (e.g. geometric noise)
+    video_B = load_video_tensor('data/sample_B.mp4', device)
+    print(f"  > Video B (Surprise Case) loaded from 'data/sample_B.mp4'")
     
     print(f"  {Colors.YELLOW}[Note: ALPS-4B is provided zero text labels. It must deduce physics entirely unsupervised.]{Colors.ENDC}\n")
     time.sleep(1)
