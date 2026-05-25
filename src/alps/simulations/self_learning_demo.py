@@ -32,8 +32,8 @@ def run_self_learning_demo():
     # Add a little bit of noise to test generalization of retrieval
     z_t_similar = z_t + torch.randn_like(z_t) * 0.02
     
-    # naive prediction is still the same
-    naive_pred2 = target_z_next + torch.randn_like(target_z_next) * 0.5
+    # naive prediction under same context
+    naive_pred2 = naive_pred
     
     # RAG retrieval
     correction = rag.retrieve_correction(z_t_similar)
