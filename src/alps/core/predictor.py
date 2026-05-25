@@ -125,3 +125,59 @@ class MultiScalePredictor(nn.Module):
         # Linear projection
         out = self.head(h)
         return out
+
+class LangevinPlanner(nn.Module):
+    """
+    Stochastic Langevin SDE Action Trajectory Planner.
+    
+    Implements System 2 "generative imagination" in latent space. Refines action
+    trajectories using energy gradient descent and Wiener stochastic exploration SDE:
+    
+    da_t = - grad_a E_total(x, a_t) dt + sqrt(2 * sigma^2) dW_t
+    
+    which converges asymptotically to the Gibbs-Boltzmann stationary planning distribution:
+    p(a) = (1/Z) * exp(-E(x,a)/sigma^2).
+    """
+    def __init__(self, steps: int = 5, lr: float = 0.05, sigma: float = 0.01):
+        super().__init__()
+        self.steps = steps
+        self.lr = lr
+        self.sigma = sigma  # Temperature/exploration scale
+
+    def plan(self, predictor: nn.Module, z: torch.Tensor, target_z: torch.Tensor, 
+             initial_actions: torch.Tensor) -> torch.Tensor:
+        """
+        Runs Langevin gradient flow SDE optimization to find the optimal actions.
+        
+        Args:
+            predictor: The predictor network mapping (z, action) -> z_pred
+            z: Current latents, Shape: [B, N, D]
+            target_z: Target future latents, Shape: [B, N, D]
+            initial_actions: Action trajectory plan to refine, Shape: [B, D_action]
+            
+        Returns:
+            refined_actions: Action plans matching target_z in energy compatibility, Shape: [B, D_action]
+        """
+        actions = initial_actions.clone().detach().requires_grad_(True)
+        
+        for step in range(self.steps):
+            # 1. Forward predict
+            z_pred = predictor(z, actions)
+            
+            # 2. Compute Energy E(x, a) as the MSE latent distance
+            energy = F.mse_loss(z_pred, target_z, reduction="sum")
+            
+            # 3. Compute gradient with respect to actions
+            grad = torch.autograd.grad(energy, actions, only_inputs=True)[0]
+            
+            # 4. Wiener process noise (Brownian motion sample dW_t)
+            noise = torch.randn_like(actions) * self.sigma
+            
+            # 5. SDE update step: actions = actions - lr * grad + sqrt(2 * lr) * noise
+            with torch.no_grad():
+                actions -= self.lr * grad + noise * (2.0 * self.lr) ** 0.5
+                
+            # Re-enable gradients for the next iteration
+            actions = actions.detach().requires_grad_(True)
+            
+        return actions.detach()

@@ -8,6 +8,7 @@ from alps.core.inverse_monitor import InverseMonitor
 from alps.core.checker import BanachChecker
 from alps.core.fallback import FallbackMonitor
 from alps.core.energy import EBMBinder
+from alps.core.predictor import LangevinPlanner
 
 class ALPSModel(nn.Module):
     """
@@ -26,12 +27,19 @@ class ALPSModel(nn.Module):
                  num_experts: int = 8, active_experts: int = 2, d_action: int = 64,
                  lambda_sigreg: float = 0.1, threshold_op: float = 0.5, 
                  threshold_tac: float = 0.5, var_threshold: float = 1e-4, 
-                 pinning_threshold: float = 0.999):
+                 pinning_threshold: float = 0.999,
+                 encoder_depth: int = 8, encoder_num_heads: int = 6,
+                 encoder_patch_size: tuple = (2, 16, 16), encoder_max_patches: int = 2048,
+                 use_langevin: bool = False, langevin_steps: int = 5,
+                 langevin_lr: float = 0.05, langevin_sigma: float = 0.01):
         super().__init__()
         self.d_model = d_model
         
         # 1. Vision Encoder (tube patch embedding + ViT)
-        self.encoder = VisionEncoder(d_model=d_model)
+        self.encoder = VisionEncoder(
+            d_model=d_model, depth=encoder_depth, num_heads=encoder_num_heads,
+            patch_size=encoder_patch_size, max_patches=encoder_max_patches
+        )
         
         # 2. Hierarchical Core Layers
         self.strategic_layer = StrategicLayer(
@@ -57,6 +65,10 @@ class ALPSModel(nn.Module):
         
         # 6. EBM Binder
         self.ebm = EBMBinder()
+        
+        # 7. Langevin Planner SDE Action Optimization
+        self.use_langevin = use_langevin
+        self.langevin_planner = LangevinPlanner(steps=langevin_steps, lr=langevin_lr, sigma=langevin_sigma)
         
     def forward(self, video_frames: torch.Tensor, actions: torch.Tensor, 
                 prev_latents: torch.Tensor = None) -> dict:
@@ -118,7 +130,15 @@ class ALPSModel(nn.Module):
         
         # --- 4. MULTI-SCALE PREDICTIVE TRAJECTORY SIMULATION ---
         # Predict the next physical state z_{t+1} using the actions
-        z_pred = self.operative_layer.predict_next_state(z_operative, actions)
+        if self.use_langevin:
+            # We refine our actions iteratively using stochastic SDE optimization
+            actions_refined = self.langevin_planner.plan(
+                self.operative_layer.predict_next_state, z_operative, z_t.detach(), actions
+            )
+            outputs["refined_actions"] = actions_refined
+            z_pred = self.operative_layer.predict_next_state(z_operative, actions_refined)
+        else:
+            z_pred = self.operative_layer.predict_next_state(z_operative, actions)
         
         # In actual training, we compare this against the next state's latents.
         # For a single step pass, we calculate the energy prediction loss:
