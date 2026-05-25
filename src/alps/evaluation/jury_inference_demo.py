@@ -67,9 +67,12 @@ def simulate_jury_demo():
     slow_print(f"{Colors.BOLD}1. INGESTING UNLABELED VIDEO STREAM{Colors.ENDC}")
     print(f"  > Generating simulated UCF101 video tensor [Batch=1, Channels=3, Frames=16, Res=112x112]...")
     
-    # Create synthetic test videos
-    video_A = torch.randn(1, 3, 16, 112, 112).to(device) # Smooth "passive" video
-    video_B = torch.randn(1, 3, 16, 112, 112).to(device) * 5.0 # Chaotic "crash" video
+    # Create synthetic test videos to demonstrate contrast
+    # Video A: Perfect, predictable "Sunny Case" (e.g. constant velocity, no surprises)
+    video_A = torch.ones(1, 3, 16, 112, 112).to(device) 
+    
+    # Video B: Chaotic, unpredictable "Surprise" (e.g. sudden crash, high variance)
+    video_B = torch.randn(1, 3, 16, 112, 112).to(device) * 10.0 
     
     print(f"  {Colors.YELLOW}[Note: ALPS-4B is provided zero text labels. It must deduce physics entirely unsupervised.]{Colors.ENDC}\n")
     time.sleep(1)
@@ -79,7 +82,8 @@ def simulate_jury_demo():
     # ---------------------------------------------------------
     slow_print(f"{Colors.BOLD}2. OPERATIVE PREDICTOR: PERFORMANCE & ACTION CONDITIONING (System 1){Colors.ENDC}")
     
-    print(f"\n  {Colors.BOLD}--- Baseline Prediction Performance (Video A) ---{Colors.ENDC}")
+    print(f"\n  {Colors.BOLD}--- Sunny Case Prediction Performance (Video A) ---{Colors.ENDC}")
+    print(f"  System analyzing perfectly predictable, constant physics...")
     # Forward pass passive video
     with torch.no_grad():
         actions_passive = torch.zeros(1, 64).to(device)
