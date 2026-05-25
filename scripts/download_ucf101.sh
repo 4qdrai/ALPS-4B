@@ -39,7 +39,7 @@ unzip -q -o UCF101TrainTestSplits-RecognitionTask.zip
 echo "Extracting UCF101 videos..."
 echo "Note: This requires 'unrar' or 'rar' installed on your system."
 if command -v unrar &> /dev/null; then
-    unrar x -q UCF101.rar
+    unrar x UCF101.rar > /dev/null
 elif command -v 7z &> /dev/null; then
     7z x UCF101.rar
 else
