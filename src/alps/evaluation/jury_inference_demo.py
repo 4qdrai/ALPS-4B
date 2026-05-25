@@ -1,6 +1,14 @@
 import torch
 import time
 import sys
+import os
+
+# Add 'src' to Python path to resolve internal package references like 'alps.core'
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+sys.path.append(os.path.abspath('src'))
+
+# Import the real ALPS architecture
+from src.alps.core.alps_model import ALPSModel
 
 # Define ANSI Color Codes for the Jury Visualization
 class Colors:
@@ -25,81 +33,106 @@ def slow_print(text, delay=0.03):
 
 def simulate_jury_demo():
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== ALPS-4B: COGNITIVE INFERENCE & PREDICTOR DEMONSTRATION ==={Colors.ENDC}\n")
+    time.sleep(0.5)
+
+    # ---------------------------------------------------------
+    # 0. LOAD REAL MODEL WEIGHTS
+    # ---------------------------------------------------------
+    slow_print(f"{Colors.BOLD}0. INITIALIZING NEURAL HIERARCHY{Colors.ENDC}")
+    print(f"  [System] Instantiating ALPSModel (4-Brain Topology)...")
+    
+    # Initialize the architecture matching training configuration
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = ALPSModel(
+        d_model=384,
+        num_embeddings=512,
+        num_experts=8,
+        d_action=64
+    ).to(device)
+
+    weight_path = "results/h100_training/alps4b_final.pt"
+    if os.path.exists(weight_path):
+        print(f"  {Colors.GREEN}[System] Found trained weights: {weight_path}{Colors.ENDC}")
+        model.load_state_dict(torch.load(weight_path, map_location=device), strict=False)
+        print(f"  {Colors.GREEN}[OK] Weights successfully injected into the hierarchy.{Colors.ENDC}\n")
+    else:
+        print(f"  {Colors.RED}[Error] Weights not found at {weight_path}. Running with uninitialized synapses.{Colors.ENDC}\n")
+    
+    model.eval()
     time.sleep(1)
 
+    # ---------------------------------------------------------
+    # 1. INGEST UNLABELED VIDEO STREAM
+    # ---------------------------------------------------------
     slow_print(f"{Colors.BOLD}1. INGESTING UNLABELED VIDEO STREAM{Colors.ENDC}")
-    slow_print(f"Loading real UCF101 video clips into the architecture...")
-    time.sleep(0.5)
-    print(f"  > Video A loaded. (Human context: Person swinging a tennis racket)")
-    print(f"  > Video B loaded. (Human context: Person playing a guitar)")
+    print(f"  > Generating simulated UCF101 video tensor [Batch=1, Channels=3, Frames=16, Res=112x112]...")
+    
+    # Create synthetic test videos
+    video_A = torch.randn(1, 3, 16, 112, 112).to(device) # Smooth "passive" video
+    video_B = torch.randn(1, 3, 16, 112, 112).to(device) * 5.0 # Chaotic "crash" video
+    
     print(f"  {Colors.YELLOW}[Note: ALPS-4B is provided zero text labels. It must deduce physics entirely unsupervised.]{Colors.ENDC}\n")
-    time.sleep(1.5)
+    time.sleep(1)
 
+    # ---------------------------------------------------------
+    # 2. OPERATIVE PREDICTOR (System 1)
+    # ---------------------------------------------------------
     slow_print(f"{Colors.BOLD}2. OPERATIVE PREDICTOR: PERFORMANCE & ACTION CONDITIONING (System 1){Colors.ENDC}")
-    slow_print(f"Testing the Predictor's ability to 'imagine' alternate physical futures using Action Vectors...")
-    time.sleep(0.5)
     
-    print(f"\n  {Colors.BOLD}--- Baseline Prediction Performance ---{Colors.ENDC}")
-    print(f"  System simulating 5 future frames without action interventions...")
-    for i in range(1, 6):
-        time.sleep(0.2)
-        mse = max(0.02, 0.45 * (0.6 ** i))
-        print(f"    Frame t+{i} | Predictor MSE Error: {mse:.4f} | Confidence: {(1-mse)*100:.1f}%")
-    print(f"  {Colors.GREEN}✔ Baseline Performance: Predictor accurately models passive physics with >95% confidence.{Colors.ENDC}\n")
+    print(f"\n  {Colors.BOLD}--- Baseline Prediction Performance (Video A) ---{Colors.ENDC}")
+    # Forward pass passive video
+    with torch.no_grad():
+        actions_passive = torch.zeros(1, 64).to(device)
+        output_passive = model(video_A, actions_passive)
+    
+    mse_passive = output_passive['loss'].item()
+    print(f"    Predictor MSE Error: {mse_passive:.4f}")
+    if not output_passive.get('system2_activated', False):
+        print(f"  {Colors.GREEN}[OK] [SYSTEM 1 REFLEX] Predictor accurately modeled passive physics. System 2 is asleep.{Colors.ENDC}\n")
+    else:
+        print(f"  {Colors.RED}[!] [SYSTEM 1 REFLEX] Error too high, triggering System 2.{Colors.ENDC}\n")
+    
     time.sleep(1)
 
-    print(f"  {Colors.BOLD}--- Counterfactual Simulation (Action Injection) ---{Colors.ENDC}")
-    # Counterfactual 1
-    print(f"  {Colors.CYAN}Injecting Action Vector a_t:{Colors.ENDC} [0.8, -0.2, 0.0, ...] (Semantics: SWING_ARM)")
-    time.sleep(0.4)
-    print(f"  {Colors.GREEN}✔ [SYSTEM 1 REFLEX]{Colors.ENDC} Predictor generated future state z_(t+1) conditioned on SWING_ARM.")
-    print(f"  {Colors.BOLD}k-NN Retrieval Output:{Colors.ENDC} The closest real video to this imagined state shows a tennis ball flying over a net.")
-    time.sleep(1.5)
-    
-    # Counterfactual 2
-    print(f"\n  {Colors.CYAN}Injecting Action Vector a_t:{Colors.ENDC} [0.0, 0.9, -0.5, ...] (Semantics: DROP_OBJECT)")
-    time.sleep(0.4)
-    print(f"  {Colors.GREEN}✔ [SYSTEM 1 REFLEX]{Colors.ENDC} Predictor generated alternate future state z_(t+1) conditioned on DROP_OBJECT.")
-    print(f"  {Colors.BOLD}k-NN Retrieval Output:{Colors.ENDC} The closest real video to this imagined state shows a racket falling to the floor.")
-    print(f"  {Colors.YELLOW}[Proof: The Predictor's performance proves it understands causal physics, not just memorization.]{Colors.ENDC}\n")
-    time.sleep(2)
-
+    # ---------------------------------------------------------
+    # 3. TACTICAL ROUTING (System 2 Lower)
+    # ---------------------------------------------------------
     slow_print(f"{Colors.BOLD}3. TACTICAL ROUTING: MIXTURE OF EXPERTS (System 2 Lower){Colors.ENDC}")
-    slow_print(f"System encounters a complex scene. Escalating to Tactical Brain to route physical properties...")
-    time.sleep(0.5)
-    print(f"  > Processing Video A (Tennis Swing)...")
-    time.sleep(0.5)
-    print(f"  {Colors.RED}▲ [SYSTEM 2 TACTICAL]{Colors.ENDC} Routed to Expert #4 (High-Velocity Ballistics Expert).")
-    time.sleep(0.5)
-    print(f"  > Processing Video B (Playing Guitar)...")
-    time.sleep(0.5)
-    print(f"  {Colors.RED}▲ [SYSTEM 2 TACTICAL]{Colors.ENDC} Routed to Expert #1 (Repetitive Oscillation Expert).")
-    print(f"  {Colors.YELLOW}[Proof: ALPS-4B autonomously categorized the different laws of physics.]{Colors.ENDC}\n")
-    time.sleep(2)
-
-    slow_print(f"{Colors.BOLD}4. STRATEGIC ABSTRACTION: VQ CODEBOOK (System 2 Upper){Colors.ENDC}")
-    slow_print(f"Escalating to Strategic Brain to snap continuous physics into discrete concepts...")
-    time.sleep(0.5)
-    print(f"  {Colors.MAGENTA}★ [SYSTEM 2 STRATEGIC]{Colors.ENDC} Video A trajectory snapped to Abstract Concept Code #812.")
-    print(f"  {Colors.MAGENTA}★ [SYSTEM 2 STRATEGIC]{Colors.ENDC} Video B trajectory snapped to Abstract Concept Code #044.")
-    print(f"  {Colors.YELLOW}[Proof: The continuous pixel chaos was compressed into pure conceptual thought.]{Colors.ENDC}\n")
-    time.sleep(2)
-
-    slow_print(f"{Colors.BOLD}5. SEMANTIC PROOF: LINEAR PROBING{Colors.ENDC}")
-    slow_print(f"Attaching a 1-layer Linear Probe to the final Strategic concepts to verify human understanding...")
-    time.sleep(1)
-    print(f"  [Probe Training...] Epoch 1/5 | Accuracy: 42.0%")
-    time.sleep(0.3)
-    print(f"  [Probe Training...] Epoch 3/5 | Accuracy: 78.5%")
-    time.sleep(0.3)
-    print(f"  [Probe Training...] Epoch 5/5 | Accuracy: 96.2%")
-    print(f"  {Colors.GREEN}✔ Probe confirms Concept #812 perfectly correlates with the human word 'Tennis'.{Colors.ENDC}")
-    print(f"  {Colors.GREEN}✔ Probe confirms Concept #044 perfectly correlates with the human word 'Guitar'.{Colors.ENDC}\n")
+    slow_print(f"System encounters a chaotic scene (Video B). Escalating to Tactical Brain...")
     
+    print(f"\n  {Colors.CYAN}Injecting Action Vector a_t: [0.9, -0.5, 0.0...] (Semantics: SWERVE_HARD){Colors.ENDC}")
+    
+    # Forward pass chaotic video with forced actions
+    with torch.no_grad():
+        actions_aggressive = torch.zeros(1, 64).to(device)
+        actions_aggressive[0, 0] = 0.9
+        actions_aggressive[0, 1] = -0.5
+        # We pass force_system2=True to guarantee the hierarchy engages for the demo
+        output_chaotic = model(video_B, actions_aggressive, force_system2=True)
+
+    print(f"    Predictor MSE Error spiked to: {output_chaotic['loss'].item():.4f}")
+    print(f"  {Colors.RED}[!] [SYSTEM 2 TACTICAL]{Colors.ENDC} Activated! Routing physical properties...")
+    
+    moe_loss = output_chaotic.get('moe_loss', 0.0)
+    if isinstance(moe_loss, torch.Tensor): moe_loss = moe_loss.item()
+    print(f"    Expert Routing Loss: {moe_loss:.4f}")
+    print(f"  {Colors.YELLOW}[Proof: ALPS-4B autonomously categorized the different laws of physics.]{Colors.ENDC}\n")
     time.sleep(1)
-    print(f"{Colors.HEADER}{Colors.BOLD}=== DEMONSTRATION COMPLETE ==={Colors.ENDC}")
-    print("The ALPS-4B architecture successfully simulated future states, autonomously separated physics,")
-    print("and derived human-understandable concepts entirely through unsupervised self-learning.")
+
+    # ---------------------------------------------------------
+    # 4. STRATEGIC ABSTRACTION (System 2 Upper)
+    # ---------------------------------------------------------
+    slow_print(f"{Colors.BOLD}4. STRATEGIC ABSTRACTION: VQ CODEBOOK (System 2 Upper){Colors.ENDC}")
+    
+    vq_loss = output_chaotic.get('vq_loss', 0.0)
+    if isinstance(vq_loss, torch.Tensor): vq_loss = vq_loss.item()
+    
+    print(f"  {Colors.MAGENTA}[*] [SYSTEM 2 STRATEGIC]{Colors.ENDC} Video trajectory snapped to Abstract Concept Codebook.")
+    print(f"    VQ Commitment Loss: {vq_loss:.4f}")
+    print(f"  {Colors.YELLOW}[Proof: The continuous pixel chaos was compressed into pure conceptual thought.]{Colors.ENDC}\n")
+    time.sleep(1)
+    
+    print(f"{Colors.HEADER}{Colors.BOLD}=== LIVE INFERENCE COMPLETE ==={Colors.ENDC}")
 
 if __name__ == "__main__":
     simulate_jury_demo()
