@@ -87,14 +87,23 @@ def simulate_jury_demo():
     slow_print(f"{Colors.BOLD}1. INGESTING UNLABELED VIDEO STREAM{Colors.ENDC}")
     print(f"  > Decoding real .mp4 video files via OpenCV -> [Batch=1, Channels=3, Frames=16, Res=112x112]...")
     
-    # Load the real video files from disk
-    # Video A: Perfect, predictable "Sunny Case" (e.g. smooth moving object)
-    video_A = load_video_tensor('data/sample_A.mp4', device)
-    print(f"  > Video A (Sunny Case) loaded from 'data/sample_A.mp4'")
+    # Load the real video files from the UCF101 dataset
+    ucf_sunny = 'data/UCF-101/TaiChi/v_TaiChi_g01_c01.avi'
+    ucf_surprise = 'data/UCF-101/Punch/v_Punch_g01_c01.avi'
     
-    # Video B: Chaotic, unpredictable "Surprise" (e.g. geometric noise)
-    video_B = load_video_tensor('data/sample_B.mp4', device)
-    print(f"  > Video B (Surprise Case) loaded from 'data/sample_B.mp4'")
+    if not os.path.exists(ucf_sunny) or not os.path.exists(ucf_surprise):
+        print(f"  {Colors.RED}[!] ERROR: UCF101 dataset videos not found locally.{Colors.ENDC}")
+        print(f"  Please run this script on your H100 where the 6.5GB UCF101 dataset is already downloaded,")
+        print(f"  or run 'bash scripts/download_ucf101.sh' locally first.\n")
+        return
+
+    # Video A: Perfect, predictable "Sunny Case" (TaiChi - slow smooth motion)
+    video_A = load_video_tensor(ucf_sunny, device)
+    print(f"  > Video A (Sunny Case) loaded from '{ucf_sunny}'")
+    
+    # Video B: Chaotic, unpredictable "Surprise" (Punch - sudden fast motion)
+    video_B = load_video_tensor(ucf_surprise, device)
+    print(f"  > Video B (Surprise Case) loaded from '{ucf_surprise}'")
     
     print(f"  {Colors.YELLOW}[Note: ALPS-4B is provided zero text labels. It must deduce physics entirely unsupervised.]{Colors.ENDC}\n")
     time.sleep(1)
