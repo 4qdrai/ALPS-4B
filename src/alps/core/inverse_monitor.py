@@ -1,0 +1,68 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class InverseMonitor(nn.Module):
+    """
+    Inverse Monitoring Loop (Efference Copy Verification).
+    
+    Continually compares the predictor's simulated latent state (efference copy)
+    against the actual encoded latent state. A significant divergence indicates
+    an unexpected environmental surprise or prediction failure, which triggers
+    an interrupt to pause lower execution and escalate to higher layers for replanning.
+    """
+    def __init__(self, threshold: float = 0.5, history_len: int = 10):
+        super().__init__()
+        self.threshold = threshold
+        self.history_len = history_len
+        
+        # Track historical divergence scores for running average baseline
+        self.register_buffer("divergence_history", torch.zeros(history_len))
+        self.register_buffer("history_pointer", torch.tensor(0, dtype=torch.long))
+        self.register_buffer("is_warm", torch.tensor(False, dtype=torch.bool))
+        
+    def forward(self, predicted_z: torch.Tensor, actual_z: torch.Tensor) -> tuple:
+        """
+        Args:
+            predicted_z: Simulated target latents, Shape: [B, N, D]
+            actual_z: True encoder latents, Shape: [B, N, D]
+            
+        Returns:
+            divergence: Scalar divergence value.
+            triggered: Boolean indicating whether surprise threshold was breached.
+        """
+        # Calculate Mean Squared Error as divergence score
+        # Note: We compute distance normalized by latent dimension D
+        B, N, D = actual_z.shape
+        diff = predicted_z - actual_z
+        divergence = torch.sum(diff ** 2) / (B * N * D)
+        
+        # Update history buffer
+        ptr = self.history_pointer.item()
+        self.divergence_history[ptr] = divergence.detach()
+        
+        next_ptr = (ptr + 1) % self.history_len
+        self.history_pointer.copy_(torch.tensor(next_ptr, device=self.history_pointer.device))
+        
+        if next_ptr == 0:
+            self.is_warm.copy_(torch.tensor(True, device=self.is_warm.device))
+            
+        # Decision trigger: If divergence exceeds threshold, flag a biological interrupt.
+        # We can also compare against the running mean to detect sudden spikes:
+        # e.g., if divergence > threshold * running_mean
+        triggered = (divergence.item() > self.threshold)
+        
+        return divergence, triggered
+        
+    def get_running_average(self) -> float:
+        """Returns the average divergence score of recent history."""
+        if not self.is_warm.item():
+            ptr = self.history_pointer.item()
+            if ptr == 0:
+                return 0.0
+            return self.divergence_history[:ptr].mean().item()
+        return self.divergence_history.mean().item()
+        
+    def set_threshold(self, new_threshold: float):
+        """Allows dynamically adjusting sensitivity based on task difficulty."""
+        self.threshold = new_threshold
