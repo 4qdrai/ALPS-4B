@@ -77,8 +77,8 @@ def run_unsupervised_training(epochs: int = 10, batch_size: int = 4):
     run_epochs = 1 if is_cpu else epochs
     resolution = 32 if is_cpu else 224
     
-    print(f"Loading UCF101 dataset from data/UCF101...")
-    dataset = UCF101Dataset(root_dir="data/UCF101", frames_per_clip=16, resolution=resolution)
+    print(f"Loading UCF101 dataset from data/...")
+    dataset = UCF101Dataset(root_dir="data", frames_per_clip=16, resolution=resolution)
     
     # Fallback to simulated data if run from wrong directory or data missing
     if len(dataset.video_paths) == 0:
