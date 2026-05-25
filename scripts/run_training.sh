@@ -12,5 +12,8 @@ if [ -d "venv" ]; then
     source venv/bin/activate
 fi
 
+# Ensure PyAV is installed for video loading
+pip install -q av
+
 # Run the PyTorch training pipeline
 python3 src/alps/training/train.py
