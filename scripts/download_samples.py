@@ -6,12 +6,12 @@ os.makedirs('data', exist_ok=True)
 width, height = 112, 112
 fps = 8
 
-# Generate Video A: Smooth moving gradient (Sunny Case)
+# Generate Video A: Perfectly Static "Sunny Case" (e.g., a blank blue sky)
 out_A = cv2.VideoWriter('data/sample_A.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
 for i in range(16):
+    # Solid blue frame that never changes
     frame = np.zeros((height, width, 3), dtype=np.uint8)
-    offset = int((i / 16) * width)
-    frame[:, offset:offset+20] = (255, 200, 100) # Moving bar
+    frame[:, :] = (255, 100, 50) 
     out_A.write(frame)
 out_A.release()
 
