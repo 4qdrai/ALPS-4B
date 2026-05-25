@@ -11,10 +11,10 @@
 ## 🖼️ Full System Architecture
 
 ### Publication-Quality Research Paper Diagram
-![ALPS-4B Research Paper Architecture](C:/Users/User/.gemini/antigravity/brain/6dbc421e-4c7c-4b73-8b06-97eaaf15d2ba/alps4b_paper_arch_1779710618997.png)
+![ALPS-4B Research Paper Architecture](figures/alps4b_paper_arch.png)
 
 ### Complete Wiring & Feedback Loops
-![ALPS-4B Complete Technical Architecture](C:/Users/User/.gemini/antigravity/brain/6dbc421e-4c7c-4b73-8b06-97eaaf15d2ba/alps4b_architecture_1779708622231.png)
+![ALPS-4B Complete Technical Architecture](figures/alps4b_architecture.png)
 
 ---
 
