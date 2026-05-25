@@ -131,11 +131,15 @@ def run_unsupervised_training(epochs: int = 10, batch_size: int = 4):
             
             # Print every 50 batches or if it's simulated
             if batch_idx % 50 == 0 or len(dataset.video_paths) == 0:
+                sigreg = outputs.get('sigreg_loss', torch.tensor(0.0)).item()
+                vq = outputs.get('vq_loss', torch.tensor(0.0)).item()
+                moe = outputs.get('moe_loss', torch.tensor(0.0)).item()
+                
                 print(f"  Epoch {epoch:02d}/{epochs:02d} | Batch {batch_idx:04d}/{num_batches:04d} | "
                       f"Total Loss: {loss.item():.4f} | "
-                      f"SIGReg Loss: {outputs['sigreg_loss'].item():.4f} | "
-                      f"VQ Commitment: {outputs['vq_loss'].item():.4f} | "
-                      f"MoE router loss: {outputs['moe_loss'].item():.4f} | "
+                      f"SIGReg Loss: {sigreg:.4f} | "
+                      f"VQ Commitment: {vq:.4f} | "
+                      f"MoE router loss: {moe:.4f} | "
                       f"Time/Batch: {elapsed:.2f}s")
                       
         epoch_time = time.perf_counter() - start_time_epoch
