@@ -47,10 +47,17 @@ class InverseMonitor(nn.Module):
         if next_ptr == 0:
             self.is_warm.copy_(torch.tensor(True, device=self.is_warm.device))
             
-        # Decision trigger: If divergence exceeds threshold, flag a biological interrupt.
-        # We can also compare against the running mean to detect sudden spikes:
-        # e.g., if divergence > threshold * running_mean
-        triggered = (divergence.item() > self.threshold)
+        # Adaptive Decision Trigger:
+        # System 2 is invoked if the current divergence is significantly higher than 
+        # the running average (a sudden spike in prediction error).
+        running_mean = self.get_running_average()
+        # If history is empty, rely on static threshold, otherwise use adaptive multiplier
+        if running_mean == 0.0:
+            triggered = (divergence.item() > self.threshold)
+        else:
+            # Trigger if current error spikes above (1 + threshold) * running mean
+            # e.g., if threshold is 0.5, triggers when error is 1.5x higher than average
+            triggered = (divergence.item() > ((1.0 + self.threshold) * running_mean))
         
         return divergence, triggered
         
