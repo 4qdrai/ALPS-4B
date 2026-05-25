@@ -45,14 +45,22 @@ By the **Cramér-Wold Theorem**, a D-dimensional distribution matches $\mathcal{
 
 Let $\mu_n = \frac{1}{n} \sum_{j=1}^n \delta_{Y_j}$ be the empirical measure of a 1D projected sample $Y = (Y_1, \dots, Y_n)$. Let $\mu_0 = \mathcal{N}(0, 1)$ be the target standard normal measure.
 The characteristic functions corresponding to $\mu_n$ and $\mu_0$ are:
-$$\psi_n(t) = \int e^{i t y}\, d\mu_n(y) = \frac{1}{n} \sum_{j=1}^n e^{i t Y_j}$$
-$$\psi_0(t) = \int e^{i t y}\, d\mu_0(y) = e^{-t^2/2}$$
+```math
+\psi_n(t) = \int e^{i t y}\, d\mu_n(y) = \frac{1}{n} \sum_{j=1}^n e^{i t Y_j}
+```
+```math
+\psi_0(t) = \int e^{i t y}\, d\mu_0(y) = e^{-t^2/2}
+```
 
 We formulate the discrepancy between $\mu_n$ and $\mu_0$ in the infinite-dimensional Hilbert space $L^2(\mathbb{R}, \varphi_\beta\, dt)$ equipped with the Gaussian weight function $\varphi_\beta(t) = \frac{1}{\beta\sqrt{2\pi}} \exp\left(-\frac{t^2}{2\beta^2}\right)$:
-$$T_{n,\beta} = n \|\psi_n - \psi_0\|^2_{L^2} = n \int_{-\infty}^{\infty} |\psi_n(t) - \psi_0(t)|^2 \varphi_\beta(t)\, dt$$
+```math
+T_{n,\beta} = n \lVert\psi_n - \psi_0\rVert^2_{L^2} = n \int_{-\infty}^{\infty} |\psi_n(t) - \psi_0(t)|^2 \varphi_\beta(t)\, dt
+```
 
 Integrating this analytically (as derived in Section 2 of our mathematical foundations) yields the differentiable, closed-form **Epps-Pulley statistic**:
-$$T_{n,\beta} = \frac{1}{n} \sum_{j=1}^n \sum_{k=1}^n \exp\left(-\frac{\beta^2}{2}(Y_j-Y_k)^2\right) - 2 \left(1 + \beta^2\right)^{-1/2} \sum_{j=1}^n \exp\left(-\frac{\beta^2 Y_j^2}{2(1+\beta^2)}\right) + \frac{n}{\sqrt{1+2\beta^2}}$$
+```math
+T_{n,\beta} = \frac{1}{n} \sum_{j=1}^n \sum_{k=1}^n \exp\left(-\frac{\beta^2}{2}(Y_j-Y_k)^2\right) - 2 \left(1 + \beta^2\right)^{-1/2} \sum_{j=1}^n \exp\left(-\frac{\beta^2 Y_j^2}{2(1+\beta^2)}\right) + \frac{n}{\sqrt{1+2\beta^2}}
+```
 
 ### 2.2 Proof of Uniformly Bounded Gradients and Curvature
 A major limitation of standard moments-based regularization losses (like MSE variance or high-order statistical moments) is **gradient instability**. If latents explode, high-order polynomial gradients explode, causing numerical overflow.
@@ -61,13 +69,19 @@ We prove that **SIGReg's Epps-Pulley loss statistic yields uniformly bounded gra
 
 #### Theorem 2.2
 Let $Y = (Y_1, \dots, Y_n)$ be our projected samples. The gradient of the Epps-Pulley statistic $T_{n,\beta}$ with respect to any sample $Y_i$ is uniformly bounded:
-$$\sup_{Y \in \mathbb{R}^n} \left| \frac{\partial T_{n,\beta}}{\partial Y_i} \right| < M_1 < \infty$$
+```math
+\sup_{Y \in \mathbb{R}^n} \left| \frac{\partial T_{n,\beta}}{\partial Y_i} \right| < M_1 < \infty
+```
 and the second derivative (curvature) is also uniformly bounded:
-$$\sup_{Y \in \mathbb{R}^n} \left| \frac{\partial^2 T_{n,\beta}}{\partial Y_i \partial Y_j} \right| < M_2 < \infty$$
+```math
+\sup_{Y \in \mathbb{R}^n} \left| \frac{\partial^2 T_{n,\beta}}{\partial Y_i \partial Y_j} \right| < M_2 < \infty
+```
 
 #### Proof
 Differentiating $T_{n,\beta}$ with respect to $Y_i$:
-$$\frac{\partial T_{n,\beta}}{\partial Y_i} = \frac{1}{n} \sum_{k=1}^n \left[ -\beta^2 (Y_i - Y_k) \exp\left(-\frac{\beta^2}{2}(Y_i - Y_k)^2\right) \right] - 2 (1+\beta^2)^{-1/2} \left[ -\frac{\beta^2 Y_i}{1+\beta^2} \exp\left(-\frac{\beta^2 Y_i^2}{2(1+\beta^2)}\right) \right]$$
+```math
+\frac{\partial T_{n,\beta}}{\partial Y_i} = \frac{1}{n} \sum_{k=1}^n \left[ -\beta^2 (Y_i - Y_k) \exp\left(-\frac{\beta^2}{2}(Y_i - Y_k)^2\right) \right] - 2 (1+\beta^2)^{-1/2} \left[ -\frac{\beta^2 Y_i}{1+\beta^2} \exp\left(-\frac{\beta^2 Y_i^2}{2(1+\beta^2)}\right) \right]
+```
 
 Let us analyze the terms inside the summation.
 1. Define the function $g(u) = u e^{-a u^2}$ for $a > 0$. We compute its extrema by setting $g'(u) = 0$:
@@ -80,9 +94,13 @@ Let us analyze the terms inside the summation.
    $$\left| Y_i \exp\left(-\frac{\beta^2 Y_i^2}{2(1+\beta^2)}\right) \right| \le \frac{\sqrt{1+\beta^2}}{\beta \sqrt{e}}$$
 
 Applying the triangle inequality:
-$$\left| \frac{\partial T_{n,\beta}}{\partial Y_i} \right| \le \frac{\beta^2}{n} \sum_{k=1}^n \frac{1}{\beta \sqrt{e}} + \frac{2 \beta^2}{(1+\beta^2)^{3/2}} \frac{\sqrt{1+\beta^2}}{\beta \sqrt{e}} = \frac{\beta}{\sqrt{e}} + \frac{2 \beta}{(1+\beta^2)\sqrt{e}} = \frac{\beta}{\sqrt{e}} \left( 1 + \frac{2}{1+\beta^2} \right)$$
+```math
+\left| \frac{\partial T_{n,\beta}}{\partial Y_i} \right| \le \frac{\beta^2}{n} \sum_{k=1}^n \frac{1}{\beta \sqrt{e}} + \frac{2 \beta^2}{(1+\beta^2)^{3/2}} \frac{\sqrt{1+\beta^2}}{\beta \sqrt{e}} = \frac{\beta}{\sqrt{e}} + \frac{2 \beta}{(1+\beta^2)\sqrt{e}} = \frac{\beta}{\sqrt{e}} \left( 1 + \frac{2}{1+\beta^2} \right)
+```
 Since this bound depends solely on the constant hyperparameter $\beta$ and is independent of the values of the samples $Y$, the gradient is **uniformly bounded**:
-$$\left| \frac{\partial T_{n,\beta}}{\partial Y_i} \right| \le \frac{3\beta}{\sqrt{e}} \quad \forall Y \in \mathbb{R}^n$$
+```math
+\left| \frac{\partial T_{n,\beta}}{\partial Y_i} \right| \le \frac{3\beta}{\sqrt{e}} \quad \forall Y \in \mathbb{R}^n
+```
 Similarly, because the derivative of the bounded Gaussian function is also a combination of bounded functions of the form $(1 - b u^2)e^{-c u^2}$, the second derivative (curvature) is also uniformly bounded. $\blacksquare$
 
 ---
@@ -93,7 +111,9 @@ ALPS-4B coordinates top-down strategic guidance $c_T$ and bottom-up tactical pre
 
 ### 3.1 Multi-Scale Planning decouping
 The multi-scale planning task is modeled as finding plan coordinates $h^{(n)}$ in a metric space $(\mathcal{X}, d)$ that satisfies the tactical prediction:
-$$h^{(n+1)} = \mathcal{R}(h^{(n)}; c_T)$$
+```math
+h^{(n+1)} = \mathcal{R}(h^{(n)}; c_T)
+```
 where $c_T$ acts as a slow-varying strategic context. To guarantee that this planning imagination converges to a unique, stable plan, the refinement network $\mathcal{R}$ must act as a contraction mapping with Lipschitz constant $L < 1$.
 
 ### 3.2 Proof of Phase-Shifted Convergence under Hybrid Constraints
@@ -106,33 +126,57 @@ We prove that the checker loop converges to the unique optimal plan $h^*$ even w
 
 #### Theorem 3.2
 Let $c^{(t)}$ be the strategic context at time step $t$. Suppose the context varies slowly, satisfying:
-$$\| c^{(t+1)} - c^{(t)} \|_2 \le \delta \quad \text{for a small } \delta > 0$$
+```math
+\lVert c^{(t+1)} - c^{(t)} \rVert_2 \le \delta \quad \text{for a small } \delta > 0
+```
 Let $\mathcal{R}(h; c)$ be a contraction mapping with respect to $h$ with Lipschitz constant $L < 1$:
-$$\| \mathcal{R}(h_1; c) - \mathcal{R}(h_2; c) \|_2 \le L \| h_1 - h_2 \|_2$$
+```math
+\lVert \mathcal{R}(h_1; c) - \mathcal{R}(h_2; c) \rVert_2 \le L \lVert h_1 - h_2 \rVert_2
+```
 and let $\mathcal{R}$ be Lipschitz continuous with respect to the context $c$:
-$$\| \mathcal{R}(h; c_1) - \mathcal{R}(h; c_2) \|_2 \le K \| c_1 - c_2 \|_2$$
+```math
+\lVert \mathcal{R}(h; c_1) - \mathcal{R}(h; c_2) \rVert_2 \le K \lVert c_1 - c_2 \rVert_2
+```
 Then the sequence of refined plans $h^{(t+1)} = \mathcal{R}(h^{(t)}; c^{(t)})$ remains bounded within a stable basin of the dynamic fixed point $h^*(c^{(t)})$.
 
 #### Proof
 Let $h^*(c^{(t)})$ be the unique fixed point of the operator $\mathcal{R}(\cdot; c^{(t)})$, i.e., $\mathcal{R}(h^*(c^{(t)}); c^{(t)}) = h^*(c^{(t)})$.
 Let us evaluate the distance between the refined plan $h^{(t+1)}$ and the true dynamic fixed point $h^*(c^{(t+1)})$:
-$$\| h^{(t+1)} - h^*(c^{(t+1)}) \|_2 = \| \mathcal{R}(h^{(t)}; c^{(t)}) - h^*(c^{(t+1)}) \|_2$$
+```math
+\lVert h^{(t+1)} - h^*(c^{(t+1)}) \rVert_2 = \lVert \mathcal{R}(h^{(t)}; c^{(t)}) - h^*(c^{(t+1)}) \rVert_2
+```
 Add and subtract $\mathcal{R}(h^*(c^{(t)}); c^{(t)}) = h^*(c^{(t)})$ inside the norm:
-$$\| h^{(t+1)} - h^*(c^{(t+1)}) \|_2 \le \| \mathcal{R}(h^{(t)}; c^{(t)}) - \mathcal{R}(h^*(c^{(t)}); c^{(t)}) \|_2 + \| h^*(c^{(t)}) - h^*(c^{(t+1)}) \|_2$$
+```math
+\lVert h^{(t+1)} - h^*(c^{(t+1)}) \rVert_2 \le \lVert \mathcal{R}(h^{(t)}; c^{(t)}) - \mathcal{R}(h^*(c^{(t)}); c^{(t)}) \rVert_2 + \lVert h^*(c^{(t)}) - h^*(c^{(t+1)}) \rVert_2
+```
 Using the contractive property of $\mathcal{R}$ on the first term:
-$$\| h^{(t+1)} - h^*(c^{(t+1)}) \|_2 \le L \| h^{(t)} - h^*(c^{(t)}) \|_2 + \| h^*(c^{(t)}) - h^*(c^{(t+1)}) \|_2$$
+```math
+\lVert h^{(t+1)} - h^*(c^{(t+1)}) \rVert_2 \le L \lVert h^{(t)} - h^*(c^{(t)}) \rVert_2 + \lVert h^*(c^{(t)}) - h^*(c^{(t+1)}) \rVert_2
+```
 
-Now let us bound the shift of the fixed point $\|h^*(c^{(t)}) - h^*(c^{(t+1)})\|_2$:
-$$\| h^*(c^{(t)}) - h^*(c^{(t+1)}) \|_2 = \| \mathcal{R}(h^*(c^{(t)}); c^{(t)}) - \mathcal{R}(h^*(c^{(t+1)}); c^{(t+1)}) \|_2$$
-$$\le \| \mathcal{R}(h^*(c^{(t)}); c^{(t)}) - \mathcal{R}(h^*(c^{(t+1)}); c^{(t)}) \|_2 + \| \mathcal{R}(h^*(c^{(t+1)}); c^{(t)}) - \mathcal{R}(h^*(c^{(t+1)}); c^{(t+1)}) \|_2$$
-$$\le L \| h^*(c^{(t)}) - h^*(c^{(t+1)}) \|_2 + K \| c^{(t)} - c^{(t+1)} \|_2$$
-Subtracting $L \|h^*(c^{(t)}) - h^*(c^{(t+1)})\|_2$ from both sides:
-$$(1 - L) \| h^*(c^{(t)}) - h^*(c^{(t+1)}) \|_2 \le K \| c^{(t)} - c^{(t+1)} \|_2 \implies \| h^*(c^{(t)}) - h^*(c^{(t+1)}) \|_2 \le \frac{K}{1 - L} \delta$$
+Now let us bound the shift of the fixed point $\lVert h^*(c^{(t)}) - h^*(c^{(t+1)}) \rVert_2$:
+```math
+\lVert h^*(c^{(t)}) - h^*(c^{(t+1)}) \rVert_2 = \lVert \mathcal{R}(h^*(c^{(t)}); c^{(t)}) - \mathcal{R}(h^*(c^{(t+1)}); c^{(t+1)}) \rVert_2
+```
+```math
+\le \lVert \mathcal{R}(h^*(c^{(t)}); c^{(t)}) - \mathcal{R}(h^*(c^{(t+1)}); c^{(t)}) \rVert_2 + \lVert \mathcal{R}(h^*(c^{(t+1)}); c^{(t)}) - \mathcal{R}(h^*(c^{(t+1)}); c^{(t+1)}) \rVert_2
+```
+```math
+\le L \lVert h^*(c^{(t)}) - h^*(c^{(t+1)}) \rVert_2 + K \lVert c^{(t)} - c^{(t+1)} \rVert_2
+```
+Subtracting $L \lVert h^*(c^{(t)}) - h^*(c^{(t+1)}) \rVert_2$ from both sides:
+```math
+(1 - L) \lVert h^*(c^{(t)}) - h^*(c^{(t+1)}) \rVert_2 \le K \lVert c^{(t)} - c^{(t+1)} \rVert_2 \implies \lVert h^*(c^{(t)}) - h^*(c^{(t+1)}) \rVert_2 \le \frac{K}{1 - L} \delta
+```
 
 Substituting this back into the sequence distance inequality:
-$$\| h^{(t+1)} - h^*(c^{(t+1)}) \|_2 \le L \| h^{(t)} - h^*(c^{(t)}) \|_2 + \frac{K \delta}{1 - L}$$
+```math
+\lVert h^{(t+1)} - h^*(c^{(t+1)}) \rVert_2 \le L \lVert h^{(t)} - h^*(c^{(t)}) \rVert_2 + \frac{K \delta}{1 - L}
+```
 As $t \rightarrow \infty$, this recurrence relation converges to a stable limit basin:
-$$\lim_{t \rightarrow \infty} \| h^{(t)} - h^*(c^{(t)}) \|_2 \le \frac{K \delta}{(1 - L)^2}$$
+```math
+\lim_{t \rightarrow \infty} \lVert h^{(t)} - h^*(c^{(t)}) \rVert_2 \le \frac{K \delta}{(1 - L)^2}
+```
 This mathematically proves that even when the strategic context varies dynamically, the tactical planning loop converges geometrically to a stable planning trajectory within a tight bound proportional to the slow context rate of change $\delta$. $\blacksquare$
 
 ---
