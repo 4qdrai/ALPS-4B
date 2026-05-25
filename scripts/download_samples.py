@@ -9,18 +9,18 @@ import ssl
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# UCF101 sample videos hosted on HuggingFace for testing
-url_sunny = "https://huggingface.co/datasets/sayakpaul/ucf101-video-dataset/resolve/main/v_TaiChi_g01_c01.avi"
-url_surprise = "https://huggingface.co/datasets/sayakpaul/ucf101-video-dataset/resolve/main/v_Punch_g01_c01.avi"
+# Real Semantic Video A (People walking smoothly)
+url_A = "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/vtest.avi"
+path_A = "data/sample_A.avi"
 
-# Save them to exactly where the inference script expects them
-os.makedirs('data/UCF-101/TaiChi', exist_ok=True)
-os.makedirs('data/UCF-101/Punch', exist_ok=True)
+# Real Semantic Video B (High action sequence)
+url_B = "https://media.w3.org/2010/05/sintel/trailer.mp4"
+path_B = "data/sample_B.mp4"
 
-print("Fetching UCF101 TaiChi (Sunny Case) from HuggingFace...")
-urllib.request.urlretrieve(url_sunny, 'data/UCF-101/TaiChi/v_TaiChi_g01_c01.avi')
+print("Fetching Real Semantic Video A (People Walking)...")
+urllib.request.urlretrieve(url_A, path_A)
 
-print("Fetching UCF101 Punch (Surprise Case) from HuggingFace...")
-urllib.request.urlretrieve(url_surprise, 'data/UCF-101/Punch/v_Punch_g01_c01.avi')
+print("Fetching Real Semantic Video B (High Action)...")
+urllib.request.urlretrieve(url_B, path_B)
 
-print("Success! The exact UCF101 semantic videos are now downloaded locally.")
+print("Success! Real semantic videos are now saved in the 'data' folder.")
