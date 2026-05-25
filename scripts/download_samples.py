@@ -1,25 +1,26 @@
-import cv2
-import numpy as np
+import urllib.request
 import os
 
 os.makedirs('data', exist_ok=True)
-width, height = 112, 112
-fps = 8
 
-# Generate Video A: Perfectly Static "Sunny Case" (e.g., a blank blue sky)
-out_A = cv2.VideoWriter('data/sample_A.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
-for i in range(16):
-    # Solid blue frame that never changes
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-    frame[:, :] = (255, 100, 50) 
-    out_A.write(frame)
-out_A.release()
+import urllib.request
+import os
+import ssl
 
-# Generate Video B: Chaotic geometric shapes (Surprise Case)
-out_B = cv2.VideoWriter('data/sample_B.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
-for i in range(16):
-    frame = np.random.randint(0, 255, (height, width, 3), dtype=np.uint8)
-    out_B.write(frame)
-out_B.release()
+ssl._create_default_https_context = ssl._create_unverified_context
 
-print("Generated actual .mp4 files in 'data/' folder.")
+# UCF101 sample videos hosted on HuggingFace for testing
+url_sunny = "https://huggingface.co/datasets/sayakpaul/ucf101-video-dataset/resolve/main/v_TaiChi_g01_c01.avi"
+url_surprise = "https://huggingface.co/datasets/sayakpaul/ucf101-video-dataset/resolve/main/v_Punch_g01_c01.avi"
+
+# Save them to exactly where the inference script expects them
+os.makedirs('data/UCF-101/TaiChi', exist_ok=True)
+os.makedirs('data/UCF-101/Punch', exist_ok=True)
+
+print("Fetching UCF101 TaiChi (Sunny Case) from HuggingFace...")
+urllib.request.urlretrieve(url_sunny, 'data/UCF-101/TaiChi/v_TaiChi_g01_c01.avi')
+
+print("Fetching UCF101 Punch (Surprise Case) from HuggingFace...")
+urllib.request.urlretrieve(url_surprise, 'data/UCF-101/Punch/v_Punch_g01_c01.avi')
+
+print("Success! The exact UCF101 semantic videos are now downloaded locally.")
