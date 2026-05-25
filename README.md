@@ -62,37 +62,90 @@ When the bottom-up **Inverse Monitor** registers a prediction failure (surprise)
 ## 📂 Repository Structure
 
 ```
-4B-JEPA/
-├── pyproject.toml              # Modern Python packaging configuration
-├── README.md                   # World-class scientific pitch
+4B-JEPA/                                    (GitHub: 4qdrai/4B-JEPA)
+├── README.md                               # World-class scientific pitch
+├── LICENSE                                  # Apache 2.0
+├── CITATION.cff                             # Academic citation
+├── pyproject.toml                           # Modern Python packaging
 │
-├── src/alps/                   # Core Python library
-│   ├── core/                   # Core mathematical and structural modules
-│   │   ├── encoders.py         # 3D ViT Vision Encoder
-│   │   ├── sigreg.py           # SIGReg collapse prevention
-│   │   ├── predictor.py        # AdaLN modulated predictors
-│   │   ├── vq_bottleneck.py    # VQ bottleneck for Strategic layer
-│   │   ├── moe_router.py       # Sparse MoE semantic router
-│   │   ├── latent_rag.py       # Non-parametric KV cache
-│   │   ├── inverse_monitor.py  # Efference copy divergence check
-│   │   ├── checker.py          # Banach contraction checkers
-│   │   ├── fallback.py         # Brainstem safety watchdogs
-│   │   ├── energy.py           # EBM multi-scale binder
-│   │   └── alps_model.py       # Main model orchestrator
+├── src/alps/                                # Core Python package
+│   ├── __init__.py
+│   ├── core/
+│   │   ├── encoders.py                      # Vision Encoder (ViT, NO separate target encoder per LeWM)
+│   │   ├── predictor.py                     # Multi-scale predictors with AdaLN action integration
+│   │   ├── sigreg.py                        # SIGReg regularizer (Epps-Pulley + Weak variant)
+│   │   ├── hierarchy.py                     # Strategic/Tactical/Operative orchestrator
+│   │   ├── energy.py                        # Multi-scale EBM binding
+│   │   ├── vq_bottleneck.py                 # Vector Quantization for Strategic layer
+│   │   ├── moe_router.py                    # Sparse MoE Top-K semantic router
+│   │   ├── latent_rag.py                    # Non-parametric KV cache + cross-attention retrieval
+│   │   ├── inverse_monitor.py               # Efference copy divergence detection + escalation
+│   │   ├── checker.py                       # Banach contraction checker networks
+│   │   ├── fallback.py                      # System Integrity Monitor (NaN, Var, Pinning, HAL)
+│   │   └── alps_model.py                    # Full ALPS-4B orchestrator
 │   │
-│   ├── memory/                 # 3-Tier memory subpackage
-│   ├── multimodal/             # Multi-modal sensor encoders
-│   ├── training/               # Tube masking and phase schedulers
-│   └── simulations/            # Scientific simulations scripts
+│   ├── memory/                              # 3-Tier Hierarchical Memory
+│   │   ├── working_buffer.py                # Operative: FIFO sensorimotor state buffer
+│   │   ├── episodic_cache.py                # Tactical: episodic rollout cache with decay
+│   │   ├── semantic_memory.py               # Strategic: permanent vector database
+│   │   ├── abstraction_scorer.py            # Temporal invariance + dimensional compression metrics
+│   │   └── sleep_distillation.py            # Overnight consolidation: audit → distill → purge
+│   │
+│   ├── multimodal/                          # Vision-Primary Multi-Modal
+│   │   ├── vision_encoder.py                # Primary ViT video encoder (always-on)
+│   │   ├── sensor_encoders.py               # Auxiliary sensor encoders (LiDAR, IMU, etc.)
+│   │   └── modality_router.py               # Strategic-layer sensor budget allocation
+│   │
+│   ├── training/                            # Self-Supervised Training
+│   │   ├── masked_prediction.py             # Spatiotemporal tube masking (90% ratio)
+│   │   ├── multi_scale_loss.py              # Per-layer LeWM loss + inter-layer stop-grad
+│   │   ├── phase_shifted_scheduler.py       # Per-layer update frequency scheduling
+│   │   └── train.py                         # Main H100 training script
+│   │
+│   ├── evaluation/                          # Benchmarks
+│   │   ├── linear_probe.py
+│   │   ├── complexity_cliff.py              # Sequence-length scaling comparison
+│   │   └── representation_quality.py        # SIGReg covariance eigenvalue analysis
+│   │
+│   └── simulations/                         # Evidence-Generating Simulations
+│       ├── convergence_analysis.py           # Banach contraction rate visualization
+│       ├── sigreg_analysis.py               # Covariance spread + collapse prevention demo
+│       ├── moe_scaling.py                   # O(1) FLOPs proof with scaling experts
+│       ├── self_learning_demo.py            # End-to-end failure→learn→recall demo
+│       └── hive_mind_demo.py                # Fleet KV sync demonstration
 │
-├── docs/                       # Scientific documentation
-│   ├── scientific_paper.tex    # NeurIPS academic LaTeX manuscript
-│   ├── mathematical_foundations.md
-│   ├── comparison_matrix.md
-│   └── training_methodology.md
+├── docs/                                    # Publication-Quality Documentation
+│   ├── scientific_paper.tex                 # NeurIPS LaTeX Paper
+│   ├── scientific_paper.md                  # NeurIPS Markdown version (NEW)
+│   ├── mathematical_foundations.md          # Full proofs: SIGReg, Banach, EBM binding
+│   ├── comparison_matrix.md                 # Systematic competitor analysis
+│   └── training_methodology.md              # Unsupervised training deep-dive
 │
-├── tests/                      # 100+ Automated test cases
-└── results/                    # Validation metrics and PT weights
+├── tests/                                   # 100+ Automated Tests
+│   ├── test_sigreg.py
+│   ├── test_encoders.py
+│   ├── test_hierarchy.py
+│   ├── test_moe_router.py
+│   ├── test_latent_rag.py
+│   ├── test_inverse_monitor.py
+│   ├── test_fallback.py
+│   ├── test_memory.py
+│   ├── test_checker.py
+│   └── test_alps_model.py
+│
+├── scripts/
+│   ├── runpod_setup.sh                      # H100 environment setup
+│   ├── download_ucf101.sh
+│   └── run_training.sh
+│
+├── results/                                 # Training artifacts
+│   ├── h100_training/
+│   └── simulations/
+│
+└── figures/                                 # Publication figures
+    ├── architecture_diagram.png
+    ├── training_curves.png
+    └── sigreg_covariance.png
 ```
 
 ---

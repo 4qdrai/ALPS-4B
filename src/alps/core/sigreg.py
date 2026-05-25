@@ -109,7 +109,7 @@ class SIGReg(nn.Module):
         # z: [N, D], projection_matrix: [D, S] -> y: [N, S]
         y = torch.matmul(z, self.projection_matrix)
         
-        if self.weak_only:
+        if self.weak_only or N > 1024:
             # Weak-SIGReg: Frobenius norm of covariance of projected features minus Identity
             # Cov(y) = 1/(N-1) * (y - mean_y)^T * (y - mean_y)
             mean_y = y.mean(dim=0, keepdim=True)
