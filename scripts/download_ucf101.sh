@@ -22,14 +22,14 @@ if [ -f "UCF101.rar" ]; then
 else
     echo "Downloading UCF101 dataset (~6.5 GB)..."
     echo "Note: This can take some time depending on your connection."
-    curl -L -O "$UCF101_URL" || wget "$UCF101_URL"
+    curl -k -L -O "$UCF101_URL" || wget --no-check-certificate "$UCF101_URL"
 fi
 
 if [ -f "UCF101TrainTestSplits-RecognitionTask.zip" ]; then
     echo "Train/Test splits already exist. Skipping download."
 else
     echo "Downloading Train/Test splits..."
-    curl -L -O "$ANNO_URL" || wget "$ANNO_URL"
+    curl -k -L -O "$ANNO_URL" || wget --no-check-certificate "$ANNO_URL"
 fi
 
 # 4. Extraction
