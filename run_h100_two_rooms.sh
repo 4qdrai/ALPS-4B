@@ -38,6 +38,9 @@ else
     git pull
 fi
 
+# Set absolute PYTHONPATH so Python always finds the 'alps' package
+export PYTHONPATH=$(pwd)/src
+
 # Install dependencies
 pip install torch torchvision --quiet 2>/dev/null || true  # Usually pre-installed on RunPod
 pip install matplotlib scikit-learn pillow --quiet
