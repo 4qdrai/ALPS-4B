@@ -17,6 +17,9 @@
 
 set -e  # Exit on any error
 
+# Ensure python knows where the src folder is
+export PYTHONPATH=src
+
 echo "============================================================"
 echo "  ALPS-4B Two Rooms Benchmark — H100 Pipeline"
 echo "============================================================"
