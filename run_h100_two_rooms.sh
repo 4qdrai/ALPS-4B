@@ -52,12 +52,16 @@ echo "[1/5] Environment ready!"
 
 # --- 2. GENERATE DATA ---
 echo ""
-echo "[2/5] Generating training data (5000 episodes × 100 steps)..."
-python -m alps.benchmarks.two_rooms.data_generator \
-    --num-episodes 5000 \
-    --max-steps 100 \
-    --save-path data/two_rooms/trajectories.pt
-echo "[2/5] Data generation complete!"
+if [ -f "data/two_rooms/trajectories.pt" ]; then
+    echo "[2/5] Found existing training data at data/two_rooms/trajectories.pt. Skipping generation."
+else
+    echo "[2/5] Generating training data (5000 episodes × 100 steps)..."
+    python -m alps.benchmarks.two_rooms.data_generator \
+        --num-episodes 5000 \
+        --max-steps 100 \
+        --save-path data/two_rooms/trajectories.pt
+    echo "[2/5] Data generation complete!"
+fi
 
 # --- 3. TRAIN ---
 echo ""
