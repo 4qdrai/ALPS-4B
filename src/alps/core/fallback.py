@@ -103,20 +103,72 @@ class FallbackMonitor(nn.Module):
                 
         return True, "SYSTEM_HEALTHY"
         
-    def get_minimal_risk_action(self, current_action: torch.Tensor) -> torch.Tensor:
+    def get_minimal_risk_action(self, current_action: torch.Tensor, current_position: torch.Tensor = None) -> torch.Tensor:
         """
         Bypasses the current action plans and returns the Minimal Risk Condition (MRC) action.
-        For robotics, this typically corresponds to a zero-velocity, brake, or safe return home command.
+        If current_position is provided, it steers the agent to the nearest safe haven.
+        Otherwise, it returns a zeroed-out safe stop/braking command.
         
         Args:
             current_action: Planned action tensor, Shape: [B, A]
+            current_position: Current 2D positions of the agent, Shape: [B, 2]
             
         Returns:
-            mrc_action: Zeroed-out/braking action tensor, Shape: [B, A]
+            mrc_action: Active homing action (one-hot) or safe braking (all zeros)
         """
-        # Deterministic MRC policy: return all zeros (direct braking command)
-        # This is proven to be Lyapunov-stable (Theorem 5.2).
-        return torch.zeros_like(current_action)
+        if current_position is None:
+            # Deterministic MRC policy: return all zeros (direct braking command)
+            return torch.zeros_like(current_action)
+            
+        B = current_position.shape[0]
+        device = current_position.device
+        
+        # 1. Define Safe Havens in the Two Rooms environment:
+        # Left Room Center = (2.5, 5.0), Right Room Center = (7.5, 5.0)
+        safe_havens = torch.tensor([[2.5, 5.0], [7.5, 5.0]], device=device, dtype=torch.float32) # [2, 2]
+        
+        # 2. Compute distance from each batch position to both safe havens
+        dist = torch.norm(current_position.unsqueeze(1) - safe_havens.unsqueeze(0), p=2, dim=-1) # [B, 2]
+        
+        # Find index of closest haven per batch element
+        closest_haven_idx = torch.argmin(dist, dim=-1) # [B]
+        
+        # Select the target safe haven coordinates
+        target_havens = safe_havens[closest_haven_idx] # [B, 2]
+        
+        # 3. Compute directional vector to the target
+        d_pos = target_havens - current_position # [B, 2]
+        dx = d_pos[:, 0]
+        dy = d_pos[:, 1]
+        
+        # 4. Generate one-hot MRC steering action
+        # Actions: 0=up (+y), 1=down (-y), 2=left (-x), 3=right (+x)
+        # Action step size is 0.3. If we are within 0.3 distance, we safe halt (return zeros).
+        mrc_action = torch.zeros_like(current_action) # [B, A]
+        
+        for b in range(B):
+            dist_to_haven = dist[b, closest_haven_idx[b]].item()
+            if dist_to_haven <= 0.3:
+                # Already at safe haven, output zero (safe stop)
+                continue
+                
+            dx_b = dx[b].item()
+            dy_b = dy[b].item()
+            
+            if abs(dx_b) > abs(dy_b):
+                # Move horizontally
+                if dx_b > 0:
+                    mrc_action[b, 3] = 1.0  # right
+                else:
+                    mrc_action[b, 2] = 1.0  # left
+            else:
+                # Move vertically
+                if dy_b > 0:
+                    mrc_action[b, 0] = 1.0  # up
+                else:
+                    mrc_action[b, 1] = 1.0  # down
+                    
+        return mrc_action
 
     def simulate_mrc_step(self, x_state: torch.Tensor, dt: float = 0.1) -> tuple:
         """

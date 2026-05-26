@@ -180,6 +180,34 @@ retrieved = rag_B.retrieve_correction(test_key)
 sync_ok = retrieved.abs().sum().item() > 0
 print(f"  ✓ Fleet sync {'PASSED' if sync_ok else 'FAILED'}: retrieved correction norm = {retrieved.abs().sum().item():.4f}")
 
+# --- Test 12: Active Safe Haven Homing Watchdog ---
+print("\n[TEST 12] Active Safe Haven Homing Watchdog...")
+from alps.core.fallback import FallbackMonitor
+fb = FallbackMonitor()
+# Test 12.1: Default safe halt
+act_plan = torch.zeros(1, 4)
+mrc_stop = fb.get_minimal_risk_action(act_plan)
+assert mrc_stop.sum().item() == 0, "MRC action should be zeros when position is None"
+print("  ✓ Zeros safely outputted when position is None")
+
+# Test 12.2: Safe Haven active steering (Left room center at 2.5, 5.0)
+pos_left = torch.tensor([[1.0, 1.0]])
+mrc_left = fb.get_minimal_risk_action(act_plan, current_position=pos_left)
+assert mrc_left[0, 0] == 1.0, f"Expected action 0 (up) for pos (1.0, 1.0), got {mrc_left}"
+print("  ✓ Steered agent UP towards left Safe Haven from (1.0, 1.0)")
+
+# Test 12.3: Safe Haven active steering (Right room center at 7.5, 5.0)
+pos_right = torch.tensor([[9.0, 8.0]])
+mrc_right = fb.get_minimal_risk_action(act_plan, current_position=pos_right)
+assert mrc_right[0, 1] == 1.0, f"Expected action 1 (down) for pos (9.0, 8.0), got {mrc_right}"
+print("  ✓ Steered agent DOWN towards right Safe Haven from (9.0, 8.0)")
+
+# Test 12.4: Safe Haven arrival trigger
+pos_close = torch.tensor([[2.5, 4.9]])
+mrc_close = fb.get_minimal_risk_action(act_plan, current_position=pos_close)
+assert mrc_close.sum().item() == 0, f"Expected safe stop (all zeros) on arrival, got {mrc_close}"
+print("  ✓ Safely halted (all zeros) agent upon arrival at Safe Haven")
+
 # --- Parameter Count ---
 print("\n" + "=" * 70)
 total_params = sum(p.numel() for p in model.parameters())

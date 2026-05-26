@@ -136,6 +136,7 @@ class TwoRoomsALPS(nn.Module):
         actions_onehot: torch.Tensor,
         prev_latents: torch.Tensor = None,
         force_system2: bool = False,
+        current_position: torch.Tensor = None,
     ) -> dict:
         """
         Full ALPS forward pass with dynamic System 1 / System 2 gating.
@@ -145,6 +146,7 @@ class TwoRoomsALPS(nn.Module):
             actions_onehot:[B, d_action]         one-hot action vector (4D)
             prev_latents:  [B, N, D] or None     previous step latents for pinning check
             force_system2: bool                  force full hierarchical deliberation
+            current_position:[B, 2] or None      current 2D position of agent for MRC safe haven homing
 
         Returns:
             outputs dict with loss, predictions, diagnostics, etc.
@@ -162,8 +164,8 @@ class TwoRoomsALPS(nn.Module):
         outputs["health_status"] = health_msg
 
         if not system_healthy:
-            # Watchdog trigger — bypass all planning, return MRC action
-            outputs["action"] = self.fallback.get_minimal_risk_action(actions_onehot)
+            # Watchdog trigger — bypass all planning, return MRC action (guiding to safe haven if position is known)
+            outputs["action"] = self.fallback.get_minimal_risk_action(actions_onehot, current_position=current_position)
             outputs["fallback_triggered"] = True
             outputs["system2_activated"] = False
             outputs["loss"] = torch.tensor(
