@@ -295,6 +295,10 @@ def train_two_rooms(
     lr: float = 1e-3,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     save_dir: str = "results/two_rooms",
+    d_model: int = 128,
+    num_embeddings: int = 64,
+    num_experts: int = 4,
+    active_experts: int = 2,
 ):
     """
     Main training function for the Two Rooms ALPS-4B benchmark.
@@ -355,11 +359,11 @@ def train_two_rooms(
 
     # ── 2. Model ────────────────────────────────────────────────────────────
     model = TwoRoomsALPS(
-        d_model=128,
+        d_model=d_model,
         d_action=4,
-        num_embeddings=64,
-        num_experts=4,
-        active_experts=2,
+        num_embeddings=num_embeddings,
+        num_experts=num_experts,
+        active_experts=active_experts,
         encoder_depth=4,
         encoder_num_heads=4,
         encoder_patch_size=(2, 16, 16),
@@ -626,6 +630,30 @@ def main():
         default="results/two_rooms",
         help="Directory for model checkpoints and logs",
     )
+    parser.add_argument(
+        "--d-model",
+        type=int,
+        default=128,
+        help="Latent model dimension size (e.g. 128 or 384)",
+    )
+    parser.add_argument(
+        "--num-embeddings",
+        type=int,
+        default=64,
+        help="VQ concept codebook size (e.g. 64 or 512)",
+    )
+    parser.add_argument(
+        "--num-experts",
+        type=int,
+        default=4,
+        help="Number of MoE routing experts (e.g. 4 or 8)",
+    )
+    parser.add_argument(
+        "--active-experts",
+        type=int,
+        default=2,
+        help="Active experts per token (e.g. 2)",
+    )
     args = parser.parse_args()
 
     train_two_rooms(
@@ -635,6 +663,10 @@ def main():
         lr=args.lr,
         device=args.device,
         save_dir=args.save_dir,
+        d_model=args.d_model,
+        num_embeddings=args.num_embeddings,
+        num_experts=args.num_experts,
+        active_experts=args.active_experts,
     )
 
 
