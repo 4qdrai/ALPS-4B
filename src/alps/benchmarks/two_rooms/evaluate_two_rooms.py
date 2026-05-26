@@ -212,8 +212,9 @@ def run_planning_evaluation(
             video_input = curr_frame.unsqueeze(0).unsqueeze(2).expand(1, 3, 8, 128, 128).to(device)
             act_onehot = F.one_hot(torch.tensor([act_idx], device=device), num_classes=4).float()
 
+            pos_tensor = torch.from_numpy(current_obs["position"]).unsqueeze(0).float().to(device)
             with torch.no_grad():
-                fwd = model(video_input, act_onehot, prev_latents=prev_latent, force_system2=False)
+                fwd = model(video_input, act_onehot, prev_latents=prev_latent, force_system2=False, current_position=pos_tensor)
                 
             prev_latent = fwd.get("z_t")
             step_mse = fwd.get("pred_loss_op", torch.tensor(0.0)).item()
@@ -351,8 +352,9 @@ def plot_trajectory_overlay(
             video_input = curr_frame.unsqueeze(0).unsqueeze(2).expand(1, 3, 8, 128, 128).to(device)
             act_onehot = F.one_hot(torch.tensor([act_idx], device=device), num_classes=4).float()
 
+            pos_tensor = torch.from_numpy(current_obs["position"]).unsqueeze(0).float().to(device)
             with torch.no_grad():
-                fwd = model(video_input, act_onehot, prev_latents=prev_latent, force_system2=False)
+                fwd = model(video_input, act_onehot, prev_latents=prev_latent, force_system2=False, current_position=pos_tensor)
 
             prev_latent = fwd.get("z_t")
             
@@ -796,8 +798,9 @@ def plot_prediction_comparison(
         video_input = curr_frame.unsqueeze(0).unsqueeze(2).expand(1, 3, 8, 128, 128).to(device)
         act_onehot = F.one_hot(torch.tensor([act_idx], device=device), num_classes=4).float()
 
+        pos_tensor = torch.from_numpy(current_obs["position"]).unsqueeze(0).float().to(device)
         with torch.no_grad():
-            fwd = model(video_input, act_onehot, prev_latents=prev_latent, force_system2=False)
+            fwd = model(video_input, act_onehot, prev_latents=prev_latent, force_system2=False, current_position=pos_tensor)
             z_t = fwd["z_t"]
             
             # Decode position from the pooled latent state
