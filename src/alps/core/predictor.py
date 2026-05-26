@@ -83,6 +83,20 @@ class MultiScalePredictor(nn.Module):
         super().__init__()
         self.d_model = d_model
         
+        # Ensure num_heads divides d_model to avoid division assertion errors in MultiheadAttention
+        if d_model % num_heads != 0:
+            compatible_heads = num_heads
+            for h in range(num_heads, 0, -1):
+                if d_model % h == 0:
+                    compatible_heads = h
+                    break
+            if compatible_heads == 1:
+                for h in range(num_heads + 1, d_model + 1):
+                    if d_model % h == 0:
+                        compatible_heads = h
+                        break
+            num_heads = compatible_heads
+        
         # Action conditioning projection
         self.cond_proj = nn.Sequential(
             nn.Linear(d_cond, d_model),
