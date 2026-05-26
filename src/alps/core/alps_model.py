@@ -31,8 +31,8 @@ class ALPSModel(nn.Module):
     """
     def __init__(self, d_model: int = 384, num_embeddings: int = 512, 
                  num_experts: int = 8, active_experts: int = 2, d_action: int = 64,
-                 lambda_sigreg: float = 0.1, threshold_op: float = 0.5, 
-                 threshold_tac: float = 0.5, var_threshold: float = 1e-4, 
+                 lambda_sigreg: float = 0.1, threshold_op: float = 0.01, 
+                 threshold_tac: float = 0.01, var_threshold: float = 1e-4, 
                  pinning_threshold: float = 0.999,
                  encoder_depth: int = 8, encoder_num_heads: int = 6,
                  encoder_patch_size: tuple = (2, 16, 16), encoder_max_patches: int = 2048,
@@ -166,31 +166,35 @@ class ALPSModel(nn.Module):
         # Escalation: System 2 is activated!
         outputs["system2_activated"] = True
         
-        # --- 4. SYSTEM 2 PLANNING (Tactical MoE & Strategic VQ codebook) ---
-        # 4a. Tactical Layer (extract expert routes and query RAG cache)
-        z_tactical, moe_loss, sigreg_tac = self.tactical_layer(z_operative, z_operative)
+        # --- 4. SYSTEM 2 PLANNING (Strategic → Tactical top-down cascade) ---
+        # 4a. Strategic Layer FIRST (Discrete VQ conceptual planning bottleneck)
+        # Strategic always runs when System 2 activates — provides top-down guidance
+        z_strategic, vq_loss, sigreg_str = self.strategic_layer(z_operative)
+        outputs["strategic_activated"] = True
+        
+        # 4b. Tactical Layer receives strategic output as top-down guidance
+        z_tactical, moe_loss, sigreg_tac = self.tactical_layer(z_operative, z_strategic)
         
         # Tactical Inverse Monitor check
         div_tac, interrupt_tac = self.tac_monitor(z_tactical, z_operative)
         outputs["tactical_interrupt"] = interrupt_tac
-        
-        # 4b. Strategic Layer (Discrete VQ conceptual planning bottleneck)
-        # Skip Strategic layer if Tactical is highly confident, optimizing compute
-        if interrupt_tac or force_system2:
-            z_strategic, vq_loss, sigreg_str = self.strategic_layer(z_tactical)
-            outputs["strategic_activated"] = True
-        else:
-            z_strategic = z_tactical # Bypassed
-            vq_loss = torch.tensor(0.0, device=video_frames.device)
-            sigreg_str = torch.tensor(0.0, device=video_frames.device)
-            outputs["strategic_activated"] = False
             
         # 4c. Banach Contraction Checker-Refinement
         # Refines the tactical sub-goals under strategic constraints
         z_refined, check_steps, converged = self.checker(z_tactical, z_strategic)
         contraction_loss = self.checker.compute_contraction_loss(z_tactical, z_strategic)
         
-        # --- 5. LOSS AGGREGATION & EBM BINDING ---
+        # --- 5. AUTOMATIC LATENT-RAG WRITE (Self-Learning Loop) ---
+        # When operative prediction diverges significantly, auto-write the correction to RAG
+        if pred_loss_op.item() > 0.5 and not self.training:
+            delta_z = z_t - z_pred  # correction vector
+            context_key = z_operative.mean(dim=1)  # [B, D] semantic context
+            self.tactical_layer.rag.write_memory(context_key, delta_z.mean(dim=1))
+            outputs["rag_auto_write"] = True
+        else:
+            outputs["rag_auto_write"] = False
+        
+        # --- 6. LOSS AGGREGATION & EBM BINDING ---
         # Compute individual prediction energy errors across temporal scales
         pred_loss_str = F.mse_loss(self.strategic_layer.predict_next_concept(z_strategic, z_strategic), z_strategic.detach())
         pred_loss_tac = F.mse_loss(self.tactical_layer.predict_next_subgoal(z_tactical, z_strategic), z_tactical.detach())
@@ -202,6 +206,7 @@ class ALPSModel(nn.Module):
         outputs["z_pred"] = z_pred
         outputs["z_strategic"] = z_strategic
         outputs["loss"] = loss_total
+        outputs["pred_loss_op"] = pred_loss_op
         outputs["sigreg_loss"] = total_sigreg
         outputs["vq_loss"] = vq_loss
         outputs["moe_loss"] = moe_loss

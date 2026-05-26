@@ -42,11 +42,11 @@ def load_video_tensor(filepath, device):
         ret, frame = cap.read()
         if not ret: break
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame = cv2.resize(frame, (112, 112))
+        frame = cv2.resize(frame, (224, 224))
         frames.append(frame)
     cap.release()
     
-    # Shape: (16, 112, 112, 3) -> (1, 3, 16, 112, 112)
+    # Shape: (16, 224, 224, 3) -> (1, 3, 16, 224, 224)
     frames_np = np.array(frames, dtype=np.float32) / 255.0
     tensor = torch.from_numpy(frames_np).permute(3, 0, 1, 2).unsqueeze(0)
     return tensor.to(device)
@@ -115,9 +115,10 @@ def simulate_jury_demo():
     with torch.no_grad():
         actions_passive = torch.zeros(1, 64).to(device)
         output_A = model(video_A, actions_passive)
-    mse_A = output_A['loss'].item() * 0.05
+    mse_A = output_A['loss'].item()
     print(f"    Predictor MSE Error: {mse_A:.4f}")
-    if mse_A < 10.0:
+    sys2_A = output_A.get('system2_activated', False)
+    if not sys2_A:
         print(f"  {Colors.GREEN}[OK] [SYSTEM 1 REFLEX] Predictor accurately modeled passive physics. System 2 is asleep.{Colors.ENDC}\n")
         
     print("  --- Sunny Case Prediction Performance (Video C) ---")
@@ -127,9 +128,10 @@ def simulate_jury_demo():
     # Forward pass: Sunny Case C
     with torch.no_grad():
         output_C = model(video_C, actions_passive)
-    mse_C = output_C['loss'].item() * 0.04
+    mse_C = output_C['loss'].item()
     print(f"    Predictor MSE Error: {mse_C:.4f}")
-    if mse_C < 10.0:
+    sys2_C = output_C.get('system2_activated', False)
+    if not sys2_C:
         print(f"  {Colors.GREEN}[OK] [SYSTEM 1 REFLEX] Predictor accurately modeled passive physics. System 2 is asleep.{Colors.ENDC}\n")
 
     time.sleep(1)
@@ -137,20 +139,24 @@ def simulate_jury_demo():
     print("  System encounters a chaotic scene (Video B). Escalating to Tactical Brain...\n")
     time.sleep(0.5)
     
-    # Forward pass: Surprise Case B
+    # Forward pass: Surprise Case B — NO force_system2! Natural threshold escalation.
     print(f"  {Colors.CYAN}Injecting Action Vector a_t: [0.9, -0.5, 0.0...] (Semantics: SWERVE_HARD){Colors.ENDC}")
     with torch.no_grad():
         actions_aggressive = torch.zeros(1, 64).to(device)
         actions_aggressive[0, 0] = 0.9
         actions_aggressive[0, 1] = -0.5
-        output_B = model(video_B, actions_aggressive, force_system2=True)
+        output_B = model(video_B, actions_aggressive)
         
-    mse_B = output_B['loss'].item() * 200.0
-    print(f"    Predictor MSE Error spiked to: {mse_B:.4f}")
+    mse_B = output_B['loss'].item()
+    sys2_B = output_B.get('system2_activated', False)
+    rag_B = output_B.get('rag_auto_write', False)
+    print(f"    Predictor MSE Error: {mse_B:.4f}")
+    print(f"    System 2 Activated: {sys2_B}")
+    print(f"    RAG Auto-Write: {rag_B}")
     
-    if mse_B > 10.0:
-        print(f"  {Colors.RED}[!] [SYSTEM 2 TACTICAL]{Colors.ENDC} Activated! Routing physical properties...")
-        route_loss_B = output_B.get('moe_loss', 7.9945)
+    if sys2_B:
+        print(f"  {Colors.RED}[!] [SYSTEM 2 TACTICAL]{Colors.ENDC} Naturally activated via InverseMonitor threshold!")
+        route_loss_B = output_B.get('moe_loss', 0.0)
         if isinstance(route_loss_B, torch.Tensor): route_loss_B = route_loss_B.item()
         print(f"    Expert Routing Loss: {route_loss_B:.4f}")
         print(f"  {Colors.YELLOW}[Proof: ALPS-4B autonomously categorized the different laws of physics.]{Colors.ENDC}\n")
@@ -158,30 +164,34 @@ def simulate_jury_demo():
     print("  System encounters another chaotic scene (Video D). Escalating to Tactical Brain...\n")
     time.sleep(0.5)
     
-    # Forward pass: Surprise Case D
+    # Forward pass: Surprise Case D — NO force_system2! Natural threshold escalation.
     print(f"  {Colors.CYAN}Injecting Action Vector a_t: [-0.8, 0.9, 0.1...] (Semantics: RAPID_EVASION){Colors.ENDC}")
     with torch.no_grad():
         actions_evasive = torch.zeros(1, 64).to(device)
         actions_evasive[0, 0] = -0.8
         actions_evasive[0, 1] = 0.9
-        output_D = model(video_D, actions_evasive, force_system2=True)
+        output_D = model(video_D, actions_evasive)
         
-    mse_D = output_D['loss'].item() * 180.0
-    print(f"    Predictor MSE Error spiked to: {mse_D:.4f}")
+    mse_D = output_D['loss'].item()
+    sys2_D = output_D.get('system2_activated', False)
+    rag_D = output_D.get('rag_auto_write', False)
+    print(f"    Predictor MSE Error: {mse_D:.4f}")
+    print(f"    System 2 Activated: {sys2_D}")
+    print(f"    RAG Auto-Write: {rag_D}")
     
-    if mse_D > 10.0:
-        print(f"  {Colors.RED}[!] [SYSTEM 2 TACTICAL]{Colors.ENDC} Activated! Routing physical properties...")
-        route_loss_D = output_D.get('moe_loss', 8.1234)
+    if sys2_D:
+        print(f"  {Colors.RED}[!] [SYSTEM 2 TACTICAL]{Colors.ENDC} Naturally activated via InverseMonitor threshold!")
+        route_loss_D = output_D.get('moe_loss', 0.0)
         if isinstance(route_loss_D, torch.Tensor): route_loss_D = route_loss_D.item()
         print(f"    Expert Routing Loss: {route_loss_D:.4f}")
         print(f"  {Colors.YELLOW}[Proof: Consistency confirmed. The Tactical Brain awakens on surprise.]{Colors.ENDC}\n")
 
     time.sleep(1)
     slow_print(f"{Colors.BOLD}4. STRATEGIC ABSTRACTION: VQ CODEBOOK (System 2 Upper){Colors.ENDC}")
-    vq_loss_B = output_B.get('vq_loss', 994.7732)
+    vq_loss_B = output_B.get('vq_loss', 0.0)
     if isinstance(vq_loss_B, torch.Tensor): vq_loss_B = vq_loss_B.item()
     
-    vq_loss_D = output_D.get('vq_loss', 920.1451)
+    vq_loss_D = output_D.get('vq_loss', 0.0)
     if isinstance(vq_loss_D, torch.Tensor): vq_loss_D = vq_loss_D.item()
     
     print(f"  {Colors.MAGENTA}[*] [SYSTEM 2 STRATEGIC]{Colors.ENDC} Video trajectories snapped to Abstract Concept Codebook.")

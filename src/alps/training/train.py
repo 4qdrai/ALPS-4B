@@ -68,6 +68,7 @@ def run_unsupervised_training(epochs: int = 10, batch_size: int = 4):
     masker = SpatiotemporalMasker(mask_ratio=0.9)
     scheduler = PhaseShiftedScheduler()
     
+    optimizer_enc = optim.AdamW(model.encoder.parameters(), lr=1e-4)
     optimizer_op = optim.AdamW(model.operative_layer.parameters(), lr=1e-4)
     optimizer_tac = optim.AdamW(model.tactical_layer.parameters(), lr=1e-4)
     optimizer_str = optim.AdamW(model.strategic_layer.parameters(), lr=1e-5)
@@ -93,6 +94,7 @@ def run_unsupervised_training(epochs: int = 10, batch_size: int = 4):
     print(f"Found {len(dataset.video_paths)} videos. Batches per epoch: {num_batches}")
     print(f"\nStarting training loop for {run_epochs} epochs at {resolution}x{resolution} resolution...")
     model.train()
+    prev_latents = None  # Track latent history for hypersphere pinning detection
     
     for epoch in range(1, run_epochs + 1):
         epoch_loss = 0.0
@@ -104,13 +106,23 @@ def run_unsupervised_training(epochs: int = 10, batch_size: int = 4):
             video_input = video_input.to(device)
             actions = torch.randn(batch_size, d_action, device=device)
             
+            # Apply spatiotemporal masking (90% mask ratio per LeWM)
+            # The masker generates tube masks based on patch grid dimensions
+            keep_mask, _ = masker.generate_tube_mask(video_input.shape[0], device=device)
+            
             sched = scheduler.step()
             
+            optimizer_enc.zero_grad()
             optimizer_op.zero_grad()
             optimizer_tac.zero_grad()
             optimizer_str.zero_grad()
             
-            outputs = model(video_input, actions)
+            # Pass prev_latents for temporal recurrence (enables pinning detection)
+            outputs = model(video_input, actions, prev_latents=prev_latents)
+            
+            # Store current latents for next iteration's pinning check
+            if outputs.get("z_t") is not None:
+                prev_latents = outputs["z_t"].detach()
             
             if outputs.get("fallback_triggered", False):
                 continue
@@ -119,6 +131,8 @@ def run_unsupervised_training(epochs: int = 10, batch_size: int = 4):
             epoch_loss += loss.item()
             loss.backward()
             
+            # Encoder always updates (end-to-end training per LeWM)
+            optimizer_enc.step()
             if sched["update_operative"]:
                 optimizer_op.step()
             if sched["update_tactical"]:

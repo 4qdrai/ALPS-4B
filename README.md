@@ -18,9 +18,9 @@ ALPS-4B integrates 42 distinct architectural advantages over standard autoregres
 1. **3-Tier Hierarchy**: Decouples temporal abstraction into independently trainable JEPA layers.
 2. **Dynamic Compute Allocation**: Only activates expensive layers when physically surprised.
 3. **Temporal & Semantic Stability**: Strategic layer mathematically immune to high-frequency sensor noise.
-4. **Zero-Shot Physical Generalization**: Solves novel tasks without task-specific training.
+4. **Zero-Shot Physical Generalization**: Constraint cascade architecture enables potential transfer to novel tasks — validation pending at scale.
 5. **Energy-Based Model Binding**: Unified $E_{\text{total}}$ ensures coherent cross-layer predictions.
-6. **Temporal Striding & Asymmetric Masking**: 90% masking forces genuine abstraction.
+6. **Temporal Striding & Asymmetric Masking**: 90% spatiotemporal masking and phase-shifted update schedules force genuine abstraction.
 7. **Stop-Gradient Conditioning**: Prevents gradient corruption between temporal scales.
 8. **VQ Information Bottleneck**: Forces discrete, true conceptual abstraction.
 9. **Phase-Shifted Training Cycles**: Prevents convergence conflicts across layers.
@@ -34,19 +34,19 @@ ALPS-4B integrates 42 distinct architectural advantages over standard autoregres
 15. **JEPA Self-Diagnosis Blind Spot**: Solves the paradox where a collapsed JEPA registers zero prediction error.
 16. **Simplified Fallback Scope**: Eliminates Timid Agent problem by focusing only on representation collapse.
 17. **3 Collapse Detection Mechanisms**: NaN/Inf, Variance Drop, Hypersphere Pinning.
-18. **HAL Watchdog**: Bypasses neural network entirely for hardware safety.
+18. **HAL Watchdog**: Hardware-layer safety interface (sensor checksums, actuator handshakes) — planned for physical deployment.
 19. **Formal Verification via Control Theory**: Linear policy mathematically proven safe (ISO robotic compliance).
-20. **Adversarial Immunity**: Cannot trigger Fallback by merely confusing cameras.
+20. **Adversarial Robustness**: External monitoring architecture is structurally resilient to input-space attacks — formal testing planned.
 
 ### Memory, Knowledge, and Self-Learning
 21. **3-Tier Hierarchical Memory**: Working State Buffer, Episodic Cache, Semantic Vector DB.
 22. **Measuring Abstraction Level**: Auto-routes data via Temporal Invariance and Dimensional Compression.
 23. **Latent Cartridges**: Plug-and-play expert modules.
-24. **Hard-Coded Guardrails**: Inject deterministic physics engines as latent modules.
+24. **Hard-Coded Guardrails**: Architecture supports injecting deterministic physics constraints as latent expert modules — integration planned.
 25. **Anti-Semantic Blurring**: MoE routing preserves precise latent knowledge.
 26. **Sparse MoE Router**: Activates only relevant experts; zeroes everything else.
 27. **Infinite Scalability with Zero Compute Bloat**: Constant $O(1)$ forward-pass cost.
-28. **True Plug-and-Play**: Drop new experts into system with zero retraining.
+28. **Modular Expert Extension**: New expert modules can be added to the MoE router by extending the expert list and retraining the gate.
 29. **Catastrophic Forgetting Prevention**: Knowledge is physically isolated in separate pathways.
 30. **Latent-Space Routing**: Immune to visual noise like rain or lighting changes.
 
@@ -59,12 +59,12 @@ ALPS-4B integrates 42 distinct architectural advantages over standard autoregres
 36. **Sleep & Memory Consolidation**: Audits and distills frequent corrections into expert weights overnight.
 37. **Hive-Mind Synchronization**: Instantly copies KV database across a robot fleet.
 38. **Memory Auditing & Deletion**: Delete "bad habits" directly from database rows.
-39. **Cross-Agent Vocabulary Alignment**: Synchronizes latent vocabulary for consistent sharing.
+39. **Cross-Agent Knowledge Transfer**: Fleet-wide RAG buffer synchronization enables instant experience sharing across agents.
 
 ### Multi-Modal & Efficiency
 40. **Vision-Primary Multi-Modal**: Vision is always-on; auxiliary sensors activated selectively.
 41. **$O(1)$ Modality Scaling**: Constant compute regardless of total auxiliary sensor count.
-42. **LeWM-Based Training**: Only 2 loss terms, 1 hyperparameter, no EMA, trains on a single GPU.
+42. **LeWM-Based Training**: Extends LeWM's SIGReg + prediction loss formulation with per-layer collapse prevention, no EMA, trains on a single GPU.
 
 </details>
 
@@ -132,6 +132,8 @@ We evaluated ALPS-4B on four distinct real-world action sequences spanning predi
 - **Surprise Cases (Chaotic Physics)**: When fed highly unpredictable, fast-paced action trailers (e.g., Sintel and Megamind combat sequences), the Operative Predictor error instantly spiked (MSE = 202,246 and 394,028). This violent divergence flawlessly triggered the **Tactical Brain** to dynamically route physical properties to independent Experts, and subsequently escalated to the **Strategic Brain** to compress the chaos into the VQ concept codebook.
 
 **This mathematically proves our hierarchical threshold activation:** ALPS-4B autonomously learns the difference between predictable continuous physics and unpredictable chaotic events, routing compute dynamically based purely on predictive surprise.
+
+For detailed mathematical proofs of all stability guarantees, see our [Mathematical Foundations](docs/mathematical_foundations.md) document.
 
 ---
 

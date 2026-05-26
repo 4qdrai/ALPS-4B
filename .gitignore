@@ -76,3 +76,9 @@ Thumbs.db
 # App specific data
 .gemini/
 brain/
+data/*.avi
+data/*.mp4
+data/*.rar
+test*.avi
+test*.mp4
+__pycache__/

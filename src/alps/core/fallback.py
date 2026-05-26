@@ -96,8 +96,8 @@ class FallbackMonitor(nn.Module):
         if self.check_variance_collapse(z_t):
             return False, f"Variance Collapse detected (Var < {self.var_threshold})"
             
-        # 3. Pinning check
-        if z_prev is not None:
+        # 3. Pinning check (only valid if shapes match across time steps)
+        if z_prev is not None and z_t.shape == z_prev.shape:
             if self.check_hypersphere_pinning(z_t, z_prev):
                 return False, f"Hypersphere Pinning detected (Constant output similarity > {self.pinning_threshold})"
                 

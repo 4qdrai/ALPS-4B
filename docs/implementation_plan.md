@@ -118,7 +118,7 @@ After auditing all 701 lines of the original conversation, the compiled summary,
 | 1 | **3-Tier Hierarchy** (Operative/Tactical/Strategic) | No existing system decouples temporal abstraction into independently trainable JEPA layers |
 | 2 | **Dynamic Compute Allocation** (System 1 vs System 2) | Current models spend identical compute on trivial vs complex tasks — ALPS-4B only activates expensive layers when needed |
 | 3 | **Temporal & Semantic Stability** | Strategic layer is mathematically immune to high-frequency sensor noise |
-| 4 | **Zero-Shot Physical Generalization** | Strategic→Tactical→Operative constraint cascade enables solving novel tasks without task-specific training |
+| 4 | **Zero-Shot Physical Generalization** | Constraint cascade architecture enables potential transfer to novel tasks — validation pending at scale |
 | 5 | **Energy-Based Model Binding** | Unified $E_{\text{total}}$ landscape ensures coherent cross-layer predictions |
 | 6 | **Temporal Striding & Asymmetric Masking** | Each layer predicts different horizons ($t+1$, $t+k$, $t+k^2$) with 90% masking forcing genuine abstraction |
 | 7 | **Stop-Gradient Conditioning** (inter-layer only) | One-way top-down flow prevents gradient corruption; combined with LeWM's no-stop-grad intra-layer |
@@ -136,9 +136,9 @@ After auditing all 701 lines of the original conversation, the compiled summary,
 | 15 | **JEPA Self-Diagnosis Blind Spot** | A collapsed JEPA registers zero error (perfect performance). Only external monitoring detects this |
 | 16 | **Simplified Fallback Scope** | Only monitors Loss of Communication + Representation Collapse (not behavioral safety) — eliminates Timid Agent problem |
 | 17 | **3 Collapse Detection Mechanisms** | NaN/Inf values, Variance Drop ($\text{Var}(z)<\epsilon$), Hypersphere Pinning ($\cos(z_t,z_{t-1})\approx 1$) |
-| 18 | **HAL Watchdog** | Sensor checksums, timestamps, actuator handshakes — bypasses neural network entirely |
+| 18 | **HAL Watchdog** | Hardware-layer safety interface planned for physical deployment |
 | 19 | **Formal Verification via Control Theory** | Fallback's simple linear policy can be mathematically proven safe (ISO compliance for robotics) |
-| 20 | **Adversarial Immunity** | Cannot trigger Fallback by confusing cameras — must physically cut a wire or exploit a NaN |
+| 20 | **Adversarial Robustness** | External monitoring architecture structurally resilient to input-space attacks — formal testing planned |
 
 ### 3.3 Memory, Knowledge, and Self-Learning
 | # | Capability | Why It's Disruptive |
@@ -146,11 +146,11 @@ After auditing all 701 lines of the original conversation, the compiled summary,
 | 21 | **3-Tier Hierarchical Memory** | Working State Buffer (FIFO) / Episodic Rollout Cache / Semantic Long-Term Memory (Vector DB) |
 | 22 | **Measuring Abstraction Level** | Temporal Invariance ($dz/dt$) + Dimensional Compression (mutual info with noise) auto-routes data to correct memory tier |
 | 23 | **Modular Knowledge Blocks ("Latent Cartridges")** | Plug-and-play expert modules without retraining the core model |
-| 24 | **Hard-Coded Guardrails as Cartridges** | Inject deterministic physics engines (kinematics limits) as latent modules |
+| 24 | **Hard-Coded Guardrails as Cartridges** | Architecture supports injecting deterministic physics constraints — integration planned |
 | 25 | **Anti-Semantic Blurring** | MoE routing instead of naive averaging — averaging destroys latent knowledge |
 | 26 | **Sparse MoE Router** (Top-K, Shared Core + Routed Experts) | Semantic match score activates only relevant experts; everything else is zeroed |
 | 27 | **Infinite Scalability with Zero Compute Bloat** | $O(1)$ forward-pass cost regardless of total expert count (conditional computation) |
-| 28 | **True Plug-and-Play** | Drop new expert module into system, add semantic signature to Router, zero retraining |
+| 28 | **Modular Expert Extension** | New expert modules can be added by extending the expert list and fine-tuning the gate |
 | 29 | **Catastrophic Forgetting Prevention** | Knowledge physically isolated in separate expert pathways |
 | 30 | **Latent-Space Routing** | Routing by semantic concept, immune to visual noise (rain, lighting changes) |
 
@@ -165,14 +165,14 @@ After auditing all 701 lines of the original conversation, the compiled summary,
 | 36 | **Sleep & Memory Consolidation (Distillation)** | Overnight: audit → distill frequent corrections into expert weights → purge cache |
 | 37 | **Hive-Mind Synchronization** | Copy latent KV database across robot fleet instantly — entire fleet learns from one agent's experience |
 | 38 | **Memory Auditing & Deletion** | Delete specific "bad habits" by removing database rows — impossible with standard neural networks |
-| 39 | **Cross-Agent Vocabulary Alignment** | Synchronize latent vocabulary across fleet for consistent hive-mind sharing |
+| 39 | **Cross-Agent Knowledge Transfer** | Fleet-wide RAG buffer sync enables instant experience sharing |
 
 ### 3.5 Multi-Modal & Efficiency
 | # | Capability | Why It's Disruptive |
 |:--|:--|:--|
 | 40 | **Vision-Primary Multi-Modal** | Vision as always-on primary; other sensors selectively activated by Strategic layer |
 | 41 | **$O(1)$ Modality Scaling** | Strategic layer selects at most $K_{mod}=2$ auxiliary modalities — constant compute regardless of sensor count |
-| 42 | **LeWM-Based Training** | Only 2 loss terms, 1 hyperparameter, no EMA, no frozen backbone — trains on single GPU in hours |
+| 42 | **LeWM-Based Training** | Extends LeWM SIGReg + prediction loss with per-layer collapse prevention, no EMA — trains on single GPU in hours |
 
 ---
 

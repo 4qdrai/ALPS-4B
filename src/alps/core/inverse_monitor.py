@@ -37,17 +37,7 @@ class InverseMonitor(nn.Module):
         diff = predicted_z - actual_z
         divergence = torch.sum(diff ** 2) / (B * N * D)
         
-        # Update history buffer
-        ptr = self.history_pointer.item()
-        self.divergence_history[ptr] = divergence.detach()
-        
-        next_ptr = (ptr + 1) % self.history_len
-        self.history_pointer.copy_(torch.tensor(next_ptr, device=self.history_pointer.device))
-        
-        if next_ptr == 0:
-            self.is_warm.copy_(torch.tensor(True, device=self.is_warm.device))
-            
-        # Adaptive Decision Trigger:
+        # Adaptive Decision Trigger (check BEFORE updating history):
         # System 2 is invoked if the current divergence is significantly higher than 
         # the running average (a sudden spike in prediction error).
         running_mean = self.get_running_average()
@@ -58,6 +48,16 @@ class InverseMonitor(nn.Module):
             # Trigger if current error spikes above (1 + threshold) * running mean
             # e.g., if threshold is 0.5, triggers when error is 1.5x higher than average
             triggered = (divergence.item() > ((1.0 + self.threshold) * running_mean))
+        
+        # Update history buffer AFTER the check
+        ptr = self.history_pointer.item()
+        self.divergence_history[ptr] = divergence.detach()
+        
+        next_ptr = (ptr + 1) % self.history_len
+        self.history_pointer.copy_(torch.tensor(next_ptr, device=self.history_pointer.device))
+        
+        if next_ptr == 0:
+            self.is_warm.copy_(torch.tensor(True, device=self.is_warm.device))
         
         return divergence, triggered
         

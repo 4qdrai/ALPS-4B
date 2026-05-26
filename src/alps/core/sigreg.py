@@ -19,7 +19,7 @@ class SIGReg(nn.Module):
     1. Full SIGReg (Epps-Pulley Characteristic Function goodness-of-fit).
     2. Weak-SIGReg (Covariance-based sketching, computationally cheaper).
     """
-    def __init__(self, d_model: int, num_slices: int = 128, beta: float = 1.0, weak_only: bool = False):
+    def __init__(self, d_model: int, num_slices: int = 1024, beta: float = 1.0, weak_only: bool = False):
         super().__init__()
         self.d_model = d_model
         self.num_slices = num_slices
