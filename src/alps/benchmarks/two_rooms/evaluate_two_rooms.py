@@ -871,7 +871,12 @@ def plot_prediction_comparison(
 def generate_all_results(
     model_path: str,
     data_path: str,
-    save_dir: str
+    save_dir: str,
+    d_model: int = 128,
+    num_embeddings: int = 64,
+    num_experts: int = 4,
+    active_experts: int = 2,
+    complex_mode: bool = False,
 ):
     """
     Main pipeline:
@@ -883,10 +888,17 @@ def generate_all_results(
       - Creates a structured markdown summary report.
     """
     print("\n" + "=" * 72)
-    print("  ALPS-4B Two Rooms Evaluation Pipeline")
+    print(f"  ALPS-4B Two Rooms Evaluation Pipeline — Mode: {'COMPLEX' if complex_mode else 'BASELINE'}")
     print("=" * 72)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Auto-adjust model path if in complex mode and default baseline is given
+    if complex_mode and model_path == "results/two_rooms/two_rooms_model.pt":
+        complex_model_path = "results/two_rooms/two_rooms_model_complex.pt"
+        if os.path.exists(complex_model_path):
+            model_path = complex_model_path
+
     print(f"  Device:         {device}")
     print(f"  Model path:     {model_path}")
     print(f"  Dataset path:   {data_path}")
@@ -905,19 +917,20 @@ def generate_all_results(
         return
 
     dataset = TwoRoomsDataset(data_path, clip_length=8, stride=4)
-    env = TwoRoomsEnv(seed=42)
+    env = TwoRoomsEnv(seed=42, complex_mode=complex_mode)
 
     # 2. Load Model
     model = TwoRoomsALPS(
-        d_model=128,
+        d_model=d_model,
         d_action=4,
-        num_embeddings=64,
-        num_experts=4,
-        active_experts=2,
+        num_embeddings=num_embeddings,
+        num_experts=num_experts,
+        active_experts=active_experts,
         encoder_depth=4,
         encoder_num_heads=4,
         encoder_patch_size=(2, 16, 16),
         encoder_max_patches=512,
+        complex_mode=complex_mode,
     ).to(device)
 
     print(f"Loading weights from {model_path} ...")
@@ -935,7 +948,8 @@ def generate_all_results(
     eval_metrics = run_planning_evaluation(model, env, num_episodes=100)
 
     # Save metrics JSON
-    metrics_path = os.path.join(metrics_dir, "planning_metrics.json")
+    metrics_name = "planning_metrics_complex.json" if complex_mode else "planning_metrics.json"
+    metrics_path = os.path.join(metrics_dir, metrics_name)
     with open(metrics_path, "w") as f:
         json.dump(eval_metrics, f, indent=2)
     print(f"\n  💾 Quant metrics JSON saved: {metrics_path}")
@@ -957,14 +971,15 @@ def generate_all_results(
     plot_latent_clustering(model, dataset, clustering_path)
 
     # 6. Generate Summary Markdown Report
-    report_path = os.path.join(save_dir, "evaluation_report.md")
-    report_content = f"""# ALPS-4B: Two Rooms Navigation Benchmark Evaluation Report
+    report_name = "evaluation_report_complex.md" if complex_mode else "evaluation_report.md"
+    report_path = os.path.join(save_dir, report_name)
+    report_content = f"""# ALPS-4B: Two Rooms Navigation Benchmark Evaluation Report ({'Complex Mode' if complex_mode else 'Baseline Mode'})
 
 This report presents quantitative results and visualization analyses validating the disruptive capabilities of the **Adaptive Latent Prediction System (ALPS-4B)** on the Two Rooms navigation task.
 
 ## 1. Executive Summary
 
-The task requires an agent to navigate inside a 10×10 continuous room layout split by a wall with a narrow doorway. Goals may be in the same chamber or the opposite chamber, necessitating slow-frequency spatial abstraction (strategic layer) alongside reactive high-frequency motor controls (operative layer). 
+The task requires an agent to navigate inside a continuous room layout split by walls. Goals may be in different chambers, necessitating slow-frequency spatial abstraction (strategic layer) alongside reactive high-frequency motor controls (operative layer). 
 
 ALPS-4B achieves:
 - **Overall Success Rate**: {eval_metrics['overall_success_rate']*100:.1f}%
@@ -1050,6 +1065,35 @@ def main():
         default="results/two_rooms/figures",
         help="Directory to save evaluation plots and report",
     )
+    parser.add_argument(
+        "--d-model",
+        type=int,
+        default=128,
+        help="Latent model dimension size (e.g. 128 or 384)",
+    )
+    parser.add_argument(
+        "--num-embeddings",
+        type=int,
+        default=64,
+        help="VQ concept codebook size (e.g. 64 or 512)",
+    )
+    parser.add_argument(
+        "--num-experts",
+        type=int,
+        default=4,
+        help="Number of MoE routing experts (e.g. 4 or 8)",
+    )
+    parser.add_argument(
+        "--active-experts",
+        type=int,
+        default=2,
+        help="Active experts per token (e.g. 2)",
+    )
+    parser.add_argument(
+        "--complex-mode",
+        action="store_true",
+        help="Enable 4-room complex navigation mode with locked doors and keys",
+    )
     args = parser.parse_args()
 
     # Re-verify relative paths
@@ -1061,6 +1105,11 @@ def main():
         model_path=model_path,
         data_path=data_path,
         save_dir=save_dir,
+        d_model=args.d_model,
+        num_embeddings=args.num_embeddings,
+        num_experts=args.num_experts,
+        active_experts=args.active_experts,
+        complex_mode=args.complex_mode,
     )
 
 

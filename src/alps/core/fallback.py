@@ -103,7 +103,7 @@ class FallbackMonitor(nn.Module):
                 
         return True, "SYSTEM_HEALTHY"
         
-    def get_minimal_risk_action(self, current_action: torch.Tensor, current_position: torch.Tensor = None) -> torch.Tensor:
+    def get_minimal_risk_action(self, current_action: torch.Tensor, current_position: torch.Tensor = None, complex_mode: bool = False) -> torch.Tensor:
         """
         Bypasses the current action plans and returns the Minimal Risk Condition (MRC) action.
         If current_position is provided, it steers the agent to the nearest safe haven.
@@ -112,6 +112,7 @@ class FallbackMonitor(nn.Module):
         Args:
             current_action: Planned action tensor, Shape: [B, A]
             current_position: Current 2D positions of the agent, Shape: [B, 2]
+            complex_mode: Whether the environment is in 4-room complex mode
             
         Returns:
             mrc_action: Active homing action (one-hot) or safe braking (all zeros)
@@ -124,8 +125,12 @@ class FallbackMonitor(nn.Module):
         device = current_position.device
         
         # 1. Define Safe Havens in the Two Rooms environment:
-        # Left Room Center = (2.5, 5.0), Right Room Center = (7.5, 5.0)
-        safe_havens = torch.tensor([[2.5, 5.0], [7.5, 5.0]], device=device, dtype=torch.float32) # [2, 2]
+        if complex_mode:
+            # In 4-room quadrant maze: Room 0: (2.5, 2.5), Room 1: (2.5, 7.5), Room 2: (7.5, 7.5), Room 3: (7.5, 2.5)
+            safe_havens = torch.tensor([[2.5, 2.5], [2.5, 7.5], [7.5, 7.5], [7.5, 2.5]], device=device, dtype=torch.float32) # [4, 2]
+        else:
+            # Left Room Center = (2.5, 5.0), Right Room Center = (7.5, 5.0)
+            safe_havens = torch.tensor([[2.5, 5.0], [7.5, 5.0]], device=device, dtype=torch.float32) # [2, 2]
         
         # 2. Compute distance from each batch position to both safe havens
         dist = torch.norm(current_position.unsqueeze(1) - safe_havens.unsqueeze(0), p=2, dim=-1) # [B, 2]

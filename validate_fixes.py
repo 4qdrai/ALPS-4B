@@ -208,6 +208,19 @@ mrc_close = fb.get_minimal_risk_action(act_plan, current_position=pos_close)
 assert mrc_close.sum().item() == 0, f"Expected safe stop (all zeros) on arrival, got {mrc_close}"
 print("  ✓ Safely halted (all zeros) agent upon arrival at Safe Haven")
 
+# Test 12.5: Complex Mode Safe Haven Steering (Room 1 center at 2.5, 7.5)
+pos_c1 = torch.tensor([[1.0, 8.0]]) # in Room 1 (top-left)
+mrc_c1 = fb.get_minimal_risk_action(act_plan, current_position=pos_c1, complex_mode=True)
+# target is (2.5, 7.5), dx=1.5, dy=-0.5. abs(dx) > abs(dy), so move horizontally. dx > 0, so move right (action 3).
+assert mrc_c1[0, 3] == 1.0, f"Expected action 3 (right) for pos (1.0, 8.0), got {mrc_c1}"
+print("  ✓ [Complex Mode] Steered agent RIGHT towards Room 1 Safe Haven from (1.0, 8.0)")
+
+# Test 12.6: Complex Mode Safe Haven arrival
+pos_c_close = torch.tensor([[7.5, 7.45]]) # close to Room 2 center (7.5, 7.5)
+mrc_c_close = fb.get_minimal_risk_action(act_plan, current_position=pos_c_close, complex_mode=True)
+assert mrc_c_close.sum().item() == 0, f"Expected safe stop (all zeros) on arrival in Complex Mode, got {mrc_c_close}"
+print("  ✓ [Complex Mode] Safely halted (all zeros) agent upon arrival at Room 2 Safe Haven")
+
 # --- Parameter Count ---
 print("\n" + "=" * 70)
 total_params = sum(p.numel() for p in model.parameters())

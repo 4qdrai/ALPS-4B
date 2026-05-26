@@ -79,10 +79,12 @@ class TwoRoomsALPS(nn.Module):
         encoder_num_heads: int = 4,
         encoder_patch_size: tuple = (2, 16, 16),
         encoder_max_patches: int = 512,
+        complex_mode: bool = False,
     ):
         super().__init__()
         self.d_model = d_model
         self.d_action = d_action
+        self.complex_mode = complex_mode
 
         # 1. Vision Encoder (3D tube patch embedding + ViT)
         self.encoder = VisionEncoder(
@@ -165,7 +167,7 @@ class TwoRoomsALPS(nn.Module):
 
         if not system_healthy:
             # Watchdog trigger — bypass all planning, return MRC action (guiding to safe haven if position is known)
-            outputs["action"] = self.fallback.get_minimal_risk_action(actions_onehot, current_position=current_position)
+            outputs["action"] = self.fallback.get_minimal_risk_action(actions_onehot, current_position=current_position, complex_mode=self.complex_mode)
             outputs["fallback_triggered"] = True
             outputs["system2_activated"] = False
             outputs["loss"] = torch.tensor(
@@ -301,6 +303,7 @@ def train_two_rooms(
     num_embeddings: int = 64,
     num_experts: int = 4,
     active_experts: int = 2,
+    complex_mode: bool = False,
 ):
     """
     Main training function for the Two Rooms ALPS-4B benchmark.
@@ -370,6 +373,7 @@ def train_two_rooms(
         encoder_num_heads=4,
         encoder_patch_size=(2, 16, 16),
         encoder_max_patches=512,
+        complex_mode=complex_mode,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -553,7 +557,8 @@ def train_two_rooms(
     print("  Training Complete!")
     print(f"{'═' * 72}")
 
-    final_model_path = os.path.join(save_dir, "two_rooms_model.pt")
+    model_name = "two_rooms_model_complex.pt" if complex_mode else "two_rooms_model.pt"
+    final_model_path = os.path.join(save_dir, model_name)
     torch.save(
         {
             "epoch": epochs,
@@ -568,7 +573,8 @@ def train_two_rooms(
     )
     print(f"  Final model saved:  {final_model_path}")
 
-    log_path = os.path.join(save_dir, "training_log.json")
+    log_name = "training_log_complex.json" if complex_mode else "training_log.json"
+    log_path = os.path.join(save_dir, log_name)
     with open(log_path, "w") as f:
         json.dump(training_log, f, indent=2)
     print(f"  Training log saved: {log_path}")
@@ -656,6 +662,11 @@ def main():
         default=2,
         help="Active experts per token (e.g. 2)",
     )
+    parser.add_argument(
+        "--complex-mode",
+        action="store_true",
+        help="Enable 4-room complex navigation mode with locked doors and keys",
+    )
     args = parser.parse_args()
 
     train_two_rooms(
@@ -669,6 +680,7 @@ def main():
         num_embeddings=args.num_embeddings,
         num_experts=args.num_experts,
         active_experts=args.active_experts,
+        complex_mode=args.complex_mode,
     )
 
 
