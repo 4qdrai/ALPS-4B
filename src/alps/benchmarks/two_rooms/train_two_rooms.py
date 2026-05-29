@@ -565,7 +565,7 @@ def train_two_rooms(
             # Auto-push to GitHub
             print(f"  ⬆️ Pushing checkpoint {epoch} to GitHub...")
             try:
-                subprocess.run(["git", "add", ckpt_path], check=True, cwd=save_dir)
+                subprocess.run(["git", "add", os.path.basename(ckpt_path)], check=True, cwd=save_dir)
                 subprocess.run(["git", "commit", "-m", f"Auto-save checkpoint {os.path.basename(ckpt_path)}"], check=True, cwd=save_dir)
                 
                 # Push using the PAT from environment
@@ -603,7 +603,7 @@ def train_two_rooms(
     # Auto-push final model to GitHub
     print(f"  ⬆️ Pushing final model to GitHub...")
     try:
-        subprocess.run(["git", "add", final_model_path], check=True, cwd=save_dir)
+        subprocess.run(["git", "add", os.path.basename(final_model_path)], check=True, cwd=save_dir)
         subprocess.run(["git", "commit", "-m", f"Auto-save final model {os.path.basename(final_model_path)}"], check=True, cwd=save_dir)
         pat = os.environ.get("GITHUB_PAT")
         if pat:

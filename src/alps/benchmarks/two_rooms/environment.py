@@ -230,8 +230,8 @@ class TwoRoomsEnv:
         else:
             # Vertical wall at x=5
             v_wall = np.abs(gx - 5.0) <= self.WALL_THICKNESS
-            # Lock is unlocked (gets floor color) ONLY if has_key is True
-            v_door = (4.5 <= gy) & (gy <= 5.5) & self.has_key
+            # Lock is unlocked (gets floor color) if has_key is True or one-way upper door is open from left (gx < 5.0 and gy >= 5.0)
+            v_door = (4.5 <= gy) & (gy <= 5.5) & (self.has_key or ((gx < 5.0) & (gy >= 5.0)))
 
             # Horizontal wall at y=5
             h_wall = np.abs(gy - 5.0) <= self.WALL_THICKNESS
@@ -341,7 +341,10 @@ class TwoRoomsEnv:
 
             # --- Check 1: Vertical Wall at x=5 ---
             crosses_v_wall = (old_x < 5.0 and new_x >= 5.0) or (old_x > 5.0 and new_x <= 5.0)
-            in_v_door = (4.5 <= new_y <= 5.5) and self.has_key
+            # Upper half of vertical door (y >= 5.0) is one-way open from left (Room 1 -> 2) without key.
+            # Lower half (y < 5.0) is strictly locked, requiring the key (Room 0 -> 3).
+            is_upper_left = (5.0 <= new_y <= 5.5) and (old_x < 5.0)
+            in_v_door = (4.5 <= new_y <= 5.5) and (self.has_key or is_upper_left)
 
             if not crosses_v_wall:
                 if not in_v_door:
