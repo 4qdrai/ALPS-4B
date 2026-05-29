@@ -349,7 +349,7 @@ def train_two_rooms(
         dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0 if use_synthetic else 2,
+        num_workers=0,
         drop_last=True,
         pin_memory=(device.type == "cuda"),
     )
