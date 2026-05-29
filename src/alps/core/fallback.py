@@ -42,15 +42,19 @@ class FallbackMonitor(nn.Module):
         
     def check_variance_collapse(self, z: torch.Tensor) -> bool:
         """
-        Checks if the variance across the batch and feature dimensions drops below threshold.
+        Checks if the variance across the batch dimension drops below threshold.
         
         Args:
             z: Latent tensor, Shape: [B, N, D]
         """
-        # Compute variance across batch and token space per channel
+        # Compute variance strictly across the batch dimension to catch content collapse.
+        # If batch size is 1 (e.g. during single-sample inference), fallback to token-level variance.
         # z: [B, N, D]
-        # variance per feature channel:
-        var = torch.var(z, dim=(0, 1)) # [D]
+        if z.shape[0] > 1:
+            var = torch.var(z, dim=0) # [N, D]
+        else:
+            var = torch.var(z, dim=1) # [B, D]
+            
         mean_var = var.mean().item()
         
         return mean_var < self.var_threshold

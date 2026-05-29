@@ -63,11 +63,11 @@ class VisionEncoder(nn.Module):
         # 4. Final Norm
         self.norm = nn.LayerNorm(d_model)
         
-        # 5. Projection Head (MLP + BatchNorm) — Critical for SIGReg stability (LeWM §3.2)
+        # 5. Projection Head (MLP + LayerNorm) — Critical for SIGReg stability (LeWM §3.2)
         # Projects latent features through a non-linear bottleneck before SIGReg is applied.
         self.projection_head = nn.Sequential(
             nn.Linear(d_model, d_model),
-            nn.BatchNorm1d(d_model),
+            nn.LayerNorm(d_model),
             nn.GELU(),
         )
         
@@ -106,11 +106,7 @@ class VisionEncoder(nn.Module):
         tokens = self.transformer(tokens)
         tokens = self.norm(tokens)
         
-        # Apply projection head for SIGReg stability
-        # BatchNorm1d expects [B*N, D], so reshape, apply, reshape back
-        B_out, N_out, D_out = tokens.shape
-        tokens_flat = tokens.reshape(B_out * N_out, D_out)
-        tokens_flat = self.projection_head(tokens_flat)
-        tokens = tokens_flat.reshape(B_out, N_out, D_out)
+        # Apply projection head for SIGReg stability without batch coupling
+        tokens = self.projection_head(tokens)
         
         return tokens
