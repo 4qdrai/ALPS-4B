@@ -55,11 +55,12 @@ def main():
         pil_images = []
         for f in ep_frames:
             # f shape: [3, 128, 128] or [128, 128, 3]
-            if f.shape[0] == 3:
-                # permute to HWC and scale to 255
-                img_np = (f.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+            if f.dtype == torch.uint8 or f.max() > 1.0:
+                # Already in [0, 255] range
+                img_np = f.permute(1, 2, 0).numpy().astype(np.uint8) if f.shape[0] == 3 else f.numpy().astype(np.uint8)
             else:
-                img_np = (f.numpy() * 255).astype(np.uint8)
+                # Normalized float in [0, 1]
+                img_np = (f.permute(1, 2, 0).numpy() * 255).astype(np.uint8) if f.shape[0] == 3 else (f.numpy() * 255).astype(np.uint8)
             pil_images.append(Image.fromarray(img_np))
             
         gif_path = os.path.join(output_dir, f"episode_{ep_idx:03d}_sample.gif")
