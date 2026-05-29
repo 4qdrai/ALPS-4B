@@ -304,6 +304,7 @@ def train_two_rooms(
     num_experts: int = 4,
     active_experts: int = 2,
     complex_mode: bool = False,
+    lambda_sigreg: float = 0.1,
 ):
     """
     Main training function for the Two Rooms ALPS-4B benchmark.
@@ -326,6 +327,7 @@ def train_two_rooms(
     print(f"  Epochs:      {epochs}")
     print(f"  Batch size:  {batch_size}")
     print(f"  Learning rate: {lr}")
+    print(f"  Lambda SIGReg: {lambda_sigreg}")
     print(f"  Save dir:    {save_dir}")
     print()
 
@@ -369,6 +371,7 @@ def train_two_rooms(
         num_embeddings=num_embeddings,
         num_experts=num_experts,
         active_experts=active_experts,
+        lambda_sigreg=lambda_sigreg,
         encoder_depth=4,
         encoder_num_heads=4,
         encoder_patch_size=(2, 16, 16),
@@ -667,6 +670,12 @@ def main():
         action="store_true",
         help="Enable 4-room complex navigation mode with locked doors and keys",
     )
+    parser.add_argument(
+        "--lambda-sigreg",
+        type=float,
+        default=0.1,
+        help="Collapse prevention weight (sigreg loss multiplier)",
+    )
     args = parser.parse_args()
 
     train_two_rooms(
@@ -681,6 +690,7 @@ def main():
         num_experts=args.num_experts,
         active_experts=args.active_experts,
         complex_mode=args.complex_mode,
+        lambda_sigreg=args.lambda_sigreg,
     )
 
 
