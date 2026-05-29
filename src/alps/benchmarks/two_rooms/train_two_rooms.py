@@ -21,6 +21,7 @@ sys.path.insert(0, "src")
 import argparse
 import json
 import time
+import subprocess
 from pathlib import Path
 
 import torch
@@ -294,7 +295,7 @@ def _generate_synthetic_data(
 
 def train_two_rooms(
     data_path: str = "data/two_rooms/two_rooms_dataset.pt",
-    epochs: int = 50,
+    epochs: int = 20,
     batch_size: int = 16,
     lr: float = 1e-3,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -402,6 +403,11 @@ def train_two_rooms(
     print(f"{'─' * 72}\n")
 
     model.train()
+    optimizer_enc.zero_grad(set_to_none=True)
+    optimizer_op.zero_grad(set_to_none=True)
+    optimizer_tac.zero_grad(set_to_none=True)
+    optimizer_str.zero_grad(set_to_none=True)
+    
     prev_latents = None  # Track latent history for pinning detection
     global_step = 0
 
@@ -433,12 +439,6 @@ def train_two_rooms(
             # Phase-shifted scheduler step
             sched = scheduler.step()
 
-            # Zero gradients
-            optimizer_enc.zero_grad()
-            optimizer_op.zero_grad()
-            optimizer_tac.zero_grad()
-            optimizer_str.zero_grad()
-
             # Forward pass
             outputs = model(
                 video_frames,
@@ -467,12 +467,19 @@ def train_two_rooms(
 
             # Phase-shifted optimizer steps
             optimizer_enc.step()  # Encoder always updates
+            optimizer_enc.zero_grad(set_to_none=True)
+            
             if sched["update_operative"]:
                 optimizer_op.step()
+                optimizer_op.zero_grad(set_to_none=True)
+                
             if sched["update_tactical"]:
                 optimizer_tac.step()
+                optimizer_tac.zero_grad(set_to_none=True)
+                
             if sched["update_strategic"]:
                 optimizer_str.step()
+                optimizer_str.zero_grad(set_to_none=True)
 
             # Accumulate metrics
             loss_val = loss.item()
@@ -554,6 +561,23 @@ def train_two_rooms(
                 ckpt_path,
             )
             print(f"  💾 Checkpoint saved: {ckpt_path}")
+            
+            # Auto-push to GitHub
+            print(f"  ⬆️ Pushing checkpoint {epoch} to GitHub...")
+            try:
+                subprocess.run(["git", "add", ckpt_path], check=True, cwd=save_dir)
+                subprocess.run(["git", "commit", "-m", f"Auto-save checkpoint {os.path.basename(ckpt_path)}"], check=True, cwd=save_dir)
+                
+                # Push using the PAT from environment
+                pat = os.environ.get("GITHUB_PAT")
+                if pat:
+                    remote_url = f"https://oauth2:{pat}@github.com/4qdrai/4B-JEPA.git"
+                    subprocess.run(["git", "push", remote_url, "main"], check=True, cwd=save_dir)
+                    print("  ✅ Successfully pushed to GitHub.")
+                else:
+                    print("  ⚠️ GITHUB_PAT environment variable not set. Skipping push.")
+            except subprocess.CalledProcessError as e:
+                print(f"  ❌ Failed to push to GitHub: {e}")
 
     # ── 7. Final Save ───────────────────────────────────────────────────────
     print(f"\n{'═' * 72}")
@@ -574,8 +598,24 @@ def train_two_rooms(
         },
         final_model_path,
     )
-    print(f"  Final model saved:  {final_model_path}")
+    print(f"  💾 Final model saved: {final_model_path}")
 
+    # Auto-push final model to GitHub
+    print(f"  ⬆️ Pushing final model to GitHub...")
+    try:
+        subprocess.run(["git", "add", final_model_path], check=True, cwd=save_dir)
+        subprocess.run(["git", "commit", "-m", f"Auto-save final model {os.path.basename(final_model_path)}"], check=True, cwd=save_dir)
+        pat = os.environ.get("GITHUB_PAT")
+        if pat:
+            remote_url = f"https://oauth2:{pat}@github.com/4qdrai/4B-JEPA.git"
+            subprocess.run(["git", "push", remote_url, "main"], check=True, cwd=save_dir)
+            print("  ✅ Successfully pushed final model to GitHub.")
+        else:
+            print("  ⚠️ GITHUB_PAT environment variable not set. Skipping push.")
+    except subprocess.CalledProcessError as e:
+        print(f"  ❌ Failed to push final model to GitHub: {e}")
+
+    print("\n  Training completely finished.\n") if complex_mode else None
     log_name = "training_log_complex.json" if complex_mode else "training_log.json"
     log_path = os.path.join(save_dir, log_name)
     with open(log_path, "w") as f:
@@ -612,10 +652,7 @@ def main():
         help="Path to pre-generated .pt dataset file",
     )
     parser.add_argument(
-        "--epochs",
-        type=int,
-        default=50,
-        help="Number of training epochs",
+        "--epochs", type=int, default=20, help="Number of training epochs (default: 20)"
     )
     parser.add_argument(
         "--batch-size",
