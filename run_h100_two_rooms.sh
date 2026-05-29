@@ -68,8 +68,9 @@ echo ""
 echo "[3/5] Training ALPS-4B on Two Rooms (50 epochs, H100 GPU)..."
 python -m alps.benchmarks.two_rooms.train_two_rooms \
     --epochs 50 \
-    --batch-size 256 \
-    --lr 2e-3 \
+    --batch-size 32 \
+    --lr 1e-3 \
+    --lambda-sigreg 0.6 \
     --data-path data/two_rooms/trajectories.pt \
     --save-dir results/two_rooms \
     --device cuda
