@@ -81,9 +81,15 @@ class ALPSModel(nn.Module):
         # 8. Langevin Planner SDE Action Optimization
         self.langevin_planner = LangevinPlanner(steps=langevin_steps, lr=langevin_lr, sigma=langevin_sigma)
         
+        # 9. Multi-Scale Loss Module
+        from alps.training.multi_scale_loss import MultiScaleLoss
+        self.criterion = MultiScaleLoss(alpha=1.0, beta=1.0, gamma=1.0)
+        
     def forward(self, video_frames: torch.Tensor, actions: torch.Tensor, 
                  prev_latents: torch.Tensor = None, imu_telemetry: torch.Tensor = None,
-                 lidar_points: torch.Tensor = None, force_system2: bool = False) -> dict:
+                 lidar_points: torch.Tensor = None, force_system2: bool = False,
+                 mask_indices: torch.Tensor = None, update_tactical: bool = True,
+                 update_strategic: bool = True) -> dict:
         """
         Orchestrates a complete multi-scale predictive step with dynamic compute gating
         and multimodal selective gating.
@@ -95,16 +101,36 @@ class ALPSModel(nn.Module):
             imu_telemetry: Optional raw IMU inputs, Shape: [B, 6, 100]
             lidar_points: Optional raw LiDAR inputs, Shape: [B, 1, 360]
             force_system2: If True, forces full hierarchical deliberation regardless of confidence
+            mask_indices: Optional boolean mask of shape [B, N] where True indicates patches
+                          to KEEP (unmasked), and False indicates patches to MASK.
+            update_tactical: Flag from scheduler to run backprop for Tactical Layer.
+            update_strategic: Flag from scheduler to run backprop for Strategic Layer.
         """
-        # --- 1. SYSTEM INTEGRITY VERIFICATION (Fallback watchdog - out of gradient) ---
+        # --- 1. ENCODE VISUAL INPUT & SHIFT TARGETS (True temporal dynamic learning) ---
         outputs = {}
         
-        # Encode visual input
-        z_t = self.encoder(video_frames) # [B, N, D]
+        # JEPA requires context-to-target shift. We split clip into context (0..T-2) and target (1..T-1).
+        if video_frames.dim() == 5 and video_frames.shape[2] > 1:
+            context_frames = video_frames[:, :, :-1]
+            target_frames = video_frames[:, :, 1:]
+        else:
+            context_frames = video_frames
+            target_frames = video_frames
+            
+        z_target = self.encoder(target_frames) # [B, N, D] Target representation at time t+1
+        z_t_full = self.encoder(context_frames) # [B, N, D] Raw context representation at time t
         
-        # System health check
+        # Apply spatiotemporal tube masking if provided (Phantom Masker Fix)
+        # We zero out representations at masked positions to simulate missing inputs
+        if mask_indices is not None:
+            B, N, D = z_t_full.shape
+            z_t = z_t_full * mask_indices[:, :N].unsqueeze(-1)
+        else:
+            z_t = z_t_full
+            
+        # --- 2. SYSTEM INTEGRITY VERIFICATION (Fallback watchdog - out of gradient) ---
         # NaNs/Infs are always catastrophic and must trigger fallback to protect weights
-        has_nan_inf = self.fallback.check_nan_inf(z_t)
+        has_nan_inf = self.fallback.check_nan_inf(z_target) or self.fallback.check_nan_inf(z_t)
         if has_nan_inf:
             outputs["action"] = self.fallback.get_minimal_risk_action(actions)
             outputs["fallback_triggered"] = True
@@ -134,7 +160,7 @@ class ALPSModel(nn.Module):
             
         outputs["fallback_triggered"] = False
         
-        # --- 2. SYSTEM 1 PROCESSING (Millisecond-frequency Operative prediction) ---
+        # --- 3. SYSTEM 1 PROCESSING (Millisecond-frequency Operative prediction) ---
         # Initialize flat subgoal context as zeros for default System 1 pass
         flat_subgoal = torch.zeros_like(z_t)
         z_operative, sigreg_op = self.operative_layer(z_t, flat_subgoal)
@@ -152,18 +178,18 @@ class ALPSModel(nn.Module):
         # Predict the next state
         if self.use_langevin:
             actions_refined = self.langevin_planner.plan(
-                self.operative_layer.predict_next_state, z_operative, z_t.detach(), actions
+                self.operative_layer.predict_next_state, z_operative, z_target.detach(), actions
             )
             outputs["refined_actions"] = actions_refined
             z_pred = self.operative_layer.predict_next_state(z_operative, actions_refined)
         else:
             z_pred = self.operative_layer.predict_next_state(z_operative, actions)
             
-        pred_loss_op = F.mse_loss(z_pred, z_t.detach())
+        pred_loss_op = F.mse_loss(z_pred, z_target.detach())
         
-        # --- 3. DYNAMIC COMPUTE GATING & INTERRUPT ESCALATION ---
+        # --- 4. DYNAMIC COMPUTE GATING & INTERRUPT ESCALATION ---
         # Verify prediction divergence using the Efference Copy Inverse Monitor
-        div_op, interrupt_op = self.op_monitor(z_pred, z_t)
+        div_op, interrupt_op = self.op_monitor(z_pred, z_target)
         outputs["operative_interrupt"] = interrupt_op
         
         # If the predictive error is within bounds and not forced, bypass System 2 completely
@@ -172,6 +198,7 @@ class ALPSModel(nn.Module):
             outputs["z_t"] = z_t
             outputs["z_pred"] = z_pred
             outputs["loss"] = pred_loss_op + sigreg_op
+            outputs["sigreg_loss"] = sigreg_op
             outputs["energy"] = self.ebm(
                 torch.tensor(0.0, device=video_frames.device), 
                 torch.tensor(0.0, device=video_frames.device), 
@@ -182,25 +209,48 @@ class ALPSModel(nn.Module):
         # Escalation: System 2 is activated!
         outputs["system2_activated"] = True
         
-        # --- 4. SYSTEM 2 PLANNING (Strategic → Tactical top-down cascade) ---
-        # 4a. Strategic Layer FIRST (Discrete VQ conceptual planning bottleneck)
-        # Strategic always runs when System 2 activates — provides top-down guidance
-        z_strategic, vq_loss, sigreg_str = self.strategic_layer(z_operative)
+        # --- 5. SYSTEM 2 PLANNING (Strategic → Tactical top-down cascade) ---
+        # 5a. Strategic Layer FIRST (Discrete VQ conceptual planning bottleneck)
+        # Actively bypass/run without gradients if the scheduler is not updating the Strategic Layer
+        if update_strategic or force_system2:
+            z_strategic, vq_loss, sigreg_str = self.strategic_layer(z_operative)
+        else:
+            with torch.no_grad():
+                z_strategic, vq_loss, sigreg_str = self.strategic_layer(z_operative)
+            z_strategic = z_strategic.detach()
+            vq_loss = vq_loss.detach()
+            sigreg_str = sigreg_str.detach()
+            
         outputs["strategic_activated"] = True
         
-        # 4b. Tactical Layer receives strategic output as top-down guidance
-        z_tactical, moe_loss, sigreg_tac = self.tactical_layer(z_operative, z_strategic)
+        # 5b. Tactical Layer receives strategic output as top-down guidance
+        # Actively bypass/run without gradients if the scheduler is not updating the Tactical Layer
+        if update_tactical or force_system2:
+            z_tactical, moe_loss, sigreg_tac = self.tactical_layer(z_operative, z_strategic)
+        else:
+            with torch.no_grad():
+                z_tactical, moe_loss, sigreg_tac = self.tactical_layer(z_operative, z_strategic)
+            z_tactical = z_tactical.detach()
+            moe_loss = moe_loss.detach()
+            sigreg_tac = sigreg_tac.detach()
         
         # Tactical Inverse Monitor check
         div_tac, interrupt_tac = self.tac_monitor(z_tactical, z_operative)
         outputs["tactical_interrupt"] = interrupt_tac
             
-        # 4c. Banach Contraction Checker-Refinement
+        # 5c. Banach Contraction Checker-Refinement
         # Refines the tactical sub-goals under strategic constraints
         z_refined, check_steps, converged = self.checker(z_tactical, z_strategic)
         contraction_loss = self.checker.compute_contraction_loss(z_tactical, z_strategic)
         
-        # --- 5. AUTOMATIC LATENT-RAG WRITE (Self-Learning Loop) ---
+        # Encode target representations at target scale to calculate top-down predictive target losses
+        with torch.no_grad():
+            z_strategic_target, _, _ = self.strategic_layer(z_target)
+            z_tactical_target, _, _ = self.tactical_layer(z_target, z_strategic_target)
+            z_strategic_target = z_strategic_target.detach()
+            z_tactical_target = z_tactical_target.detach()
+        
+        # --- 6. AUTOMATIC LATENT-RAG WRITE (Self-Learning Loop) ---
         # When operative prediction diverges significantly, auto-write the correction to RAG
         if pred_loss_op.item() > 0.5 and not self.training:
             delta_z = z_t - z_pred  # correction vector
@@ -210,26 +260,31 @@ class ALPSModel(nn.Module):
         else:
             outputs["rag_auto_write"] = False
         
-        # --- 6. LOSS AGGREGATION & EBM BINDING ---
-        # Compute individual prediction energy errors across temporal scales
-        pred_loss_str = F.mse_loss(self.strategic_layer.predict_next_concept(z_strategic, z_strategic), z_strategic.detach())
-        pred_loss_tac = F.mse_loss(self.tactical_layer.predict_next_subgoal(z_tactical, z_strategic), z_tactical.detach())
+        # --- 7. LOSS AGGREGATION & EBM BINDING ---
+        # Compute prediction energy errors across scales using the clean future targets
+        z_str_pred = self.strategic_layer.predict_next_concept(z_strategic, z_strategic_target)
+        z_tac_pred = self.tactical_layer.predict_next_subgoal(z_tactical, z_strategic_target)
         
-        total_sigreg = sigreg_op + sigreg_tac + sigreg_str
-        loss_total = pred_loss_op + pred_loss_tac + pred_loss_str + total_sigreg + vq_loss + moe_loss + contraction_loss
+        # Invoke our dedicated MultiScaleLoss module to cleanly aggregate prediction and regularization errors
+        loss_dict = self.criterion(
+            z_op=z_target, z_op_pred=z_pred, sigreg_op=sigreg_op,
+            z_tac=z_tactical_target, z_tac_pred=z_tac_pred, sigreg_tac=sigreg_tac, moe_loss=moe_loss,
+            z_str=z_strategic_target, z_str_pred=z_str_pred, sigreg_str=sigreg_str, vq_loss=vq_loss
+        )
+        loss_total = loss_dict["loss"] + contraction_loss
         
         outputs["z_t"] = z_t
         outputs["z_pred"] = z_pred
         outputs["z_strategic"] = z_strategic
         outputs["loss"] = loss_total
         outputs["pred_loss_op"] = pred_loss_op
-        outputs["sigreg_loss"] = total_sigreg
+        outputs["sigreg_loss"] = sigreg_op + sigreg_tac + sigreg_str
         outputs["vq_loss"] = vq_loss
         outputs["moe_loss"] = moe_loss
         outputs["contraction_loss"] = contraction_loss
         
         # Unified Energy score
-        outputs["energy"] = self.ebm(pred_loss_str, pred_loss_tac, pred_loss_op)
+        outputs["energy"] = self.ebm(loss_dict["str_pred_mse"], loss_dict["tac_pred_mse"], loss_dict["op_pred_mse"])
         
         return outputs
 

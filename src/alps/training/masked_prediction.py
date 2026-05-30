@@ -25,7 +25,7 @@ class SpatiotemporalMasker(nn.Module):
         self.num_spatial_patches = h_size * w_size
         self.total_patches = t_size * h_size * w_size
         
-    def generate_tube_mask(self, batch_size: int, device: torch.device) -> tuple:
+    def generate_tube_mask(self, batch_size: int, device: torch.device, t_size: int = None, h_size: int = None, w_size: int = None) -> tuple:
         """
         Generates a spatiotemporal tube mask for a batch of videos.
         
@@ -34,23 +34,28 @@ class SpatiotemporalMasker(nn.Module):
                           to KEEP (unmasked), and False indicates patches to MASK.
             mask_indices: Inverse boolean mask.
         """
+        t_size = t_size if t_size is not None else self.t_size
+        h_size = h_size if h_size is not None else self.h_size
+        w_size = w_size if w_size is not None else self.w_size
+        num_spatial_patches = h_size * w_size
+        total_patches = t_size * num_spatial_patches
         # Determine how many spatial positions to keep
-        num_spatial_keep = int(self.num_spatial_patches * (1.0 - self.mask_ratio))
+        num_spatial_keep = int(num_spatial_patches * (1.0 - self.mask_ratio))
         num_spatial_keep = max(1, num_spatial_keep)
         
-        keep_indices = torch.zeros(batch_size, self.total_patches, dtype=torch.bool, device=device)
+        keep_indices = torch.zeros(batch_size, total_patches, dtype=torch.bool, device=device)
         
         for b in range(batch_size):
             # 1. Randomly sample spatial positions to keep
-            spatial_perm = torch.randperm(self.num_spatial_patches, device=device)
+            spatial_perm = torch.randperm(num_spatial_patches, device=device)
             keep_spatial_slots = spatial_perm[:num_spatial_keep] # [num_spatial_keep]
             
             # 2. Replicate this spatial keep mask across all temporal slices
             # We map spatial index 's' to patch index 't * num_spatial_patches + s'
-            batch_keep = torch.zeros(self.total_patches, dtype=torch.bool, device=device)
+            batch_keep = torch.zeros(total_patches, dtype=torch.bool, device=device)
             
-            for t in range(self.t_size):
-                offset = t * self.num_spatial_patches
+            for t in range(t_size):
+                offset = t * num_spatial_patches
                 batch_keep[offset + keep_spatial_slots] = True
                 
             keep_indices[b] = batch_keep

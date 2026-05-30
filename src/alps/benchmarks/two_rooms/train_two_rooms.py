@@ -156,12 +156,21 @@ class TwoRoomsALPS(nn.Module):
         """
         outputs = {}
 
-        # ── 1. ENCODE VISUAL INPUT ──────────────────────────────────────────
-        z_t = self.encoder(video_frames)  # [B, N, D]  (N=256 patches, D=128)
+        # ── 1. ENCODE VISUAL INPUT & SHIFT TARGETS (True temporal dynamic learning) ──
+        # JEPA requires context-to-target shift. We split clip into context (0..T-2) and target (1..T-1).
+        if video_frames.dim() == 5 and video_frames.shape[2] > 1:
+            context_frames = video_frames[:, :, :-1]
+            target_frames = video_frames[:, :, 1:]
+        else:
+            context_frames = video_frames
+            target_frames = video_frames
+
+        z_target = self.encoder(target_frames)   # [B, N, D] Target representation at time t+1
+        z_t = self.encoder(context_frames)       # [B, N, D] Context representation at time t
 
         # ── 2. SYSTEM INTEGRITY CHECK (out-of-gradient watchdog) ────────────
         # NaNs/Infs are always catastrophic and must trigger fallback to protect weights
-        has_nan_inf = self.fallback.check_nan_inf(z_t)
+        has_nan_inf = self.fallback.check_nan_inf(z_target) or self.fallback.check_nan_inf(z_t)
         if has_nan_inf:
             outputs["action"] = self.fallback.get_minimal_risk_action(actions_onehot, current_position=current_position, complex_mode=self.complex_mode)
             outputs["fallback_triggered"] = True
@@ -203,10 +212,10 @@ class TwoRoomsALPS(nn.Module):
 
         # Predict next latent state conditioned on action
         z_pred = self.operative_layer.predict_next_state(z_operative, actions_onehot)
-        pred_loss_op = F.mse_loss(z_pred, z_t.detach())
+        pred_loss_op = F.mse_loss(z_pred, z_target.detach())
 
         # ── 4. DYNAMIC COMPUTE GATING (Inverse Monitor interrupt check) ─────
-        div_op, interrupt_op = self.op_monitor(z_pred, z_t)
+        div_op, interrupt_op = self.op_monitor(z_pred, z_target)
         outputs["operative_interrupt"] = interrupt_op
 
         # If prediction error is within bounds and not forced → skip System 2
@@ -251,14 +260,21 @@ class TwoRoomsALPS(nn.Module):
             z_tactical, z_strategic
         )
 
+        # Encode target representations at target scale to calculate top-down predictive target losses
+        with torch.no_grad():
+            z_strategic_target, _, _ = self.strategic_layer(z_target)
+            z_tactical_target, _, _ = self.tactical_layer(z_target, z_strategic_target)
+            z_strategic_target = z_strategic_target.detach()
+            z_tactical_target = z_tactical_target.detach()
+
         # ── 6. LOSS AGGREGATION & EBM BINDING ───────────────────────────────
         pred_loss_str = F.mse_loss(
-            self.strategic_layer.predict_next_concept(z_strategic, z_strategic),
-            z_strategic.detach(),
+            self.strategic_layer.predict_next_concept(z_strategic, z_strategic_target),
+            z_strategic_target.detach(),
         )
         pred_loss_tac = F.mse_loss(
-            self.tactical_layer.predict_next_subgoal(z_tactical, z_strategic),
-            z_tactical.detach(),
+            self.tactical_layer.predict_next_subgoal(z_tactical, z_strategic_target),
+            z_tactical_target.detach(),
         )
 
         total_sigreg = sigreg_op + sigreg_tac + sigreg_str

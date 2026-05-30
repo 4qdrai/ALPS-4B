@@ -107,8 +107,16 @@ def run_unsupervised_training(epochs: int = 10, batch_size: int = 4):
             actions = torch.randn(batch_size, d_action, device=device)
             
             # Apply spatiotemporal masking (90% mask ratio per LeWM)
-            # The masker generates tube masks based on patch grid dimensions
-            keep_mask, _ = masker.generate_tube_mask(video_input.shape[0], device=device)
+            # Calculate patch dimensions dynamically to avoid shape crashes on different resolutions
+            T, H, W = video_input.shape[2], video_input.shape[3], video_input.shape[4]
+            # Since video_frames are cropped into context (0..T-2) of length T-1 in target-shifted JEPA,
+            # we generate the mask dynamically matching context length T-1
+            t_size = (T - 1) // 2
+            h_size = H // 16
+            w_size = W // 16
+            keep_mask, _ = masker.generate_tube_mask(
+                video_input.shape[0], device=device, t_size=t_size, h_size=h_size, w_size=w_size
+            )
             
             sched = scheduler.step()
             
@@ -117,8 +125,12 @@ def run_unsupervised_training(epochs: int = 10, batch_size: int = 4):
             optimizer_tac.zero_grad()
             optimizer_str.zero_grad()
             
-            # Pass prev_latents for temporal recurrence (enables pinning detection)
-            outputs = model(video_input, actions, prev_latents=prev_latents)
+            # Pass prev_latents for temporal recurrence, keep_mask for spatiotemporal masking,
+            # and scheduler flags to actively bypass computation on inactive layers
+            outputs = model(
+                video_input, actions, prev_latents=prev_latents, mask_indices=keep_mask,
+                update_tactical=sched["update_tactical"], update_strategic=sched["update_strategic"]
+            )
             
             # Store current latents for next iteration's pinning check
             if outputs.get("z_t") is not None:

@@ -110,12 +110,14 @@ class SIGReg(nn.Module):
         y = torch.matmul(z, self.projection_matrix)
         
         if self.weak_only or N > 1024:
-            # Weak-SIGReg: Frobenius norm of covariance of projected features minus Identity
-            # Cov(y) = 1/(N-1) * (y - mean_y)^T * (y - mean_y)
-            mean_y = y.mean(dim=0, keepdim=True)
-            y_centered = y - mean_y
-            cov = torch.matmul(y_centered.t(), y_centered) / (N - 1)
-            # We want Cov(y) to be close to the identity matrix
+            # Weak-SIGReg: Frobenius norm of covariance of native features minus Identity.
+            # Computes covariance directly on the native latent space z instead of the projected space y
+            # to avoid rank-deficiency issues since S (1024) > D (384/128).
+            # Cov(z) = 1/(N-1) * (z - mean_z)^T * (z - mean_z)
+            mean_z = z.mean(dim=0, keepdim=True)
+            z_centered = z - mean_z
+            cov = torch.matmul(z_centered.t(), z_centered) / (N - 1)
+            # We want Cov(z) to be close to the identity matrix
             identity = torch.eye(cov.shape[0], device=cov.device)
             loss = torch.norm(cov - identity, p="fro") ** 2 / cov.shape[0]
             return loss
