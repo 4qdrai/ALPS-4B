@@ -10,3 +10,16 @@ url: "https://github.com/4qdrai/4B-JEPA"
 license: "Apache-2.0"
 repository-code: "https://github.com/4qdrai/4B-JEPA"
 abstract: "ALPS-4B (Adaptive Latent Prediction System, Four-Brain) is a multi-scale, temporally decoupled Joint-Embedding Predictive Architecture (JEPA) incorporating spatiotemporal tube masking, Banach checker convergence proofs, and out-of-gradient safety watchdogs for lifelong learning and system integrity."
+
+references:
+  - type: article
+    authors:
+      - family-names: "Klindt"
+        given-names: "David"
+      - family-names: "LeCun"
+        given-names: "Yann"
+      - family-names: "Balestriero"
+        given-names: "Randall"
+    title: "When Does LeJEPA Learn a World Model?"
+    journal: "arXiv preprint arXiv:2605.26379v1"
+    year: 2026

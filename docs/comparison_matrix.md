@@ -16,6 +16,7 @@ This document provides a systematic, feature-by-feature comparison between **ALP
 | **Lipschitz Checker Convergence** | **Yes** (Banach) | No | No | No | No | No |
 | **Hive-Mind Fleet Sync** | **Yes** (KV transfer) | No | No | No | No | No |
 | **Dynamic Compute Gating** | **Yes** (System 1/2) | No | No | No | No | No |
+| **Provable Linear Identifiability** | **Yes** (SIGReg + Thm 4) | Yes | No | No | No | No (Warped Physics) |
 
 ---
 

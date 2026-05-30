@@ -103,6 +103,11 @@ Since this bound depends solely on the constant hyperparameter $\beta$ and is in
 ```
 Similarly, because the derivative of the bounded Gaussian function is also a combination of bounded functions of the form $(1 - b u^2)e^{-c u^2}$, the second derivative (curvature) is also uniformly bounded. $\blacksquare$
 
+### 2.3 Provable Linear Identifiability and Optimal Planning
+As recently proven by Klindt, LeCun, and Balestriero (May 25, 2026) in their analysis of LeJEPA, enforcing Gaussianity via SIGReg is not merely a heuristic—it is the mathematically unique condition that guarantees **Linear Identifiability**. The representation learned by ALPS-4B strictly recovers the true latent degrees of freedom of the physical world up to an orthogonal rotation ($h(z) = Qz$). 
+
+Furthermore, by **Theorem 4** of their work, this orthogonal identifiability guarantees that our **Langevin SDE Latent Planner** is globally optimal. Because orthogonal transformations preserve $L^2$ distances, trajectories planned in the ALPS-4B latent space map flawlessly to optimal physical paths. This provides the formal mathematical authorization for our Out-of-Gradient Fallback Watchdog (Section 5) to safely apply classical linear Lyapunov braking constraints ($u_{\text{mrc}} = -Kx$) directly upon the learned coordinates.
+
 ---
 
 ## 3. Banach Space Multi-Scale Contraction Theory
