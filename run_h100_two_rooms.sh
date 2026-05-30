@@ -83,7 +83,8 @@ echo "[4/5] Running evaluation and generating visualizations..."
 python -m alps.benchmarks.two_rooms.evaluate_two_rooms \
     --model-path results/two_rooms/two_rooms_model.pt \
     --data-path data/two_rooms/trajectories.pt \
-    --save-dir results/two_rooms/figures
+    --save-dir results/two_rooms/figures \
+    --d-model 384
 echo "[4/5] Evaluation complete!"
 
 # --- 5. PUSH RESULTS ---
