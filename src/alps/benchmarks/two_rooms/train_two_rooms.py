@@ -261,10 +261,10 @@ class TwoRoomsALPS(nn.Module):
         )
         # ── 5d. RE-INTEGRATE SYSTEM 2 GUIDANCE (Critical Fix) ───────────────
         # If System 2 was computed, we must re-calculate the Operative state 
-        # using the actual tactical subgoal so the predictor learns to follow top-down plans.
+        # using the refined tactical subgoal so the predictor learns to follow top-down plans.
         if force_system2 or interrupt_op:
-            # Re-compute z_operative with actual tactical guidance
-            z_operative, sigreg_op = self.operative_layer(z_t, z_tactical)
+            # Re-compute z_operative with refined tactical guidance
+            z_operative, sigreg_op = self.operative_layer(z_t, z_refined.detach())
             
             # Re-predict next state using the guided operative state
             z_pred = self.operative_layer.predict_next_state(z_operative, actions_onehot)
@@ -272,10 +272,11 @@ class TwoRoomsALPS(nn.Module):
             # Update the operative prediction loss
             pred_loss_op = F.mse_loss(z_pred, z_target.detach())
 
-        # Encode target representations at target scale to calculate top-down predictive target losses
+        # Encode target representations at target scale safely in the same operative domain
         with torch.no_grad():
-            z_strategic_target, _, _ = self.strategic_layer(z_target)
-            z_tactical_target, _, _ = self.tactical_layer(z_target, z_strategic_target)
+            z_op_target, _ = self.operative_layer(z_target, torch.zeros_like(z_target))
+            z_strategic_target, _, _ = self.strategic_layer(z_op_target)
+            z_tactical_target, _, _ = self.tactical_layer(z_op_target, z_strategic_target)
             z_strategic_target = z_strategic_target.detach()
             z_tactical_target = z_tactical_target.detach()
 

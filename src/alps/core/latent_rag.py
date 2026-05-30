@@ -34,8 +34,8 @@ class LatentRAG(nn.Module):
             key: Semantic context vector, Shape: [D] or [1, D]
             value: Latent correction vector (delta z), Shape: [D] or [1, D]
         """
-        key = key.squeeze().detach()
-        value = value.squeeze().detach()
+        key = key.reshape(-1).detach()
+        value = value.reshape(-1).detach()
         
         size = self.current_size.item()
         

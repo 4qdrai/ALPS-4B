@@ -61,8 +61,9 @@ class SleepConsolidation(nn.Module):
         batch_targets = targets.unsqueeze(0) # [1, M, D]
         
         # Standard JEPA prediction setup:
-        # Predictor takes state and a conditioning signal (we mock a generic condition here)
-        cond = torch.zeros(1, predictor.d_model, device=device)
+        # Predictor takes state and a conditioning signal (we query d_cond dynamically to support all layers)
+        d_cond = predictor.cond_proj[0].in_features
+        cond = torch.zeros(1, d_cond, device=device)
         
         initial_loss = 0.0
         final_loss = 0.0

@@ -118,13 +118,12 @@ class ALPSModel(nn.Module):
             target_frames = video_frames
             
         z_target = self.encoder(target_frames) # [B, N, D] Target representation at time t+1
-        z_t_full = self.encoder(context_frames) # [B, N, D] Raw context representation at time t
+        B, N, D = z_target.shape
         
         # Apply spatiotemporal tube masking if provided (Phantom Masker Fix)
-        # We zero out representations at masked positions to simulate missing inputs.
         # We dynamically pad/align the mask if the encoder added extra tokens (like [CLS] tokens).
+        # We pass the aligned mask directly to the encoder to save massive compute (active token dropping).
         if mask_indices is not None:
-            B, N, D = z_t_full.shape
             mask_len = mask_indices.shape[1]
             
             # If the encoder added a CLS token or extra tokens (N > mask_len)
@@ -136,9 +135,9 @@ class ALPSModel(nn.Module):
             else:
                 aligned_mask = mask_indices
                 
-            z_t = z_t_full * aligned_mask[:, :N].unsqueeze(-1)
+            z_t = self.encoder(context_frames, mask_indices=aligned_mask[:, :N])
         else:
-            z_t = z_t_full
+            z_t = self.encoder(context_frames)
             
         # --- 2. SYSTEM INTEGRITY VERIFICATION (Fallback watchdog - out of gradient) ---
         # NaNs/Infs are always catastrophic and must trigger fallback to protect weights
@@ -255,39 +254,44 @@ class ALPSModel(nn.Module):
         z_refined, check_steps, converged = self.checker(z_tactical, z_strategic)
         contraction_loss = self.checker.compute_contraction_loss(z_tactical, z_strategic)
         
-        # Encode target representations at target scale to calculate top-down predictive target losses
+        # Encode target representations at target scale safely in the same operative domain
         with torch.no_grad():
-            z_strategic_target, _, _ = self.strategic_layer(z_target)
-            z_tactical_target, _, _ = self.tactical_layer(z_target, z_strategic_target)
+            z_op_target, _ = self.operative_layer(z_target, torch.zeros_like(z_target))
+            z_strategic_target, _, _ = self.strategic_layer(z_op_target)
+            z_tactical_target, _, _ = self.tactical_layer(z_op_target, z_strategic_target)
             z_strategic_target = z_strategic_target.detach()
             z_tactical_target = z_tactical_target.detach()
         
         # --- 5d. RE-INTEGRATE SYSTEM 2 GUIDANCE (Critical Fix) ---
-        # If System 2 was computed, we must re-calculate the Operative state 
-        # using the actual tactical subgoal so the predictor learns to follow top-down plans.
-        if update_tactical or force_system2 or interrupt_op:
-            # Re-compute z_operative with actual tactical guidance
-            z_operative, sigreg_op = self.operative_layer(z_t, z_tactical)
+        # Re-condition Operative layer with refined sub-goal so System 2 influences System 1
+        z_operative, sigreg_op = self.operative_layer(z_t, z_refined.detach())
+        
+        # Re-compute multimodal routing on the updated z_operative
+        if imu_telemetry is not None and lidar_points is not None:
+            z_operative = z_operative + fused_multimodal
             
-            # Re-compute multimodal routing on the updated z_operative
-            if imu_telemetry is not None and lidar_points is not None:
-                z_operative = z_operative + fused_multimodal
-                
-            # Re-predict next state using the guided operative state
-            if self.use_langevin:
-                z_pred = self.operative_layer.predict_next_state(z_operative, actions_refined)
-            else:
-                z_pred = self.operative_layer.predict_next_state(z_operative, actions)
-                
-            # Update the operative prediction loss
-            pred_loss_op = F.mse_loss(z_pred, z_target.detach())
+        # Re-predict the next state using the conceptually guided operative state
+        if self.use_langevin:
+            actions_refined = self.langevin_planner.plan(
+                self.operative_layer.predict_next_state, z_operative, z_target.detach(), actions
+            )
+            outputs["refined_actions"] = actions_refined
+            z_pred = self.operative_layer.predict_next_state(z_operative, actions_refined)
+        else:
+            z_pred = self.operative_layer.predict_next_state(z_operative, actions)
+            
+        pred_loss_op = F.mse_loss(z_pred, z_target.detach())
         
         # --- 6. AUTOMATIC LATENT-RAG WRITE (Self-Learning Loop) ---
         # When operative prediction diverges significantly, auto-write the correction to RAG
         if pred_loss_op.item() > 0.5 and not self.training:
-            delta_z = z_t - z_pred  # correction vector
+            delta_z = z_target.detach() - z_pred  # True prediction error delta z
             context_key = z_operative.mean(dim=1)  # [B, D] semantic context
-            self.tactical_layer.rag.write_memory(context_key, delta_z.mean(dim=1))
+            delta_z_mean = delta_z.mean(dim=1)    # [B, D]
+            
+            # Iterate over batch dimension to prevent shape broadcast crashes
+            for b in range(context_key.shape[0]):
+                self.tactical_layer.rag.write_memory(context_key[b], delta_z_mean[b])
             outputs["rag_auto_write"] = True
         else:
             outputs["rag_auto_write"] = False

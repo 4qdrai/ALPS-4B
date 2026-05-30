@@ -104,7 +104,7 @@ class SparseMoERouter(nn.Module):
             weighted_outputs = expert_outputs * weights
             
             # Accumulate back into output buffer (using scatter_add or direct index addition)
-            out_flat.index_add_(0, token_ids, weighted_outputs)
+            out_flat = out_flat.index_add(0, token_ids, weighted_outputs)
             
         out = out_flat.reshape(B, N, D)
         return out, balance_loss
