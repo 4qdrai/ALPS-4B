@@ -121,10 +121,22 @@ class ALPSModel(nn.Module):
         z_t_full = self.encoder(context_frames) # [B, N, D] Raw context representation at time t
         
         # Apply spatiotemporal tube masking if provided (Phantom Masker Fix)
-        # We zero out representations at masked positions to simulate missing inputs
+        # We zero out representations at masked positions to simulate missing inputs.
+        # We dynamically pad/align the mask if the encoder added extra tokens (like [CLS] tokens).
         if mask_indices is not None:
             B, N, D = z_t_full.shape
-            z_t = z_t_full * mask_indices[:, :N].unsqueeze(-1)
+            mask_len = mask_indices.shape[1]
+            
+            # If the encoder added a CLS token or extra tokens (N > mask_len)
+            if N > mask_len:
+                diff = N - mask_len
+                # Pad the start of the mask with True (Keep the CLS tokens)
+                pad_mask = torch.ones(B, diff, dtype=torch.bool, device=mask_indices.device)
+                aligned_mask = torch.cat([pad_mask, mask_indices], dim=1)
+            else:
+                aligned_mask = mask_indices
+                
+            z_t = z_t_full * aligned_mask[:, :N].unsqueeze(-1)
         else:
             z_t = z_t_full
             
@@ -249,6 +261,26 @@ class ALPSModel(nn.Module):
             z_tactical_target, _, _ = self.tactical_layer(z_target, z_strategic_target)
             z_strategic_target = z_strategic_target.detach()
             z_tactical_target = z_tactical_target.detach()
+        
+        # --- 5d. RE-INTEGRATE SYSTEM 2 GUIDANCE (Critical Fix) ---
+        # If System 2 was computed, we must re-calculate the Operative state 
+        # using the actual tactical subgoal so the predictor learns to follow top-down plans.
+        if update_tactical or force_system2 or interrupt_op:
+            # Re-compute z_operative with actual tactical guidance
+            z_operative, sigreg_op = self.operative_layer(z_t, z_tactical)
+            
+            # Re-compute multimodal routing on the updated z_operative
+            if imu_telemetry is not None and lidar_points is not None:
+                z_operative = z_operative + fused_multimodal
+                
+            # Re-predict next state using the guided operative state
+            if self.use_langevin:
+                z_pred = self.operative_layer.predict_next_state(z_operative, actions_refined)
+            else:
+                z_pred = self.operative_layer.predict_next_state(z_operative, actions)
+                
+            # Update the operative prediction loss
+            pred_loss_op = F.mse_loss(z_pred, z_target.detach())
         
         # --- 6. AUTOMATIC LATENT-RAG WRITE (Self-Learning Loop) ---
         # When operative prediction diverges significantly, auto-write the correction to RAG

@@ -259,6 +259,18 @@ class TwoRoomsALPS(nn.Module):
         contraction_loss = self.checker.compute_contraction_loss(
             z_tactical, z_strategic
         )
+        # ── 5d. RE-INTEGRATE SYSTEM 2 GUIDANCE (Critical Fix) ───────────────
+        # If System 2 was computed, we must re-calculate the Operative state 
+        # using the actual tactical subgoal so the predictor learns to follow top-down plans.
+        if force_system2 or interrupt_op:
+            # Re-compute z_operative with actual tactical guidance
+            z_operative, sigreg_op = self.operative_layer(z_t, z_tactical)
+            
+            # Re-predict next state using the guided operative state
+            z_pred = self.operative_layer.predict_next_state(z_operative, actions_onehot)
+                
+            # Update the operative prediction loss
+            pred_loss_op = F.mse_loss(z_pred, z_target.detach())
 
         # Encode target representations at target scale to calculate top-down predictive target losses
         with torch.no_grad():
