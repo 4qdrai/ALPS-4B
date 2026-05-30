@@ -56,14 +56,16 @@ class SleepConsolidation(nn.Module):
         # Set up a small optimizer
         optimizer = optim.AdamW(predictor.parameters(), lr=self.lr)
         
-        # Convert to batch [1, M, D] for transformer processing
-        batch_keys = keys_to_train.unsqueeze(0) # [1, M, D]
-        batch_targets = targets.unsqueeze(0) # [1, M, D]
+        # Convert to batch [M, 1, D] so each memory is an independent batch item
+        # with sequence length 1. This prevents transformer self-attention from mixing
+        # different memories during distillation (cross-contamination prevention).
+        batch_keys = keys_to_train.unsqueeze(1)    # [M, 1, D]
+        batch_targets = targets.unsqueeze(1)        # [M, 1, D]
         
         # Standard JEPA prediction setup:
         # Predictor takes state and a conditioning signal (we query d_cond dynamically to support all layers)
         d_cond = predictor.cond_proj[0].in_features
-        cond = torch.zeros(1, d_cond, device=device)
+        cond = torch.zeros(num_to_consolidate, d_cond, device=device)  # [M, d_cond]
         
         initial_loss = 0.0
         final_loss = 0.0

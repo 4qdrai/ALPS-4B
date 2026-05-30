@@ -86,7 +86,13 @@ class TacticalLayer(nn.Module):
         moe_out, moe_loss = self.moe(conditioned_x)
         
         # 3. Retrieve Latent-RAG episodic corrections (delta-z) for failure correction
-        corrections = self.rag.retrieve_correction(moe_out)
+        # Query using pooled global context [B, 1, D] to match the globally-pooled format
+        # used during RAG writes (z_operative.mean(dim=1)). This ensures semantic consistency
+        # between write keys and read queries (global scene vs global scene, not patch vs scene).
+        pooled_query = x.mean(dim=1, keepdim=True)  # [B, 1, D]
+        pooled_corrections = self.rag.retrieve_correction(pooled_query)  # [B, 1, D]
+        # Broadcast the global correction across all spatial patches
+        corrections = pooled_corrections.expand(-1, moe_out.shape[1], -1)  # [B, N, D]
         tactical_out = moe_out + corrections
         
         # 4. Local collapse prevention (SIGReg)

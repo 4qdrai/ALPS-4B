@@ -181,8 +181,11 @@ class ALPSModel(nn.Module):
             imu_emb = self.imu_encoder(imu_telemetry)
             lidar_emb = self.lidar_encoder(lidar_points)
             
-            # Route and fuse dynamically based on top-level sensory attention
-            fused_multimodal, active_mask = self.modality_router(z_t.mean(dim=1), [imu_emb, lidar_emb])
+            # Generate a lightweight proxy strategic concept (no_grad to avoid compute overhead)
+            # to guide sensory attention, matching the paper's claim of Strategic-layer gating
+            with torch.no_grad():
+                proxy_strategic, _, _ = self.strategic_layer(z_operative)
+            fused_multimodal, active_mask = self.modality_router(proxy_strategic.mean(dim=1), [imu_emb, lidar_emb])
             z_operative = z_operative + fused_multimodal
             outputs["active_modalities"] = active_mask
             
@@ -339,12 +342,12 @@ class ALPSModel(nn.Module):
         self.eval()
         outputs = {}
         
-        # 1. Sense and predict
+        # 1. Sense and predict (naive prediction BEFORE any Langevin correction)
         z_t = self.encoder(video_frames)
         z_op, _ = self.operative_layer(z_t, torch.zeros_like(z_t))
-        z_pred = self.operative_layer.predict_next_state(z_op, actions)
+        naive_pred = self.operative_layer.predict_next_state(z_op, actions)
         
-        div, interrupt = self.op_monitor(z_pred, target_z)
+        div, interrupt = self.op_monitor(naive_pred, target_z)
         outputs["surprise_detected"] = interrupt
         
         if interrupt:
@@ -352,13 +355,17 @@ class ALPSModel(nn.Module):
             actions_corrected = self.langevin_planner.plan(
                 self.operative_layer.predict_next_state, z_op, target_z, actions
             )
-            z_pred_corrected = self.operative_layer.predict_next_state(z_op, actions_corrected)
             
-            # 3. Calculate Correction vector (delta-z)
-            delta_z = target_z - z_pred_corrected
+            # 3. Calculate Correction vector (delta-z) against the NAIVE failing prediction
+            # NOT z_pred_corrected (which ≈ target_z after Langevin, making delta ≈ 0)
+            delta_z = target_z.detach() - naive_pred.detach()
             
             # 4. Write context-correction directly to Latent-RAG cache
-            self.tactical_layer.rag.write_memory(z_op.mean(dim=1), delta_z.mean(dim=1))
+            # Mean-pool 3D [B,N,D] to 2D [B,D] for per-sample RAG writes
+            context_keys = z_op.mean(dim=1)   # [B, D]
+            delta_z_means = delta_z.mean(dim=1)  # [B, D]
+            for b in range(context_keys.shape[0]):
+                self.tactical_layer.rag.write_memory(context_keys[b], delta_z_means[b])
             
             outputs["learning_triggered"] = True
             outputs["original_action"] = actions

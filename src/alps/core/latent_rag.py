@@ -91,13 +91,13 @@ class LatentRAG(nn.Module):
         # weights: [B*N, size], values: [size, D] -> [B*N, D]
         retrieved_flat = torch.matmul(weights, self.values[:size])
         
-        # Update usage statistics for matched keys (only in training/active execution)
-        if self.training:
-            # Add hits to keys that had similarity >= sim_threshold
-            matched_indices = torch.nonzero(mask) # [Num_matches, 2] -> cols are database row indices
-            if matched_indices.shape[0] > 0:
-                unique_rows, counts = torch.unique(matched_indices[:, 1], return_counts=True)
-                self.usage_counts[unique_rows] += counts
+        # Update usage statistics for ALL matched keys (must run in both train AND eval modes,
+        # because the self-learning loop runs in .eval() and Sleep Consolidation depends on
+        # accurate usage_counts to identify frequently-retrieved memories for distillation)
+        matched_indices = torch.nonzero(mask)  # [Num_matches, 2] -> cols are database row indices
+        if matched_indices.shape[0] > 0:
+            unique_rows, counts = torch.unique(matched_indices[:, 1], return_counts=True)
+            self.usage_counts[unique_rows] += counts
                 
         correction = retrieved_flat.reshape(B, N, D)
         return correction
