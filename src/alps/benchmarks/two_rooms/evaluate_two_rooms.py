@@ -1128,7 +1128,7 @@ def generate_all_results(
     print("Model loaded successfully.")
 
     # 3. Train decoding probe
-    probe = train_position_probe(model, dataset, device, epochs=15, batch_size=32)
+    probe = train_position_probe(model, dataset, device, epochs=100, batch_size=32)
 
     # 4. Run Quantitative Planning Trials
     eval_metrics = run_planning_evaluation(model, env, num_episodes=num_episodes)
