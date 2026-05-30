@@ -870,7 +870,8 @@ def plot_prediction_comparison(
 
     # For the start position: encode, pool, decode
     curr_frame = start_img.to(device)
-    video_input = curr_frame.unsqueeze(0).unsqueeze(2).expand(1, 3, 8, 128, 128)
+    # Using 7 frames for context to output exactly 192 tokens matching z_t domain
+    video_input = curr_frame.unsqueeze(0).unsqueeze(2).expand(1, 3, 7, 128, 128)
     with torch.no_grad():
         z_start = model.encoder(video_input)
         decoded_start = probe(z_start).cpu().squeeze(0).numpy()
@@ -892,7 +893,11 @@ def plot_prediction_comparison(
         pos_tensor = torch.from_numpy(current_obs["position"]).unsqueeze(0).float().to(device)
         with torch.no_grad():
             fwd = model(video_input, act_onehot, prev_latents=prev_latent, force_system2=False, current_position=pos_tensor)
-            z_t = fwd["z_t"]
+            if "z_t" in fwd:
+                z_t = fwd["z_t"]
+            else:
+                # Robust fallback to prevent KeyError if the system watchdog triggers
+                z_t = prev_latent if prev_latent is not None else torch.zeros(1, 192, model.d_model, device=device)
             
             # Decode position from the pooled latent state
             decoded_pos = probe(z_t).cpu().squeeze(0).numpy()

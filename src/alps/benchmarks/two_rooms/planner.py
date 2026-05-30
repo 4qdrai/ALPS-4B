@@ -86,8 +86,10 @@ def encode_observation(model: nn.Module, obs: torch.Tensor) -> torch.Tensor:
     if obs.dim() == 3:
         obs = obs.unsqueeze(0)  # [1, C, H, W]
     B, C, H, W = obs.shape
-    # Repeat across the temporal dimension expected by the encoder (T=8).
-    T = 8
+    # Repeat across the temporal dimension expected by the encoder context (T=7).
+    # Since the dataset clip length is 8 and context_frames is video_frames[:, :, :-1] (T=7),
+    # the encoder outputs 192 tokens during training context. We must match this.
+    T = 7
     video = obs.unsqueeze(2).expand(B, C, T, H, W)   # [B, C, T, H, W]
     with torch.no_grad():
         z = model.encoder(video)  # [B, N, D]
