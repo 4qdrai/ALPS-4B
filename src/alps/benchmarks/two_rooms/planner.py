@@ -73,8 +73,8 @@ def encode_observation(model: nn.Module, obs: torch.Tensor) -> torch.Tensor:
     """Encode a single observation frame through the vision encoder.
 
     The ALPS encoder expects video tensors of shape [B, C, T, H, W].
-    A single 128×128 RGB frame is broadcast to a minimal 8-frame clip
-    (all frames identical) so the 3-D tube-patch embedding is well-defined.
+    If the model has encode_single_frame() (v2 step-wise training), we use it
+    for perfect train/eval alignment. Otherwise falls back to broadcast approach.
 
     Args:
         model: An ALPSModel instance (or any module with an `encoder` attr).
@@ -85,11 +85,16 @@ def encode_observation(model: nn.Module, obs: torch.Tensor) -> torch.Tensor:
     """
     if obs.dim() == 3:
         obs = obs.unsqueeze(0)  # [1, C, H, W]
+    
+    # v2: Use encode_single_frame for train/eval alignment
+    if hasattr(model, 'encode_single_frame'):
+        with torch.no_grad():
+            z = model.encode_single_frame(obs)  # [B, N, D]
+        return z
+    
+    # Legacy fallback: broadcast to temporal dimension
     B, C, H, W = obs.shape
-    # Repeat across the temporal dimension expected by the encoder context (T=7).
-    # Since the dataset clip length is 8 and context_frames is video_frames[:, :, :-1] (T=7),
-    # the encoder outputs 192 tokens during training context. We must match this.
-    T = 7
+    T = 8  # Match SINGLE_FRAME_T constant
     video = obs.unsqueeze(2).expand(B, C, T, H, W)   # [B, C, T, H, W]
     with torch.no_grad():
         z = model.encoder(video)  # [B, N, D]

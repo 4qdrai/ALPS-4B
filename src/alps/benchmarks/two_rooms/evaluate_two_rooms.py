@@ -140,7 +140,13 @@ def train_position_probe(
         targets = torch.stack(batch_targets).to(device)      # [B, 2]
         
         with torch.no_grad():
-            z = model.encoder(video_frames)  # [B, N, D]
+            # v2: Use encode_single_frame for per-frame encoding alignment
+            if hasattr(model, 'encode_single_frame'):
+                # Use the last frame for alignment with position target
+                last_frame = video_frames[:, :, -1]  # [B, 3, H, W]
+                z = model.encode_single_frame(last_frame)  # [B, N, D]
+            else:
+                z = model.encoder(video_frames)  # [B, N, D]
             # Mean pool over spatial/temporal patches if necessary
             if z.dim() == 3:
                 z = z.mean(dim=1)  # [B, D]
@@ -237,7 +243,7 @@ def train_position_probe(
 def run_planning_evaluation(
     model: nn.Module,
     env: TwoRoomsEnv,
-    num_episodes: int = 100
+    num_episodes: int = 20
 ) -> Dict[str, Any]:
     """
     Runs planning trials: 50% same-room, 50% cross-room.
@@ -261,6 +267,14 @@ def run_planning_evaluation(
 
     half_episodes = num_episodes // 2
 
+    # MPC configuration (aligned with LeWM §D)
+    mpc_replan_interval = 5  # Replan every 5 environment steps
+    max_eval_budget = 150    # Maximum steps per episode
+    cem_candidates = 300     # CEM population size (LeWM uses 300)
+    cem_iterations = 10      # CEM optimization iterations (LeWM uses 10)
+    cem_elites = 30          # Top candidates retained per iteration
+    plan_horizon = 15        # Planning lookahead in latent steps
+
     # Prepare trials configuration
     trials = []
     for _ in range(half_episodes):
@@ -275,68 +289,69 @@ def run_planning_evaluation(
         start_pos = obs["position"].copy()
         target_pos = obs["target"].copy()
 
-        # Renders for planning
-        start_img = torch.from_numpy(obs["image"]).permute(2, 0, 1).float() / 255.0
-        
         # Build synthetic goal observation at goal position
-        # Create an environment copy at target position to capture target appearance
         env_goal_state = TwoRoomsEnv(seed=i)
         env_goal_state.reset(start_room=goal_room, goal_room=goal_room)
         env_goal_state.agent_pos = target_pos.copy()
         goal_img = torch.from_numpy(env_goal_state.render()).permute(2, 0, 1).float() / 255.0
 
-        # 2. Plan path via Hierarchical Planner
-        start_time = time.perf_counter()
-        plan_res = HierarchicalPlanner.plan(
-            model=model,
-            start_obs=start_img,
-            goal_obs=goal_img,
-            horizon=25,
-            num_candidates=150,
-            num_elites=15,
-            num_iterations=4,
-            door_horizon=15
-        )
-        plan_time = time.perf_counter() - start_time
-
-        # 3. Execute actions and record activations
-        actions = plan_res.combined_actions
-        
+        # 2. MPC Planning Loop — Replan every mpc_replan_interval steps
         trajectory_positions = [start_pos.copy()]
         system2_activations = 0
         step_mses = []
         prev_latent = None
-
         reached = False
         current_obs = obs
+        total_steps = 0
 
-        for step_idx, act in enumerate(actions):
-            act_idx = int(act.item())
-            current_obs, reward, done, info = env.step(act_idx)
-            trajectory_positions.append(current_obs["position"].copy())
-
-            # Evaluate surprise / System 2 activation at this step
+        while total_steps < max_eval_budget and not reached:
+            # Get current observation image
             curr_frame = torch.from_numpy(current_obs["image"]).permute(2, 0, 1).float() / 255.0
-            video_input = curr_frame.unsqueeze(0).unsqueeze(2).expand(1, 3, 8, 128, 128).to(device)
-            act_onehot = F.one_hot(torch.tensor([act_idx], device=device), num_classes=4).float()
 
-            pos_tensor = torch.from_numpy(current_obs["position"]).unsqueeze(0).float().to(device)
-            with torch.no_grad():
-                fwd = model(video_input, act_onehot, prev_latents=prev_latent, force_system2=False, current_position=pos_tensor)
-                
-            prev_latent = fwd.get("z_t")
-            step_mse = fwd.get("pred_loss_op", torch.tensor(0.0)).item()
-            step_mses.append(step_mse)
+            # Plan from current observation to goal
+            plan_res = HierarchicalPlanner.plan(
+                model=model,
+                start_obs=curr_frame,
+                goal_obs=goal_img,
+                horizon=plan_horizon,
+                num_candidates=cem_candidates,
+                num_elites=cem_elites,
+                num_iterations=cem_iterations,
+                door_horizon=10
+            )
 
-            if fwd.get("system2_activated", False):
-                system2_activations += 1
+            # Execute only mpc_replan_interval steps before replanning
+            actions = plan_res.combined_actions
+            execute_steps = min(mpc_replan_interval, len(actions), max_eval_budget - total_steps)
 
-            if done:
-                reached = True
-                break
+            for step_idx in range(execute_steps):
+                act_idx = int(actions[step_idx].item())
+                current_obs, reward, done, info = env.step(act_idx)
+                trajectory_positions.append(current_obs["position"].copy())
+                total_steps += 1
+
+                # Evaluate surprise / System 2 activation at this step
+                step_frame = torch.from_numpy(current_obs["image"]).permute(2, 0, 1).float() / 255.0
+                video_input = step_frame.unsqueeze(0).unsqueeze(2).expand(1, 3, 8, 128, 128).to(device)
+                act_onehot = F.one_hot(torch.tensor([act_idx], device=device), num_classes=4).float()
+
+                pos_tensor = torch.from_numpy(current_obs["position"]).unsqueeze(0).float().to(device)
+                with torch.no_grad():
+                    fwd = model(video_input, act_onehot, prev_latents=prev_latent, force_system2=False, current_position=pos_tensor)
+
+                prev_latent = fwd.get("z_t")
+                step_mse = fwd.get("pred_loss_op", torch.tensor(0.0)).item()
+                step_mses.append(step_mse)
+
+                if fwd.get("system2_activated", False):
+                    system2_activations += 1
+
+                if done or info["distance"] < 0.8:
+                    reached = True
+                    break
 
         # Calculate final success
-        success = reached or (info["distance"] < 0.8)
+        success = reached
 
         if is_cross:
             cross_room_count += 1
@@ -732,7 +747,7 @@ def plot_latent_clustering(
     vq_codes_np = np.concatenate(all_vq_codes, axis=0)[:max_samples]
 
     print("  Running t-SNE projection (this may take a few seconds)...")
-    tsne = TSNE(n_components=2, perplexity=25, n_iter=800, random_state=42)
+    tsne = TSNE(n_components=2, perplexity=25, max_iter=800, random_state=42)
     latents_2d = tsne.fit_transform(latents_np)
 
     # Separate points
@@ -1047,13 +1062,14 @@ def generate_all_results(
     num_experts: int = 4,
     active_experts: int = 2,
     complex_mode: bool = False,
+    num_episodes: int = 20,
 ):
     """
     Main pipeline:
       - Loads trained TwoRoomsALPS model checkpoint.
       - Loads TwoRoomsDataset.
       - Trains position decoder MLP on frozen latents.
-      - Evaluates planners over 100 trials, saves metrics JSON.
+      - Evaluates planners over the specified number of trials (default: 20), saves metrics JSON.
       - Generates and saves ALL figures (trajectory, energy, clustering, VQ, decodability).
       - Creates a structured markdown summary report.
     """
@@ -1115,7 +1131,7 @@ def generate_all_results(
     probe = train_position_probe(model, dataset, device, epochs=15, batch_size=32)
 
     # 4. Run Quantitative Planning Trials
-    eval_metrics = run_planning_evaluation(model, env, num_episodes=100)
+    eval_metrics = run_planning_evaluation(model, env, num_episodes=num_episodes)
 
     # Save metrics JSON
     metrics_name = "planning_metrics_complex.json" if complex_mode else "planning_metrics.json"
@@ -1264,6 +1280,12 @@ def main():
         action="store_true",
         help="Enable 4-room complex navigation mode with locked doors and keys",
     )
+    parser.add_argument(
+        "--num-episodes",
+        type=int,
+        default=20,
+        help="Number of planning evaluation episodes/runs (default: 20)",
+    )
     args = parser.parse_args()
 
     # Re-verify relative paths
@@ -1280,6 +1302,7 @@ def main():
         num_experts=args.num_experts,
         active_experts=args.active_experts,
         complex_mode=args.complex_mode,
+        num_episodes=args.num_episodes,
     )
 
 

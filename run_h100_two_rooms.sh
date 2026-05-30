@@ -55,9 +55,9 @@ echo ""
 if [ -f "data/two_rooms/trajectories.pt" ]; then
     echo "[2/5] Found existing training data at data/two_rooms/trajectories.pt. Skipping generation."
 else
-    echo "[2/5] Generating training data (5000 episodes × 100 steps)..."
+    echo "[2/5] Generating training data (10000 episodes × 100 steps)..."
     python -m alps.benchmarks.two_rooms.data_generator \
-        --num-episodes 5000 \
+        --num-episodes 10000 \
         --max-steps 100 \
         --save-path data/two_rooms/trajectories.pt
     echo "[2/5] Data generation complete!"
@@ -65,13 +65,18 @@ fi
 
 # --- 3. TRAIN ---
 echo ""
-echo "[3/5] Training ALPS-4B on Two Rooms (10 epochs, d_model=384, H100 GPU)..."
+echo "[3/5] Training ALPS-4B on Two Rooms (10 epochs, d_model=384, H100 GPU, v2 step-wise)..."
+echo "       Lambda SIGReg: 0.1 (LeWM optimal range, was 0.6 = past failure threshold)"
+echo "       Frame skip: 4 (creates meaningful visual change between frames)"
+echo "       Position loss: 0.0 (strictly self-supervised, like LeWM)"
 python -m alps.benchmarks.two_rooms.train_two_rooms \
     --epochs 10 \
     --d-model 384 \
     --batch-size 32 \
     --lr 1e-3 \
-    --lambda-sigreg 0.6 \
+    --lambda-sigreg 0.1 \
+    --frame-skip 4 \
+    --pos-loss-weight 0.0 \
     --data-path data/two_rooms/trajectories.pt \
     --save-dir results/two_rooms \
     --device cuda
@@ -79,12 +84,13 @@ echo "[3/5] Training complete!"
 
 # --- 4. EVALUATE & VISUALIZE ---
 echo ""
-echo "[4/5] Running evaluation and generating visualizations..."
+echo "[4/5] Running evaluation and generating visualizations (20 episodes)..."
 python -m alps.benchmarks.two_rooms.evaluate_two_rooms \
     --model-path results/two_rooms/two_rooms_model.pt \
     --data-path data/two_rooms/trajectories.pt \
     --save-dir results/two_rooms/figures \
-    --d-model 384
+    --d-model 384 \
+    --num-episodes 20
 echo "[4/5] Evaluation complete!"
 
 # --- 5. PUSH RESULTS ---

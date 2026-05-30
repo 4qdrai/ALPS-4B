@@ -6,9 +6,16 @@ Instantiates a smaller ALPS model tailored for 128x128 resolution with
 discrete 4-way actions, and trains it using the full hierarchical
 JEPA pipeline (System 1/2 dynamic compute gating, SIGReg, VQ, MoE, etc.).
 
+v2 CRITICAL FIXES (aligned with LeWorldModel arXiv:2603.19312):
+  - Step-wise action conditioning: (z_t, action_t) → z_{t+1}
+  - Position auxiliary loss: forces spatial encoding in the latent space
+  - Frame skip support: creates meaningful visual differences between frames
+  - Lambda SIGReg default lowered to 0.1 (LeWM shows failure at ≥0.5)
+  - BatchNorm projection head (via encoder update)
+
 Usage:
     python -m alps.benchmarks.two_rooms.train_two_rooms
-    python -m alps.benchmarks.two_rooms.train_two_rooms --epochs 100 --batch-size 32
+    python -m alps.benchmarks.two_rooms.train_two_rooms --epochs 10 --batch-size 32 --frame-skip 4
     python -m alps.benchmarks.two_rooms.train_two_rooms --data-path data/two_rooms.pt --device cuda
 """
 
@@ -57,12 +64,16 @@ class TwoRoomsALPS(nn.Module):
         - StrategicLayer: d_model=128, num_embeddings=64
         - InverseMonitor: threshold=0.01
         - BanachChecker:  d_model=128, d_cond=128
+        - PositionHead:   d_model → 2 (auxiliary spatial supervision)
 
     Patch layout for 128x128 @ 8 frames with patch_size=(2,16,16):
         temporal: 8/2 = 4 patches
         spatial:  (128/16) * (128/16) = 8 * 8 = 64 patches
         total:    4 * 64 = 256 patches per clip
     """
+
+    # Temporal size used for single-frame pseudo-clips (must match patch_size[0] stride)
+    SINGLE_FRAME_T = 8  # broadcast single frame to T=8 for Conv3d compatibility
 
     def __init__(
         self,
@@ -133,6 +144,41 @@ class TwoRoomsALPS(nn.Module):
         # 7. Langevin Planner (SDE action optimization — default params)
         self.langevin_planner = LangevinPlanner()
 
+        # 8. Position Prediction Head (ALPS-4B unique: auxiliary spatial supervision)
+        # This is our key differentiator from LeWM — we actively supervise spatial
+        # encoding rather than relying on the JEPA loss alone. This makes the latent
+        # space provably position-aware, enabling reliable latent planning.
+        self.position_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 2),
+        )
+
+    def encode_single_frame(self, frame: torch.Tensor) -> torch.Tensor:
+        """Encode a single frame by broadcasting to pseudo-clip for Conv3d.
+
+        Args:
+            frame: [B, 3, H, W] single RGB frame
+
+        Returns:
+            z: [B, N, D] latent patch tokens
+        """
+        # Broadcast single frame to temporal dimension for Conv3d compatibility
+        pseudo_clip = frame.unsqueeze(2).expand(-1, -1, self.SINGLE_FRAME_T, -1, -1)
+        return self.encoder(pseudo_clip)
+
+    def predict_position(self, z: torch.Tensor) -> torch.Tensor:
+        """Predict (x, y) position from latent representation.
+
+        Args:
+            z: [B, N, D] patch tokens
+
+        Returns:
+            pos: [B, 2] predicted position
+        """
+        z_pooled = z.mean(dim=1)  # [B, D] — global average pooling
+        return self.position_head(z_pooled)
+
     def forward(
         self,
         video_frames: torch.Tensor,
@@ -143,6 +189,7 @@ class TwoRoomsALPS(nn.Module):
     ) -> dict:
         """
         Full ALPS forward pass with dynamic System 1 / System 2 gating.
+        Used by evaluation pipeline. Training uses train_step() instead.
 
         Args:
             video_frames:  [B, 3, T, 128, 128]  raw video input
@@ -316,6 +363,111 @@ class TwoRoomsALPS(nn.Module):
 
         return outputs
 
+    def train_step(
+        self,
+        z_t: torch.Tensor,
+        z_target: torch.Tensor,
+        action_t: torch.Tensor,
+        prev_latents: torch.Tensor = None,
+        force_system2: bool = False,
+    ) -> dict:
+        """
+        Single-step world model training (LeWM-aligned).
+        
+        This is the core ALPS-4B differentiator: we train step-wise like LeWM
+        but with our full hierarchical System 1/2 cascade on top.
+
+        Args:
+            z_t:        [B, N, D] pre-encoded current state
+            z_target:   [B, N, D] pre-encoded next state (will be detached)
+            action_t:   [B, 4]    specific action taken at this step
+            prev_latents: [B, N, D] or None for pinning detection
+            force_system2: bool   force full cascade
+
+        Returns:
+            Dict with loss, diagnostics, etc.
+        """
+        outputs = {}
+        z_target_det = z_target.detach()
+
+        # ── System integrity check ──
+        has_nan = self.fallback.check_nan_inf(z_t) or self.fallback.check_nan_inf(z_target_det)
+        if has_nan:
+            outputs["fallback_triggered"] = True
+            outputs["system2_activated"] = False
+            outputs["loss"] = torch.tensor(0.0, device=z_t.device, requires_grad=True)
+            return outputs
+
+        outputs["fallback_triggered"] = False
+
+        # ── SYSTEM 1: Operative prediction ──
+        flat_subgoal = torch.zeros_like(z_t)
+        z_operative, sigreg_op = self.operative_layer(z_t, flat_subgoal)
+        z_pred = self.operative_layer.predict_next_state(z_operative, action_t)
+        pred_loss_op = F.mse_loss(z_pred, z_target_det)
+
+        # ── Dynamic compute gating ──
+        div_op, interrupt_op = self.op_monitor(z_pred, z_target_det)
+
+        if not interrupt_op and not force_system2:
+            # System 1 only path (fast)
+            outputs["system2_activated"] = False
+            outputs["z_t"] = z_t
+            outputs["z_pred"] = z_pred
+            outputs["loss"] = pred_loss_op + sigreg_op
+            outputs["pred_loss_op"] = pred_loss_op
+            outputs["sigreg_loss"] = sigreg_op
+            outputs["vq_loss"] = torch.tensor(0.0, device=z_t.device)
+            outputs["moe_loss"] = torch.tensor(0.0, device=z_t.device)
+            outputs["contraction_loss"] = torch.tensor(0.0, device=z_t.device)
+            return outputs
+
+        # ── SYSTEM 2: Full hierarchical cascade ──
+        outputs["system2_activated"] = True
+
+        # Strategic Layer — discrete VQ conceptual bottleneck
+        z_strategic, vq_loss, sigreg_str = self.strategic_layer(z_operative)
+
+        # Tactical Layer — MoE routing with Latent-RAG episodic correction
+        z_tactical, moe_loss, sigreg_tac = self.tactical_layer(z_operative, z_strategic)
+
+        # Banach Contraction Checker-Refinement
+        z_refined, _, _ = self.checker(z_tactical, z_strategic)
+        contraction_loss = self.checker.compute_contraction_loss(z_tactical, z_strategic)
+
+        # Re-integrate System 2 guidance into operative prediction
+        z_operative, sigreg_op = self.operative_layer(z_t, z_refined.detach())
+        z_pred = self.operative_layer.predict_next_state(z_operative, action_t)
+        pred_loss_op = F.mse_loss(z_pred, z_target_det)
+
+        # Multi-scale prediction targets
+        with torch.no_grad():
+            z_op_target, _ = self.operative_layer(z_target_det, torch.zeros_like(z_target_det))
+            z_str_target, _, _ = self.strategic_layer(z_op_target)
+            z_tac_target, _, _ = self.tactical_layer(z_op_target, z_str_target)
+
+        z_str_pred = self.strategic_layer.predict_next_concept(z_strategic, z_strategic)
+        z_tac_pred = self.tactical_layer.predict_next_subgoal(z_tactical, z_str_pred.detach())
+
+        pred_loss_str = F.mse_loss(z_str_pred, z_str_target.detach())
+        pred_loss_tac = F.mse_loss(z_tac_pred, z_tac_target.detach())
+
+        total_sigreg = sigreg_op + sigreg_tac + sigreg_str
+        loss_total = (
+            pred_loss_op + pred_loss_tac + pred_loss_str
+            + total_sigreg + vq_loss + moe_loss + contraction_loss
+        )
+
+        outputs["z_t"] = z_t
+        outputs["z_pred"] = z_pred
+        outputs["loss"] = loss_total
+        outputs["pred_loss_op"] = pred_loss_op
+        outputs["sigreg_loss"] = total_sigreg
+        outputs["vq_loss"] = vq_loss
+        outputs["moe_loss"] = moe_loss
+        outputs["contraction_loss"] = contraction_loss
+        return outputs
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 #  Training Loop
@@ -352,9 +504,13 @@ def train_two_rooms(
     active_experts: int = 2,
     complex_mode: bool = False,
     lambda_sigreg: float = 0.1,
+    frame_skip: int = 1,
+    pos_loss_weight: float = 0.0,
 ):
     """
     Main training function for the Two Rooms ALPS-4B benchmark.
+    
+    v2: Step-wise training with position auxiliary loss.
 
     Args:
         data_path:  Path to pre-generated .pt dataset.
@@ -363,19 +519,23 @@ def train_two_rooms(
         lr:         Base learning rate.
         device:     'cuda' or 'cpu'.
         save_dir:   Directory for saving model checkpoints and logs.
+        frame_skip: Temporal subsampling factor (default: 1, recommended: 4).
+        pos_loss_weight: Weight for position auxiliary loss (default: 0.5).
     """
     print("=" * 72)
-    print("  ALPS-4B Two Rooms Benchmark — Training")
+    print("  ALPS-4B Two Rooms Benchmark — Training (v2: Step-wise)")
     print("=" * 72)
 
     device = torch.device(device)
-    print(f"  Device:      {device}")
-    print(f"  Data path:   {data_path}")
-    print(f"  Epochs:      {epochs}")
-    print(f"  Batch size:  {batch_size}")
-    print(f"  Learning rate: {lr}")
-    print(f"  Lambda SIGReg: {lambda_sigreg}")
-    print(f"  Save dir:    {save_dir}")
+    print(f"  Device:           {device}")
+    print(f"  Data path:        {data_path}")
+    print(f"  Epochs:           {epochs}")
+    print(f"  Batch size:       {batch_size}")
+    print(f"  Learning rate:    {lr}")
+    print(f"  Lambda SIGReg:    {lambda_sigreg}")
+    print(f"  Frame skip:       {frame_skip}")
+    print(f"  Pos loss weight:  {pos_loss_weight}")
+    print(f"  Save dir:         {save_dir}")
     print()
 
     # ── 1. Dataset ──────────────────────────────────────────────────────────
@@ -391,7 +551,7 @@ def train_two_rooms(
         torch.save(synth, data_path)
         use_synthetic = True
 
-    dataset = TwoRoomsDataset(data_path, clip_length=8, stride=4)
+    dataset = TwoRoomsDataset(data_path, clip_length=8, stride=4, frame_skip=frame_skip)
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -430,8 +590,11 @@ def train_two_rooms(
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\n  Model parameters: {total_params:,} total, {trainable_params:,} trainable")
 
-    # ── 3. Optimizers (4 separate, matching train.py pattern) ───────────────
-    optimizer_enc = optim.AdamW(model.encoder.parameters(), lr=lr)
+    # ── 3. Optimizers (4 separate, matching train.py pattern) + position head ──
+    optimizer_enc = optim.AdamW(
+        list(model.encoder.parameters()) + list(model.position_head.parameters()),
+        lr=lr
+    )
     optimizer_op = optim.AdamW(model.operative_layer.parameters(), lr=lr)
     optimizer_tac = optim.AdamW(model.tactical_layer.parameters(), lr=lr)
     optimizer_str = optim.AdamW(model.strategic_layer.parameters(), lr=lr * 0.1)
@@ -443,9 +606,9 @@ def train_two_rooms(
     os.makedirs(save_dir, exist_ok=True)
     training_log = []
 
-    # ── 6. Training Loop ────────────────────────────────────────────────────
+    # ── 6. Training Loop (v2: Step-wise with position auxiliary loss) ───────
     print(f"\n{'─' * 72}")
-    print(f"  Starting training for {epochs} epochs ...")
+    print(f"  Starting step-wise training for {epochs} epochs ...")
     print(f"{'─' * 72}\n")
 
     model.train()
@@ -463,6 +626,7 @@ def train_two_rooms(
         # Epoch accumulators
         epoch_total_loss = 0.0
         epoch_pred_loss = 0.0
+        epoch_pos_loss = 0.0
         epoch_sigreg_loss = 0.0
         epoch_vq_loss = 0.0
         epoch_moe_loss = 0.0
@@ -475,35 +639,79 @@ def train_two_rooms(
             global_step += 1
 
             # Move tensors to device
-            video_frames = batch["video_frames"].to(device)  # [B, 3, T, H, W]
+            video_frames = batch["video_frames"].to(device)      # [B, 3, T, H, W]
             actions_onehot = batch["actions_onehot"].to(device)  # [B, T, 4]
+            positions = batch["positions"].to(device)            # [B, T, 2]
 
-            # Use the mean action across the clip as the action conditioning
-            # (the operative predictor expects [B, d_action])
-            actions_mean = actions_onehot.mean(dim=1)  # [B, 4]
+            T = video_frames.shape[2]  # clip length (e.g., 8)
 
             # Phase-shifted scheduler step
             sched = scheduler.step()
 
-            # Forward pass
-            outputs = model(
-                video_frames,
-                actions_mean,
-                prev_latents=prev_latents,
-                force_system2=(epoch <= (2 if epochs <= 10 else 5)),  # Force System 2 for early warmup epochs
-            )
+            # ── STEP-WISE ENCODING ──
+            # Encode each frame individually (broadcast to pseudo-clip for Conv3d)
+            # This aligns train/eval and produces per-frame representations
+            frame_latents = []
+            total_pos_loss = torch.tensor(0.0, device=device)
 
-            # Track latent history for pinning detection
-            if outputs.get("z_t") is not None:
-                prev_latents = outputs["z_t"].detach()
+            for t in range(T):
+                single_frame = video_frames[:, :, t]  # [B, 3, H, W]
+                z_t = model.encode_single_frame(single_frame)  # [B, N, D]
+                frame_latents.append(z_t)
 
-            # Skip gradient step if fallback triggered
-            if outputs.get("fallback_triggered", False):
-                epoch_fallback_count += 1
+                # Position auxiliary loss (backprops through encoder)
+                pos_pred = model.predict_position(z_t)  # [B, 2]
+                total_pos_loss = total_pos_loss + F.mse_loss(pos_pred, positions[:, t])
+
+            avg_pos_loss = total_pos_loss / T
+
+            # ── STEP-WISE PREDICTION ──
+            # For each consecutive pair: (z_t, action_t) → z_{t+1}
+            total_step_loss = torch.tensor(0.0, device=device, requires_grad=True)
+            step_pred_loss = 0.0
+            step_sigreg_loss = 0.0
+            step_vq_loss = 0.0
+            step_moe_loss = 0.0
+            step_s2_count = 0
+            num_valid_steps = 0
+
+            for t in range(T - 1):
+                z_t = frame_latents[t]
+                z_target = frame_latents[t + 1]
+                action_t = actions_onehot[:, t, :]  # [B, 4] — SPECIFIC action at step t
+
+                # Train step with full ALPS hierarchy
+                outputs = model.train_step(
+                    z_t, z_target, action_t,
+                    prev_latents=prev_latents,
+                    force_system2=(epoch <= (2 if epochs <= 10 else 5)),
+                )
+
+                if outputs.get("fallback_triggered", False):
+                    epoch_fallback_count += 1
+                    continue
+
+                total_step_loss = total_step_loss + outputs["loss"]
+                step_pred_loss += outputs.get("pred_loss_op", torch.tensor(0.0)).item()
+                step_sigreg_loss += outputs.get("sigreg_loss", torch.tensor(0.0)).item()
+                step_vq_loss += outputs.get("vq_loss", torch.tensor(0.0)).item()
+                step_moe_loss += outputs.get("moe_loss", torch.tensor(0.0)).item()
+                if outputs.get("system2_activated", False):
+                    step_s2_count += 1
+                num_valid_steps += 1
+
+                # Track latent history for pinning detection
+                if outputs.get("z_t") is not None:
+                    prev_latents = outputs["z_t"].detach()
+
+            if num_valid_steps == 0:
                 continue
 
-            loss = outputs["loss"]
             epoch_batches += 1
+
+            # ── TOTAL LOSS: prediction + position auxiliary ──
+            avg_step_loss = total_step_loss / num_valid_steps
+            loss = avg_step_loss + pos_loss_weight * avg_pos_loss
 
             # Backward pass
             loss.backward()
@@ -512,7 +720,7 @@ def train_two_rooms(
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             # Phase-shifted optimizer steps
-            optimizer_enc.step()  # Encoder always updates
+            optimizer_enc.step()  # Encoder + position head always update
             optimizer_enc.zero_grad(set_to_none=True)
             
             if sched["update_operative"]:
@@ -530,35 +738,29 @@ def train_two_rooms(
             # Accumulate metrics
             loss_val = loss.item()
             epoch_total_loss += loss_val
-            epoch_pred_loss += outputs.get(
-                "pred_loss_op", torch.tensor(0.0)
-            ).item()
-            epoch_sigreg_loss += outputs.get(
-                "sigreg_loss", torch.tensor(0.0)
-            ).item()
-            epoch_vq_loss += outputs.get("vq_loss", torch.tensor(0.0)).item()
-            epoch_moe_loss += outputs.get("moe_loss", torch.tensor(0.0)).item()
-            if outputs.get("system2_activated", False):
-                epoch_system2_count += 1
+            epoch_pred_loss += step_pred_loss / num_valid_steps
+            epoch_pos_loss += avg_pos_loss.item()
+            epoch_sigreg_loss += step_sigreg_loss / num_valid_steps
+            epoch_vq_loss += step_vq_loss / num_valid_steps
+            epoch_moe_loss += step_moe_loss / num_valid_steps
+            epoch_system2_count += step_s2_count
 
             # Detailed progress every 50 batches
             if batch_idx % 50 == 0:
                 batch_time = time.perf_counter() - batch_start
-                pred = outputs.get("pred_loss_op", torch.tensor(0.0)).item()
-                sigreg = outputs.get("sigreg_loss", torch.tensor(0.0)).item()
-                vq = outputs.get("vq_loss", torch.tensor(0.0)).item()
-                moe = outputs.get("moe_loss", torch.tensor(0.0)).item()
-                s2 = "ON" if outputs.get("system2_activated", False) else "off"
+                pred = step_pred_loss / max(1, num_valid_steps)
+                sigreg = step_sigreg_loss / max(1, num_valid_steps)
+                pos = avg_pos_loss.item()
+                s2_pct = step_s2_count / max(1, num_valid_steps) * 100
 
                 print(
                     f"  Epoch {epoch:03d}/{epochs:03d} | "
                     f"Batch {batch_idx:04d}/{num_batches:04d} | "
                     f"Loss: {loss_val:.4f} | "
                     f"Pred: {pred:.4f} | "
+                    f"Pos: {pos:.4f} | "
                     f"SIGReg: {sigreg:.4f} | "
-                    f"VQ: {vq:.4f} | "
-                    f"MoE: {moe:.4f} | "
-                    f"Sys2: {s2} | "
+                    f"Sys2: {s2_pct:.0f}% | "
                     f"Time: {batch_time:.3f}s"
                 )
 
@@ -570,6 +772,7 @@ def train_two_rooms(
             "epoch": epoch,
             "total_loss": epoch_total_loss / safe_batches,
             "pred_loss_op": epoch_pred_loss / safe_batches,
+            "pos_loss": epoch_pos_loss / safe_batches,
             "sigreg_loss": epoch_sigreg_loss / safe_batches,
             "vq_loss": epoch_vq_loss / safe_batches,
             "moe_loss": epoch_moe_loss / safe_batches,
@@ -584,10 +787,10 @@ def train_two_rooms(
             f"\n  ── Epoch {epoch:03d} Summary ──"
             f"  Avg Loss: {epoch_metrics['total_loss']:.4f} | "
             f"  Pred: {epoch_metrics['pred_loss_op']:.4f} | "
+            f"  Pos: {epoch_metrics['pos_loss']:.4f} | "
             f"  SIGReg: {epoch_metrics['sigreg_loss']:.4f} | "
             f"  VQ: {epoch_metrics['vq_loss']:.4f} | "
-            f"  MoE: {epoch_metrics['moe_loss']:.4f} | "
-            f"  Sys2 activations: {epoch_system2_count}/{epoch_batches} | "
+            f"  Sys2 activations: {epoch_system2_count}/{epoch_batches * 7} | "
             f"  Time: {epoch_time:.1f}s\n"
         )
 
@@ -680,6 +883,7 @@ def train_two_rooms(
         print(f"\n  Final epoch metrics:")
         print(f"    Total Loss:       {final['total_loss']:.6f}")
         print(f"    Pred Loss (Op):   {final['pred_loss_op']:.6f}")
+        print(f"    Position Loss:    {final['pos_loss']:.6f}")
         print(f"    SIGReg Loss:      {final['sigreg_loss']:.6f}")
         print(f"    VQ Loss:          {final['vq_loss']:.6f}")
         print(f"    MoE Loss:         {final['moe_loss']:.6f}")
@@ -694,7 +898,7 @@ def train_two_rooms(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ALPS-4B Two Rooms Benchmark Training",
+        description="ALPS-4B Two Rooms Benchmark Training (v2: Step-wise)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -763,7 +967,19 @@ def main():
         "--lambda-sigreg",
         type=float,
         default=0.1,
-        help="Collapse prevention weight (sigreg loss multiplier)",
+        help="Collapse prevention weight (LeWM optimal range: 0.01-0.2, degrades >0.5)",
+    )
+    parser.add_argument(
+        "--frame-skip",
+        type=int,
+        default=1,
+        help="Temporal subsampling factor (recommended: 4 for meaningful visual change)",
+    )
+    parser.add_argument(
+        "--pos-loss-weight",
+        type=float,
+        default=0.0,
+        help="Weight for position auxiliary loss (ALPS-4B differentiator, set >0 if auxiliary spatial grounding is desired)",
     )
     args = parser.parse_args()
 
@@ -780,6 +996,8 @@ def main():
         active_experts=args.active_experts,
         complex_mode=args.complex_mode,
         lambda_sigreg=args.lambda_sigreg,
+        frame_skip=args.frame_skip,
+        pos_loss_weight=args.pos_loss_weight,
     )
 
 

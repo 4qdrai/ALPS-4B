@@ -5,13 +5,16 @@ import torch
 from alps.benchmarks.two_rooms.train_two_rooms import TwoRoomsALPS
 
 def check_model():
-    model_path = "results/two_rooms/two_rooms_model.pt"
+    model_path = sys.argv[1] if len(sys.argv) > 1 else "results/two_rooms/two_rooms_model.pt"
     if not os.path.exists(model_path):
         print(f"Error: checkpoint {model_path} not found.")
         return
         
-    print(f"Loading checkpoint from {model_path}...")
-    checkpoint = torch.load(model_path, map_location="cpu")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Analyzing checkpoint: {model_path}")
+    print(f"Running on local device: {device.upper()}")
+    
+    checkpoint = torch.load(model_path, map_location=device)
     sd = checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint
     
     # Dynamically detect d_model from pos_embed shape
@@ -31,10 +34,11 @@ def check_model():
         lambda_sigreg=0.1,
     )
     model.load_state_dict(sd, strict=False)
+    model.to(device)
     model.eval()
     
     # Generate 16 distinct random video clips (each having 3 channels, 8 frames, 128x128 resolution)
-    video_frames = torch.rand(16, 3, 8, 128, 128)
+    video_frames = torch.rand(16, 3, 8, 128, 128, device=device)
     
     with torch.no_grad():
         z_t = model.encoder(video_frames) # [B, N, D]
@@ -66,7 +70,7 @@ def check_model():
     cos_sim_matrix = torch.matmul(norm_z, norm_z.t())
     
     print("\nCosine similarity matrix between first 4 batch elements (different random inputs):")
-    print(cos_sim_matrix[:4, :4])
+    print(cos_sim_matrix[:4, :4].cpu().numpy())
     
     # Compute rank/sparsity of the latent spectrum
     # SVD on centered representations

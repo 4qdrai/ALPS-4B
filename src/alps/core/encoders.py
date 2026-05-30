@@ -26,6 +26,35 @@ class TubePatchEmbedding(nn.Module):
         x = x.transpose(1, 2) # [B, N, D]
         return x
 
+
+class ProjectionHead(nn.Module):
+    """
+    Projection head with BatchNorm1d for SIGReg compatibility (LeWM §3.1).
+    
+    LeWM requires BatchNorm (not LayerNorm) after the encoder because the final 
+    ViT layer applies LayerNorm which normalizes away the variance information
+    that SIGReg needs to detect and prevent collapse.
+    
+    Handles [B, N, D] → [B*N, D] reshaping for BatchNorm1d compatibility,
+    providing B*N samples for batch statistics even with batch_size=1.
+    """
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.linear = nn.Linear(d_model, d_model)
+        self.bn = nn.BatchNorm1d(d_model)
+        self.act = nn.GELU()
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, N, D]
+        B, N, D = x.shape
+        x = self.linear(x)
+        x = x.reshape(B * N, D)
+        x = self.bn(x)
+        x = x.reshape(B, N, D)
+        x = self.act(x)
+        return x
+
+
 class VisionEncoder(nn.Module):
     """
     3D Vision Transformer (ViT) Encoder for Video Latent Representation.
@@ -73,13 +102,11 @@ class VisionEncoder(nn.Module):
         # 5. Final Norm
         self.norm = nn.LayerNorm(d_model)
         
-        # 6. Projection Head (MLP + LayerNorm) — Critical for SIGReg stability (LeWM §3.2)
-        # Projects latent features through a non-linear bottleneck before SIGReg is applied.
-        self.projection_head = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.LayerNorm(d_model),
-            nn.GELU(),
-        )
+        # 6. Projection Head (MLP + BatchNorm) — Critical for SIGReg stability (LeWM §3.1)
+        # LeWM explicitly requires BatchNorm (not LayerNorm) after the encoder because
+        # "the final ViT layer applies a Layer Normalization, which prevents our
+        # anti-collapse objective from being optimized effectively."
+        self.projection_head = ProjectionHead(d_model)
         
     def forward(self, x: torch.Tensor, mask_indices: torch.Tensor = None) -> torch.Tensor:
         """

@@ -43,6 +43,7 @@ class TwoRoomsDataset(Dataset):
         data_path: str,
         clip_length: int = 8,
         stride: int = 4,
+        frame_skip: int = 1,
         transform: Optional[callable] = None,
     ):
         """
@@ -51,11 +52,17 @@ class TwoRoomsDataset(Dataset):
             clip_length:  Number of consecutive frames per clip (default: 8).
             stride:       Step size between clip start indices (default: 4).
                           Stride < clip_length creates overlapping clips.
+            frame_skip:   Temporal subsampling within each clip (default: 1).
+                          With frame_skip=4, a clip spans clip_length*4 original frames,
+                          creating meaningful visual differences between consecutive
+                          clip frames (~1.2 grid units per step vs ~0.3 without skip).
+                          Aligns with LeWM's frame_skip=5 design (arXiv:2603.19312 §D).
             transform:    Optional callable applied to video_frames tensor.
         """
         super().__init__()
         self.clip_length = clip_length
         self.stride = stride
+        self.frame_skip = frame_skip
         self.transform = transform
 
         # --- Load the pre-generated data ---
@@ -91,17 +98,20 @@ class TwoRoomsDataset(Dataset):
 
         # --- Pre-compute all valid clip indices ---
         # A clip is valid if all clip_length frames belong to the same episode.
-        # We compute episode boundaries (start, end) and enumerate windows.
+        # With frame_skip, each clip spans clip_length * frame_skip original frames.
         self.clip_indices = self._build_clip_indices(total_frames)
         print(
             f"[TwoRoomsDataset] Extracted {len(self.clip_indices)} clips "
-            f"(clip_length={clip_length}, stride={stride})."
+            f"(clip_length={clip_length}, stride={stride}, frame_skip={frame_skip})."
         )
 
     def _build_clip_indices(self, total_frames: int) -> list:
         """
         Enumerate all valid (start_frame) indices for sliding-window clips,
         ensuring no clip crosses an episode boundary.
+        
+        With frame_skip > 1, each clip spans clip_length * frame_skip original
+        frames (e.g., clip_length=8, frame_skip=4 → spans 32 frames).
 
         Returns:
             List of integer start-frame indices.
@@ -109,6 +119,9 @@ class TwoRoomsDataset(Dataset):
         episode_starts = self.episode_starts.tolist()
         num_episodes = len(episode_starts)
         clip_starts = []
+        
+        # Total span of one clip in original frame indices
+        clip_span = (self.clip_length - 1) * self.frame_skip + 1
 
         for ep_idx in range(num_episodes):
             ep_start = episode_starts[ep_idx]
@@ -121,16 +134,16 @@ class TwoRoomsDataset(Dataset):
 
             ep_length = ep_end - ep_start
 
-            # Skip episodes shorter than one clip
-            if ep_length < self.clip_length:
+            # Skip episodes shorter than one clip span
+            if ep_length < clip_span:
                 continue
 
             # Enumerate windows with the given stride within this episode
-            max_clip_start = ep_end - self.clip_length
+            max_clip_start = ep_end - clip_span
             frame_idx = ep_start
             while frame_idx <= max_clip_start:
                 clip_starts.append(frame_idx)
-                frame_idx += self.stride
+                frame_idx += self.stride * self.frame_skip
 
         return clip_starts
 
@@ -140,6 +153,10 @@ class TwoRoomsDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         """
         Returns a single clip as a dictionary of tensors.
+        
+        With frame_skip > 1, frames are subsampled from a larger window:
+        indices = [start, start+skip, start+2*skip, ..., start+(T-1)*skip]
+        Actions are the dominant (most common) action in each skip block.
 
         Returns:
             dict with keys:
@@ -150,14 +167,33 @@ class TwoRoomsDataset(Dataset):
                 'room_ids':       [T]               int64
         """
         start = self.clip_indices[idx]
-        end = start + self.clip_length
+        skip = self.frame_skip
+        
+        # Subsampled frame indices within the original trajectory
+        frame_indices = [start + t * skip for t in range(self.clip_length)]
 
-        # Extract the clip slice
-        # frames stored as [total, C, H, W] → clip is [T, C, H, W]
-        video_clip = self.frames[start:end]   # [T, 3, 128, 128]
-        actions = self.actions[start:end]      # [T]
-        positions = self.positions[start:end]  # [T, 2]
-        room_ids = self.room_ids[start:end]    # [T]
+        # Extract subsampled frames
+        video_clip = torch.stack([self.frames[fi] for fi in frame_indices])  # [T, 3, 128, 128]
+        positions = torch.stack([self.positions[fi] for fi in frame_indices])  # [T, 2]
+        room_ids = torch.stack([self.room_ids[fi] for fi in frame_indices])  # [T]
+        
+        # For actions with frame_skip > 1: use the dominant action in each skip block
+        # This is the action that contributes most to the displacement between frames
+        if skip > 1:
+            block_actions = []
+            for t in range(self.clip_length):
+                block_start = start + t * skip
+                block_end = min(block_start + skip, start + (self.clip_length - 1) * skip + 1)
+                block = self.actions[block_start:block_end]
+                # Majority vote: most common action in the block
+                if len(block) > 0:
+                    counts = torch.bincount(block.long(), minlength=self.NUM_ACTIONS)
+                    block_actions.append(counts.argmax())
+                else:
+                    block_actions.append(self.actions[block_start])
+            actions = torch.stack(block_actions)  # [T]
+        else:
+            actions = torch.stack([self.actions[fi] for fi in frame_indices])  # [T]
 
         # Reshape video to CHW temporal format: [C, T, H, W] for the 3D ViT
         video_frames = video_clip.permute(1, 0, 2, 3).contiguous()  # [3, T, 128, 128]
