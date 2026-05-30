@@ -354,7 +354,7 @@ class ALPSModel(nn.Module):
             delta_z = target_z - z_pred_corrected
             
             # 4. Write context-correction directly to Latent-RAG cache
-            self.tactical_layer.rag.write_memory(z_op, delta_z)
+            self.tactical_layer.rag.write_memory(z_op.mean(dim=1), delta_z.mean(dim=1))
             
             outputs["learning_triggered"] = True
             outputs["original_action"] = actions
