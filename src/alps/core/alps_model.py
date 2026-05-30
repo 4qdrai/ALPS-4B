@@ -261,9 +261,11 @@ class ALPSModel(nn.Module):
             outputs["rag_auto_write"] = False
         
         # --- 7. LOSS AGGREGATION & EBM BINDING ---
-        # Compute prediction energy errors across scales using the clean future targets
-        z_str_pred = self.strategic_layer.predict_next_concept(z_strategic, z_strategic_target)
-        z_tac_pred = self.tactical_layer.predict_next_subgoal(z_tactical, z_strategic_target)
+        # Compute prediction energy errors across scales using the top-down predictive cascade (Oracle Fix)
+        # 1. Strategic Layer predicts future concept based on current concept (self-conditioned)
+        z_str_pred = self.strategic_layer.predict_next_concept(z_strategic, z_strategic)
+        # 2. Tactical Layer predicts future subgoal conditioned on the PREDICTED future concept (detached to isolate layers)
+        z_tac_pred = self.tactical_layer.predict_next_subgoal(z_tactical, z_str_pred.detach())
         
         # Invoke our dedicated MultiScaleLoss module to cleanly aggregate prediction and regularization errors
         loss_dict = self.criterion(

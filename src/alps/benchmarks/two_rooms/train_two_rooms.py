@@ -268,14 +268,14 @@ class TwoRoomsALPS(nn.Module):
             z_tactical_target = z_tactical_target.detach()
 
         # ── 6. LOSS AGGREGATION & EBM BINDING ───────────────────────────────
-        pred_loss_str = F.mse_loss(
-            self.strategic_layer.predict_next_concept(z_strategic, z_strategic_target),
-            z_strategic_target.detach(),
-        )
-        pred_loss_tac = F.mse_loss(
-            self.tactical_layer.predict_next_subgoal(z_tactical, z_strategic_target),
-            z_tactical_target.detach(),
-        )
+        # Compute prediction energy errors across scales using the top-down predictive cascade (Oracle Fix)
+        # 1. Strategic Layer predicts future concept based on current concept (self-conditioned)
+        z_str_pred = self.strategic_layer.predict_next_concept(z_strategic, z_strategic)
+        # 2. Tactical Layer predicts future subgoal conditioned on the PREDICTED future concept (detached to isolate layers)
+        z_tac_pred = self.tactical_layer.predict_next_subgoal(z_tactical, z_str_pred.detach())
+
+        pred_loss_str = F.mse_loss(z_str_pred, z_strategic_target.detach())
+        pred_loss_tac = F.mse_loss(z_tac_pred, z_tactical_target.detach())
 
         total_sigreg = sigreg_op + sigreg_tac + sigreg_str
         loss_total = (

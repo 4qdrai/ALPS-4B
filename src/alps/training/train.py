@@ -80,11 +80,11 @@ def run_unsupervised_training(epochs: int = 10, batch_size: int = 4):
     
     print(f"Loading UCF101 dataset from data/...")
     dataset = UCF101Dataset(root_dir="data", frames_per_clip=16, resolution=resolution)
-    
     # Fallback to simulated data if run from wrong directory or data missing
     if len(dataset.video_paths) == 0:
         print("Falling back to simulated data...")
         num_batches = 1
+        # Wrap the single simulated tensor in a list of tuples/elements to mimic batch iteration
         dataloader = [(torch.randn(batch_size, 3, 16, resolution, resolution))]
     else:
         # Use num_workers=2 to speed up IO
