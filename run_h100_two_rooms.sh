@@ -65,9 +65,10 @@ fi
 
 # --- 3. TRAIN ---
 echo ""
-echo "[3/5] Training ALPS-4B on Two Rooms (50 epochs, H100 GPU)..."
+echo "[3/5] Training ALPS-4B on Two Rooms (10 epochs, d_model=384, H100 GPU)..."
 python -m alps.benchmarks.two_rooms.train_two_rooms \
-    --epochs 50 \
+    --epochs 10 \
+    --d-model 384 \
     --batch-size 32 \
     --lr 1e-3 \
     --lambda-sigreg 0.6 \

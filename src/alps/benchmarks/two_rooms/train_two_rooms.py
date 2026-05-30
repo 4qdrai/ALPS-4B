@@ -490,7 +490,7 @@ def train_two_rooms(
                 video_frames,
                 actions_mean,
                 prev_latents=prev_latents,
-                force_system2=(epoch <= 5),  # Force System 2 for first 5 epochs
+                force_system2=(epoch <= (2 if epochs <= 10 else 5)),  # Force System 2 for early warmup epochs
             )
 
             # Track latent history for pinning detection
