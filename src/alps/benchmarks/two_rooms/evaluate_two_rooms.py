@@ -52,16 +52,14 @@ from alps.benchmarks.two_rooms.train_two_rooms import TwoRoomsALPS
 
 class LatentPositionProbe(nn.Module):
     """
-    An improved 3-layer MLP with LayerNorm and Dropout trained to decode absolute
-    2D positions from latent states with high precision and strong generalisation.
+    An improved 3-layer MLP trained to decode absolute 2D positions from latent states
+    while preserving the raw spatial representation dimensions.
     """
     def __init__(self, d_model: int = 128):
         super().__init__()
         self.net = nn.Sequential(
-            nn.LayerNorm(d_model),
             nn.Linear(d_model, 128),
             nn.GELU(),
-            nn.Dropout(0.05),
             nn.Linear(128, 64),
             nn.GELU(),
             nn.Linear(64, 2)
@@ -1081,9 +1079,9 @@ def generate_all_results(
     print(f"Loading weights from {model_path} ...")
     checkpoint = torch.load(model_path, map_location=device, weights_only=True)
     if "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     else:
-        model.load_state_dict(checkpoint, strict=False)
+        model.load_state_dict(checkpoint, strict=True)
     print("Model loaded successfully.")
 
     # 3. Train decoding probe
