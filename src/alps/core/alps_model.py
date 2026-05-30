@@ -103,11 +103,27 @@ class ALPSModel(nn.Module):
         z_t = self.encoder(video_frames) # [B, N, D]
         
         # System health check
+        # NaNs/Infs are always catastrophic and must trigger fallback to protect weights
+        has_nan_inf = self.fallback.check_nan_inf(z_t)
+        if has_nan_inf:
+            outputs["action"] = self.fallback.get_minimal_risk_action(actions)
+            outputs["fallback_triggered"] = True
+            outputs["system_healthy"] = False
+            outputs["health_status"] = "NaN/Infinity detected in latent representations"
+            outputs["system2_activated"] = False
+            outputs["loss"] = torch.tensor(0.0, device=video_frames.device, requires_grad=True)
+            outputs["energy"] = torch.tensor(10.0, device=video_frames.device)
+            return outputs
+
         system_healthy, health_msg = self.fallback.verify_system_health(z_t, prev_latents)
         outputs["system_healthy"] = system_healthy
         outputs["health_status"] = health_msg
         
-        if not system_healthy:
+        # During training, we do NOT trigger fallback or early return on variance or pinning triggers.
+        # Doing so would stop gradient updates, freezing the model weights in a collapsed state forever.
+        # Instead, we let training proceed normally so that SIGReg can generate active gradients to recover the variance!
+        # During evaluation (self.training is False), the strict early-return watchdog is fully enforced.
+        if not system_healthy and not self.training:
             # Watchdog trigger! Bypasses all forward planning, runs Lyapunov MRC
             outputs["action"] = self.fallback.get_minimal_risk_action(actions)
             outputs["fallback_triggered"] = True

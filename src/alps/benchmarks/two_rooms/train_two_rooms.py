@@ -160,14 +160,31 @@ class TwoRoomsALPS(nn.Module):
         z_t = self.encoder(video_frames)  # [B, N, D]  (N=256 patches, D=128)
 
         # ── 2. SYSTEM INTEGRITY CHECK (out-of-gradient watchdog) ────────────
+        # NaNs/Infs are always catastrophic and must trigger fallback to protect weights
+        has_nan_inf = self.fallback.check_nan_inf(z_t)
+        if has_nan_inf:
+            outputs["action"] = self.fallback.get_minimal_risk_action(actions_onehot, current_position=current_position, complex_mode=self.complex_mode)
+            outputs["fallback_triggered"] = True
+            outputs["system_healthy"] = False
+            outputs["health_status"] = "NaN/Infinity detected in latent representations"
+            outputs["system2_activated"] = False
+            outputs["loss"] = torch.tensor(
+                0.0, device=video_frames.device, requires_grad=True
+            )
+            outputs["energy"] = torch.tensor(10.0, device=video_frames.device)
+            return outputs
+
         system_healthy, health_msg = self.fallback.verify_system_health(
             z_t, prev_latents
         )
         outputs["system_healthy"] = system_healthy
         outputs["health_status"] = health_msg
 
-        if not system_healthy:
-            # Watchdog trigger — bypass all planning, return MRC action (guiding to safe haven if position is known)
+        # During training, we do NOT trigger fallback or early return on variance or pinning triggers.
+        # Doing so would stop gradient updates, freezing the model weights in a collapsed state forever.
+        # Instead, we let training proceed normally so that SIGReg can generate active gradients to recover the variance!
+        # During evaluation (self.training is False), the strict early-return watchdog is fully enforced.
+        if not system_healthy and not self.training:
             outputs["action"] = self.fallback.get_minimal_risk_action(actions_onehot, current_position=current_position, complex_mode=self.complex_mode)
             outputs["fallback_triggered"] = True
             outputs["system2_activated"] = False
@@ -565,6 +582,9 @@ def train_two_rooms(
             # Auto-push to GitHub
             print(f"  ⬆️ Pushing checkpoint {epoch} to GitHub...")
             try:
+                # Configure git user identity locally in repository if not set
+                subprocess.run(["git", "config", "user.email", "alps4b@runpod.io"], check=True, cwd=save_dir)
+                subprocess.run(["git", "config", "user.name", "ALPS-4B H100 Runner"], check=True, cwd=save_dir)
                 subprocess.run(["git", "add", os.path.basename(ckpt_path)], check=True, cwd=save_dir)
                 subprocess.run(["git", "commit", "-m", f"Auto-save checkpoint {os.path.basename(ckpt_path)}"], check=True, cwd=save_dir)
                 
@@ -603,6 +623,9 @@ def train_two_rooms(
     # Auto-push final model to GitHub
     print(f"  ⬆️ Pushing final model to GitHub...")
     try:
+        # Configure git user identity locally in repository if not set
+        subprocess.run(["git", "config", "user.email", "alps4b@runpod.io"], check=True, cwd=save_dir)
+        subprocess.run(["git", "config", "user.name", "ALPS-4B H100 Runner"], check=True, cwd=save_dir)
         subprocess.run(["git", "add", os.path.basename(final_model_path)], check=True, cwd=save_dir)
         subprocess.run(["git", "commit", "-m", f"Auto-save final model {os.path.basename(final_model_path)}"], check=True, cwd=save_dir)
         pat = os.environ.get("GITHUB_PAT")
