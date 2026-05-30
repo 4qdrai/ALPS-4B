@@ -1121,10 +1121,18 @@ def generate_all_results(
 
     print(f"Loading weights from {model_path} ...")
     checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-    if "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"], strict=True)
-    else:
-        model.load_state_dict(checkpoint, strict=True)
+    state_dict = checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint
+    
+    # Dynamically handle ProjectionHead LayerNorm vs BatchNorm compatibility
+    if "encoder.projection_head.0.weight" in state_dict:
+        print("  [Compat] Found sequential LayerNorm projection head in checkpoint. Adapting model architecture...")
+        model.encoder.projection_head = nn.Sequential(
+            nn.Linear(model.d_model, model.d_model),
+            nn.LayerNorm(model.d_model),
+            nn.GELU()
+        ).to(device)
+        
+    model.load_state_dict(state_dict, strict=True)
     print("Model loaded successfully.")
 
     # 3. Train decoding probe
