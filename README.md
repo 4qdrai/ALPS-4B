@@ -72,11 +72,8 @@ ALPS-4B integrates 42 distinct architectural advantages over standard autoregres
 
 ## 🖼️ Full System Architecture
 
-### Publication-Quality Research Paper Diagram
-![ALPS-4B Research Paper Architecture](figures/alps4b_paper_arch.png)
-
-### Complete Wiring & Feedback Loops
-![ALPS-4B Complete Technical Architecture](figures/alps4b_architecture.png)
+### Publication-Quality Academic Architecture Diagram
+![ALPS-4B Publication-Quality Academic Architecture](figures/alps4b_clean_architecture.png)
 
 ---
 
