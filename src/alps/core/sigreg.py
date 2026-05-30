@@ -10,76 +10,39 @@ class SIGReg(nn.Module):
     without momentum encoders or stop-gradients, as described in LeWorldModel (arXiv:2603.19312) 
     and LeJEPA.
     
-    SIGReg projects high-dimensional latent vectors onto random 1D directions and applies
-    the analytical Epps-Pulley normality test statistic. Enforcing normality across 
-    random 1D projections guarantees that the joint latent distribution matches an isotropic
-    multivariate Gaussian, preventing both representation and dimensional collapse.
-    
-    Features:
-    1. Full SIGReg (Epps-Pulley Characteristic Function goodness-of-fit).
-    2. Weak-SIGReg (Covariance-based sketching, computationally cheaper).
+    This implementation aligns exactly with the official knots-based Epps-Pulley characteristic function
+    normality check from the LeWorldModel codebase. It runs in O(N) memory (avoiding O(N^2) pairwise 
+    VRAM crashes) and operates directly on raw projections without standardizing the batch variance,
+    thus closing the scaling loophole and robustly preventing representation collapse.
     """
-    def __init__(self, d_model: int, num_slices: int = 1024, beta: float = 1.0, weak_only: bool = False):
+    def __init__(self, d_model: int, num_slices: int = 1024, knots: int = 17, weak_only: bool = False, beta: float = 1.0):
         super().__init__()
         self.d_model = d_model
         self.num_slices = num_slices
-        self.beta = beta
         self.weak_only = weak_only
+        self.beta = beta
         
-        # We store the random projection matrix as a registered buffer.
-        # It gets re-initialized periodically, or is kept static to stabilize training.
+        # Knots setup for Epps-Pulley characteristic function check
+        t = torch.linspace(0, 3, knots, dtype=torch.float32)
+        dt = 3 / (knots - 1)
+        weights = torch.full((knots,), 2 * dt, dtype=torch.float32)
+        weights[[0, -1]] = dt
+        window = torch.exp(-t.square() / 2.0)
+        
+        self.register_buffer("t", t)
+        self.register_buffer("phi", window)
+        self.register_buffer("weights", weights * window)
+        
+        # Store random projections matrix
         self.register_buffer("projection_matrix", torch.randn(d_model, num_slices))
         self.reset_projections()
         
     def reset_projections(self):
-        """Generates new random orthornormal or isotropic projection vectors on the unit sphere."""
+        """Generates new random projection vectors on the unit sphere."""
         device = self.projection_matrix.device
-        # Generate random directions from an isotropic Gaussian
         W = torch.randn(self.d_model, self.num_slices, device=device)
-        # Normalize each column to be a unit vector on the hypersphere
         norms = torch.norm(W, dim=0, keepdim=True)
         self.projection_matrix.copy_(W / (norms + 1e-8))
-        
-    def epps_pulley_statistic(self, y: torch.Tensor) -> torch.Tensor:
-        """
-        Computes the analytical Epps-Pulley test statistic for each slice.
-        
-        Args:
-            y: Standardized 1D projections, Shape: [N, num_slices]
-               Each column represents a batch of projections on a specific random unit vector.
-               We expect each column to follow a standard normal N(0, 1).
-               
-        Returns:
-            The mean Epps-Pulley statistic across all slices.
-        """
-        N = y.shape[0]
-        if N <= 1:
-            return torch.tensor(0.0, device=y.device, requires_grad=True)
-            
-        beta2 = self.beta ** 2
-        
-        # 1. Double summation term: sum_{j=1}^N sum_{k=1}^N exp(-beta^2 / 2 * (y_j - y_k)^2)
-        # We vectorise this over slices.
-        # y: [N, S] where S = num_slices
-        # We can expand y to [N, 1, S] and [1, N, S] to compute pairwise differences.
-        y_expanded1 = y.unsqueeze(1) # [N, 1, S]
-        y_expanded2 = y.unsqueeze(0) # [1, N, S]
-        diff2 = (y_expanded1 - y_expanded2) ** 2 # [N, N, S]
-        term1 = torch.exp(-0.5 * beta2 * diff2).sum(dim=(0, 1)) / N # [S]
-        
-        # 2. Single summation term: -2 * (1 + beta^2)^(-1/2) * sum_{j=1}^N exp(-beta^2 * y_j^2 / (2 * (1 + beta^2)))
-        coeff2 = -2.0 / math_sqrt(1.0 + beta2)
-        exponent2 = -0.5 * beta2 * (y ** 2) / (1.0 + beta2)
-        term2 = coeff2 * torch.exp(exponent2).sum(dim=0) # [S]
-        
-        # 3. Constant term: N * (1 + 2 * beta^2)^(-1/2)
-        term3 = N / math_sqrt(1.0 + 2.0 * beta2)
-        
-        # Total statistic for each slice
-        T = (term1 + term2 + term3)
-        
-        # Return the average across all projection slices
-        return T.mean()
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """
@@ -102,35 +65,32 @@ class SIGReg(nn.Module):
         if N <= 1:
             return torch.tensor(0.0, device=z.device, requires_grad=True)
             
-        # Dynamically refresh projections occasionally in eval or training to ensure full coverage
-        # In practice, static random matrices during a step are sufficient.
-        
-        # Project latents onto the random slices
-        # z: [N, D], projection_matrix: [D, S] -> y: [N, S]
-        y = torch.matmul(z, self.projection_matrix)
-        
-        if self.weak_only or N > 1024:
+        if self.weak_only:
             # Weak-SIGReg: Frobenius norm of covariance of native features minus Identity.
-            # Computes covariance directly on the native latent space z instead of the projected space y
-            # to avoid rank-deficiency issues since S (1024) > D (384/128).
             # Cov(z) = 1/(N-1) * (z - mean_z)^T * (z - mean_z)
             mean_z = z.mean(dim=0, keepdim=True)
             z_centered = z - mean_z
             cov = torch.matmul(z_centered.t(), z_centered) / (N - 1)
-            # We want Cov(z) to be close to the identity matrix
             identity = torch.eye(cov.shape[0], device=cov.device)
             loss = torch.norm(cov - identity, p="fro") ** 2 / cov.shape[0]
             return loss
-            
-        # Standardize each slice to zero mean and unit variance (empirical standardization)
-        # so that it can be compared to N(0, 1) using Epps-Pulley.
-        mean = y.mean(dim=0, keepdim=True)
-        std = y.std(dim=0, keepdim=True, unbiased=True) + 1e-6
-        y_standardized = (y - mean) / std
-        
-        # Compute Epps-Pulley statistic
-        return self.epps_pulley_statistic(y_standardized)
 
-def math_sqrt(x: float) -> float:
-    import math
-    return math.sqrt(x)
+        # Standard SIGReg (from the LeWorldModel paper)
+        # 1. Project latents onto random unit-norm directions
+        # z: [N, D], projection_matrix: [D, S] -> y: [N, S]
+        y = torch.matmul(z, self.projection_matrix)
+        
+        # 2. Compute Epps-Pulley characteristic function difference linearly (O(N) memory)
+        # x_t: [N, S, K] where K = knots
+        x_t = y.unsqueeze(-1) * self.t
+        
+        # Empirical characteristic function: mean(cos(x*t)) and mean(sin(x*t)) over the batch (dim=0)
+        cos_term = x_t.cos().mean(dim=0) - self.phi  # [S, K]
+        sin_term = x_t.sin().mean(dim=0)             # [S, K]
+        
+        err = cos_term.square() + sin_term.square()   # [S, K]
+        
+        # Epps-Pulley statistic scales linearly with the batch size N
+        statistic = (err @ self.weights) * N         # [S]
+        
+        return statistic.mean()
