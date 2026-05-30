@@ -54,6 +54,7 @@ class LatentPositionProbe(nn.Module):
     """
     An improved 3-layer MLP trained to decode absolute 2D positions from latent states
     while preserving the raw spatial representation dimensions.
+    Includes target normalization/denormalization to prevent scaling mismatches.
     """
     def __init__(self, d_model: int = 128):
         super().__init__()
@@ -64,11 +65,21 @@ class LatentPositionProbe(nn.Module):
             nn.GELU(),
             nn.Linear(64, 2)
         )
+        self.register_buffer("target_mean", torch.tensor([5.0, 5.0]))
+        self.register_buffer("target_std", torch.tensor([2.5, 2.5]))
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         # z: [B, N, D] or [B, D]
         if z.dim() == 3:
             # Mean pool over spatial/temporal patches
+            z = z.mean(dim=1)
+        normalized_pred = self.net(z)
+        # De-normalize predictions back to physical coordinates [0, 10]
+        return normalized_pred * self.target_std + self.target_mean
+
+    def forward_normalized(self, z: torch.Tensor) -> torch.Tensor:
+        # z: [B, N, D] or [B, D]
+        if z.dim() == 3:
             z = z.mean(dim=1)
         return self.net(z)
 
@@ -77,13 +88,14 @@ def train_position_probe(
     model: nn.Module,
     dataset: TwoRoomsDataset,
     device: torch.device,
-    epochs: int = 25,
+    epochs: int = 100,
     batch_size: int = 64
 ) -> LatentPositionProbe:
     """
     Trains an improved LatentPositionProbe on frozen latent representations.
-    Optimized: Pre-computes latents, splits into train/val sets (80%/20%),
-    applies Cosine Annealing, and saves the best model checkpoint to prevent overfitting.
+    Optimized: Pre-computes latents, applies target normalization (mean=0, std=1) to prevent
+    gradient scale mismatch, splits into train/val sets (80%/20%), applies Cosine Annealing,
+    and saves the best model checkpoint based on validation loss.
     """
     print("[Probe Training] Initializing improved position decoding probe...")
     probe = LatentPositionProbe(d_model=model.d_model).to(device)
@@ -95,7 +107,7 @@ def train_position_probe(
     model.eval()
 
     # Subsample dataset to speed up training of a simple linear probe
-    max_samples = 5000
+    max_samples = 15000
     dataset_size = len(dataset)
     indices = list(range(dataset_size))
     
@@ -140,6 +152,17 @@ def train_position_probe(
     all_z = torch.cat(pre_latents, dim=0)       # [subsample_size, d_model]
     all_y = torch.cat(pre_targets, dim=0)       # [subsample_size, 2]
     
+    # Calculate target statistics and fit normalizer buffers
+    all_y_mean = all_y.mean(dim=0)
+    all_y_std = all_y.std(dim=0) + 1e-6
+    print(f"[Probe Training] Target coordinate normalization fit: mean={all_y_mean.tolist()}, std={all_y_std.tolist()}")
+    
+    probe.target_mean.copy_(all_y_mean.to(device))
+    probe.target_std.copy_(all_y_std.to(device))
+    
+    # Standardize coordinate targets
+    all_y_normalized = (all_y - all_y_mean) / all_y_std
+    
     print(f"[Probe Training] Pre-computation complete. Latents size: {all_z.shape}")
     
     # Train-Validation Split (80% Train, 20% Val)
@@ -147,15 +170,15 @@ def train_position_probe(
     perm = torch.randperm(subsample_size)
     
     train_z = all_z[perm[:num_train]]
-    train_y = all_y[perm[:num_train]]
+    train_y_norm = all_y_normalized[perm[:num_train]]
     val_z = all_z[perm[num_train:]]
-    val_y = all_y[perm[num_train:]]
+    val_y_norm = all_y_normalized[perm[num_train:]]
     
     print(f"[Probe Training] Split: {num_train} train samples, {subsample_size - num_train} val samples.")
     print(f"[Probe Training] Training decoder probe for {epochs} epochs with Cosine Annealing and early-saving...")
     
     # Create simple tensor dataset and loader for fast training
-    tensor_dataset = torch.utils.data.TensorDataset(train_z, train_y)
+    tensor_dataset = torch.utils.data.TensorDataset(train_z, train_y_norm)
     dataloader = DataLoader(tensor_dataset, batch_size=batch_size, shuffle=True)
 
     best_val_loss = float("inf")
@@ -169,7 +192,7 @@ def train_position_probe(
             y_batch = y_batch.to(device)
 
             optimizer.zero_grad()
-            predictions = probe(z_batch)
+            predictions = probe.forward_normalized(z_batch)
             loss = criterion(predictions, y_batch)
             loss.backward()
             optimizer.step()
@@ -181,8 +204,8 @@ def train_position_probe(
         # Evaluate on validation split
         probe.eval()
         with torch.no_grad():
-            val_predictions = probe(val_z.to(device))
-            val_loss = criterion(val_predictions, val_y.to(device)).item()
+            val_predictions = probe.forward_normalized(val_z.to(device))
+            val_loss = criterion(val_predictions, val_y_norm.to(device)).item()
 
         # Track the best weights
         if val_loss < best_val_loss:
@@ -190,13 +213,17 @@ def train_position_probe(
             import copy
             best_weights = copy.deepcopy(probe.state_dict())
 
-        # Print progress
-        print(f"  Epoch {epoch:02d}/{epochs:02d} | Train MSE: {epoch_loss/len(dataloader):.4f} | Val MSE: {val_loss:.4f}")
+        # Print progress with physical scale equivalent MSE for intuitive verification
+        if epoch % 5 == 0 or epoch == 1 or epoch == epochs:
+            val_mse_physical = val_loss * (all_y_std.pow(2).mean().item())
+            print(f"  Epoch {epoch:02d}/{epochs:02d} | Train MSE (Norm): {epoch_loss/len(dataloader):.4f} | Val MSE (Norm): {val_loss:.4f} | Val MSE (Physical): {val_mse_physical:.4f}")
 
     # Restore the best validation weights
     if best_weights is not None:
         probe.load_state_dict(best_weights)
-        print(f"[Probe Training] Restored best weights with Val MSE: {best_val_loss:.4f}")
+        # Compute restored physical MSE
+        best_val_mse_physical = best_val_loss * (all_y_std.pow(2).mean().item())
+        print(f"[Probe Training] Restored best weights with Val MSE (Norm): {best_val_loss:.4f} | Val MSE (Physical): {best_val_mse_physical:.4f}")
 
     probe.eval()
     print("[Probe Training] Decodability check complete.")
