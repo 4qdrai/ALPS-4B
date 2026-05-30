@@ -750,6 +750,8 @@ def train_two_rooms(
                 batch_time = time.perf_counter() - batch_start
                 pred = step_pred_loss / max(1, num_valid_steps)
                 sigreg = step_sigreg_loss / max(1, num_valid_steps)
+                vq = step_vq_loss / max(1, num_valid_steps)
+                moe = step_moe_loss / max(1, num_valid_steps)
                 pos = avg_pos_loss.item()
                 s2_pct = step_s2_count / max(1, num_valid_steps) * 100
 
@@ -758,8 +760,10 @@ def train_two_rooms(
                     f"Batch {batch_idx:04d}/{num_batches:04d} | "
                     f"Loss: {loss_val:.4f} | "
                     f"Pred: {pred:.4f} | "
-                    f"Pos: {pos:.4f} | "
                     f"SIGReg: {sigreg:.4f} | "
+                    f"VQ: {vq:.4f} | "
+                    f"MoE: {moe:.4f} | "
+                    f"Pos: {pos:.4f} | "
                     f"Sys2: {s2_pct:.0f}% | "
                     f"Time: {batch_time:.3f}s"
                 )
