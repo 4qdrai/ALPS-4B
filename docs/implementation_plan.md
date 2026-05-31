@@ -7,7 +7,7 @@
 
 > [!CAUTION]
 > **DEADLINE: June 1, 2026** — Only 6 days remaining!
-> Pitch sessions: June 24-25, 2026. Evidence repo → https://github.com/4qdrai/4B-JEPA
+> Pitch sessions: June 24-25, 2026. Evidence repo → https://github.com/4qdrai/ALPS-4B
 
 ---
 
@@ -197,7 +197,7 @@ After auditing all 701 lines of the original conversation, the compiled summary,
 ## 5. Repository Structure
 
 ```
-4B-JEPA/                                    (GitHub: 4qdrai/4B-JEPA)
+ALPS-4B/                                    (GitHub: 4qdrai/ALPS-4B)
 ├── README.md                               # World-class scientific pitch
 ├── LICENSE                                  # Apache 2.0
 ├── CITATION.cff                             # Academic citation

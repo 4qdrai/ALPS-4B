@@ -30,11 +30,11 @@ echo "[1/5] Setting up environment..."
 
 # Clone the repo
 cd /workspace
-if [ ! -d "4B-JEPA" ]; then
-    git clone https://github.com/4qdrai/4B-JEPA.git
-    cd 4B-JEPA
+if [ ! -d "ALPS-4B" ]; then
+    git clone https://github.com/4qdrai/ALPS-4B.git
+    cd ALPS-4B
 else
-    cd 4B-JEPA
+    cd ALPS-4B
     git pull
 fi
 
@@ -124,7 +124,7 @@ echo ""
 echo "============================================================"
 echo "  PIPELINE COMPLETE!"
 echo ""
-echo "  Results pushed to: https://github.com/4qdrai/4B-JEPA"
+echo "  Results pushed to: https://github.com/4qdrai/ALPS-4B"
 echo "  Figures saved in:  results/two_rooms/figures/"
 echo "============================================================"
 

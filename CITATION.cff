@@ -6,9 +6,9 @@ authors:
 title: "ALPS-4B: Adaptive Latent Prediction System with Hierarchical Joint-Embedding Predictive Architectures and Reflexive Safety Watchdogs"
 version: "0.1.0"
 date-released: "2026-05-25"
-url: "https://github.com/4qdrai/4B-JEPA"
+url: "https://github.com/4qdrai/ALPS-4B"
 license: "Apache-2.0"
-repository-code: "https://github.com/4qdrai/4B-JEPA"
+repository-code: "https://github.com/4qdrai/ALPS-4B"
 abstract: "ALPS-4B (Adaptive Latent Prediction System, Four-Brain) is a multi-scale, temporally decoupled Joint-Embedding Predictive Architecture (JEPA) incorporating spatiotemporal tube masking, Banach checker convergence proofs, and out-of-gradient safety watchdogs for lifelong learning and system integrity."
 
 references:

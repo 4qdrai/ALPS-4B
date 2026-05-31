@@ -9,7 +9,7 @@
 ---
 
 ## The 42 Disruptive Capabilities of ALPS-4B
-ALPS-4B integrates 42 distinct architectural advantages over standard autoregressive and Joint-Embedding models, comprehensively solving physical reasoning, catastrophic forgetting, and robotic safety constraints. For a full mathematical breakdown, read our [Mathematical Foundations & Proofs](file:///h:/Meine%20Ablage/SayBouBase/raw/Projects/AIFrontTierChallenge/Synthese/FormulatioofEdgeHypotheses&Evidences/Evidences/4B-JEPA/docs/mathematical_foundations.md) and the [Scientific Paper](file:///h:/Meine%20Ablage/SayBouBase/raw/Projects/AIFrontTierChallenge/Synthese/FormulatioofEdgeHypotheses&Evidences/Evidences/4B-JEPA/docs/scientific_paper.md).
+ALPS-4B integrates 42 distinct architectural advantages over standard autoregressive and Joint-Embedding models, comprehensively solving physical reasoning, catastrophic forgetting, and robotic safety constraints. For a full mathematical breakdown, read our [Mathematical Foundations & Proofs](file:///h:/Meine%20Ablage/SayBouBase/raw/Projects/AIFrontTierChallenge/Synthese/FormulatioofEdgeHypotheses&Evidences/Evidences/ALPS-4B/docs/mathematical_foundations.md) and the [Scientific Paper](file:///h:/Meine%20Ablage/SayBouBase/raw/Projects/AIFrontTierChallenge/Synthese/FormulatioofEdgeHypotheses&Evidences/Evidences/ALPS-4B/docs/scientific_paper.md).
 
 <details>
 <summary><b>Click to expand all 42 Capabilities</b></summary>
@@ -137,7 +137,7 @@ For detailed mathematical proofs of all stability guarantees, see our [Mathemati
 ## 📂 Repository Structure
 
 ```
-4B-JEPA/                                    (GitHub: 4qdrai/4B-JEPA)
+ALPS-4B/                                    (GitHub: 4qdrai/ALPS-4B)
 ├── README.md                               # World-class scientific pitch
 ├── LICENSE                                  # Apache 2.0
 ├── CITATION.cff                             # Academic citation
@@ -284,11 +284,11 @@ To synchronize your code, simulation results, and training checkpoints between y
 Configure Git on your H100 instance to push and pull seamlessly without password prompts by using your PAT:
 ```bash
 # Clone the repository with the PAT embedded in the URL
-git clone https://<your-github-username>:<your-github-pat>@github.com/4qdrai/4B-JEPA.git
-cd 4B-JEPA
+git clone https://<your-github-username>:<your-github-pat>@github.com/4qdrai/ALPS-4B.git
+cd ALPS-4B
 
 # Or, if already cloned, update the remote URL to embed the PAT
-git remote set-url origin https://<your-github-username>:<your-github-pat>@github.com/4qdrai/4B-JEPA.git
+git remote set-url origin https://<your-github-username>:<your-github-pat>@github.com/4qdrai/ALPS-4B.git
 ```
 
 Now, pushing and pulling is fully automated:

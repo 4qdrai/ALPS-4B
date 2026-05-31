@@ -827,7 +827,7 @@ def train_two_rooms(
                 # Push using the PAT from environment
                 pat = os.environ.get("GITHUB_PAT")
                 if pat:
-                    remote_url = f"https://oauth2:{pat}@github.com/4qdrai/4B-JEPA.git"
+                    remote_url = f"https://oauth2:{pat}@github.com/4qdrai/ALPS-4B.git"
                     subprocess.run(["git", "push", remote_url, "main"], check=True, cwd=save_dir)
                     print("  ✅ Successfully pushed to GitHub.")
                 else:
@@ -866,7 +866,7 @@ def train_two_rooms(
         subprocess.run(["git", "commit", "-m", f"Auto-save final model {os.path.basename(final_model_path)}"], check=True, cwd=save_dir)
         pat = os.environ.get("GITHUB_PAT")
         if pat:
-            remote_url = f"https://oauth2:{pat}@github.com/4qdrai/4B-JEPA.git"
+            remote_url = f"https://oauth2:{pat}@github.com/4qdrai/ALPS-4B.git"
             subprocess.run(["git", "push", remote_url, "main"], check=True, cwd=save_dir)
             print("  ✅ Successfully pushed final model to GitHub.")
         else:

@@ -2,7 +2,7 @@
 
 **4QDR AI Research Team**  
 *research@4qdr.ai*  
-[GitHub Repository](https://github.com/4qdrai/4B-JEPA)
+[GitHub Repository](https://github.com/4qdrai/ALPS-4B)
 
 ---
 
