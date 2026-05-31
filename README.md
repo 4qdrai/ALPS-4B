@@ -1,5 +1,5 @@
 # ALPS-4B: Adaptive Latent Prediction System (Four-Brain)
-## Scientific Evidence Repository for the SPRIND Next Frontier AI Challenge
+## Adaptive Latent Prediction System (Four-Brain)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Academic Paper](https://img.shields.io/badge/Scientific_Paper-LaTeX-purple.svg)](docs/scientific_paper.tex)
@@ -8,7 +8,7 @@
 
 ---
 
-## 🏆 The 42 Disruptive Capabilities of ALPS-4B
+## The 42 Disruptive Capabilities of ALPS-4B
 ALPS-4B integrates 42 distinct architectural advantages over standard autoregressive and Joint-Embedding models, comprehensively solving physical reasoning, catastrophic forgetting, and robotic safety constraints. For a full mathematical breakdown, read our [Mathematical Foundations & Proofs](file:///h:/Meine%20Ablage/SayBouBase/raw/Projects/AIFrontTierChallenge/Synthese/FormulatioofEdgeHypotheses&Evidences/Evidences/4B-JEPA/docs/mathematical_foundations.md) and the [Scientific Paper](file:///h:/Meine%20Ablage/SayBouBase/raw/Projects/AIFrontTierChallenge/Synthese/FormulatioofEdgeHypotheses&Evidences/Evidences/4B-JEPA/docs/scientific_paper.md).
 
 <details>

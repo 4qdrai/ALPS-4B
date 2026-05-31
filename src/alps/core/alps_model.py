@@ -17,7 +17,7 @@ class ALPSModel(nn.Module):
     """
     ALPS-4B (Adaptive Latent Prediction System, Four-Brain)
     
-    The master neural network orchestrator for the SPRIND Next Frontier AI Challenge.
+    The master neural network orchestrator for the Adaptive Latent Prediction System (ALPS-4B).
     Integrates:
     - Spatiotemporal Video Encoding (ViT, 16 frames x 224x224)
     - 3-Tier Multi-Scale Decoupled JEPA layers (Strategic / Tactical / Operative)
