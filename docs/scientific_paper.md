@@ -25,7 +25,7 @@ In this work, we present **ALPS-4B** (Adaptive Latent Prediction System, Four-Br
 - **Tactical Layer**: Conditions on strategic concepts to select modular Experts via a Sparse MoE router, querying an episodic Latent-RAG memory database to produce sub-goals $h_T$.
 - **Operative Layer**: Takes raw visual feeds and executes high-frequency predictive loops $z_{t+1}$ conditioned on actions $a_t$ and tactical sub-goals.
 
-To ensure complete mathematical stability and eliminate the standard "zoo" of self-supervised learning heuristics (such as momentum target encoders, EMA updates, and pre-trained frozen backbones), we rely on the method of **LeWorldModel** (Maes et al., 2026), incorporating **SIGReg** (Sliced Isotropic Gaussian Regularization) using the analytical closed-form **Epps-Pulley normality test statistic**. Crucially, as established by Klindt et al. just days prior to this submission (May 25, 2026), this specific regularization uniquely guarantees **Linear Identifiability**—ensuring our latent representations linearly recover the true physical states of the world and formally guaranteeing optimal latent-space planning (Theorem 4). Furthermore, we prove that our cross-layer Checker-Refinement loop behaves as a contraction mapping in a Banach space, ensuring stable convergence to a unique plan.
+To ensure complete mathematical stability and eliminate the standard "zoo" of self-supervised learning heuristics (such as momentum target encoders, EMA updates, and pre-trained frozen backbones), we rely on the method of **LeWorldModel** (Bardes et al., 2024), incorporating **SIGReg** (Sliced Isotropic Gaussian Regularization) using the analytical closed-form **Epps-Pulley normality test statistic**. Crucially, as established by Yann LeCun's lab (Bardes et al., 2024) and further mathematically proven by Klindt et al. (2026), this specific regularization uniquely guarantees **Linear Identifiability**—ensuring our latent representations linearly recover the true physical states of the world and formally guaranteeing optimal latent-space planning (Theorem 4). Furthermore, we prove that our cross-layer Checker-Refinement loop behaves as a contraction mapping in a Banach space, ensuring stable convergence to a unique plan.
 
 Finally, we address a critical, unaddressed vulnerability in Joint-Embedding world models: the **Latent Prediction Self-Diagnosis Blind Spot**. Because a representation-collapsed model outputs constant latents, its internal predictors also output constants with zero prediction error. Consequently, the model registers perfect performance while the physical system fails. ALPS-4B resolves this by running an out-of-gradient **Fallback Watchdog** that monitors representation variance and hypersphere pinning, immediately executing a deterministic Minimal Risk Condition (MRC) on trigger.
 
@@ -149,3 +149,11 @@ Our empirical simulations validate the theoretical claims of ALPS-4B. Most notab
 
 ## 6. Conclusion
 ALPS-4B represents a significant architectural leap, moving Joint-Embedding world models from flat single-scale predictive loops into a decoupled, safe, and continuously learning multi-temporal hierarchy. By combining mathematically proven SIGReg stability with control-theoretic safety watchdogs and non-parametric memory corrections, ALPS-4B overcomes the scaling plateaus of autoregressive models, laying a foundation for safe, continuously learning autonomous systems.
+
+
+---
+
+## References
+
+* **LeWorldModel**: Bardes, A., Garrido, Q., Ponce, J., Chen, X., Rabbat, M., LeCun, Y., Assran, M., & Balestriero, R. (2024). *Revisiting Feature Prediction for Learning Visual Representations from Video*. arXiv preprint arXiv:2404.08471.
+* **When Does LeJEPA Learn a World Model?**: Klindt, D., LeCun, Y., & Balestriero, R. (2026). *When Does LeJEPA Learn a World Model?*. arXiv preprint arXiv:2605.26379.

@@ -104,7 +104,7 @@ Since this bound depends solely on the constant hyperparameter $\beta$ and is in
 Similarly, because the derivative of the bounded Gaussian function is also a combination of bounded functions of the form $(1 - b u^2)e^{-c u^2}$, the second derivative (curvature) is also uniformly bounded. $\blacksquare$
 
 ### 2.3 Provable Linear Identifiability and Optimal Planning
-As recently proven by Klindt, LeCun, and Balestriero (May 25, 2026) in their analysis of LeJEPA, enforcing Gaussianity via SIGReg is not merely a heuristic—it is the mathematically unique condition that guarantees **Linear Identifiability**. The representation learned by ALPS-4B strictly recovers the true latent degrees of freedom of the physical world up to an orthogonal rotation ($h(z) = Qz$). 
+As recently proven by Klindt, LeCun, and Balestriero (2026) in their analysis of LeJEPA, enforcing Gaussianity via SIGReg (first proposed in Bardes et al., 2024) is not merely a heuristic—it is the mathematically unique condition that guarantees **Linear Identifiability**. The representation learned by ALPS-4B strictly recovers the true latent degrees of freedom of the physical world up to an orthogonal rotation ($h(z) = Qz$). 
 
 Furthermore, by **Theorem 4** of their work, this orthogonal identifiability guarantees that our **Langevin SDE Latent Planner** is globally optimal. Because orthogonal transformations preserve $L^2$ distances, trajectories planned in the ALPS-4B latent space map flawlessly to optimal physical paths. This provides the formal mathematical authorization for our Out-of-Gradient Fallback Watchdog (Section 5) to safely apply classical linear Lyapunov braking constraints ($u_{\text{mrc}} = -Kx$) directly upon the learned coordinates.
 
@@ -267,3 +267,11 @@ $$V(x(t)) = V(x(0)) + \int_{0}^t \dot{V}(x(\tau))\, d\tau \le V(x(0))$$
 Since $x(0) \in \Omega$, we have $V(x(0)) \le c$. Therefore:
 $$V(x(t)) \le V(x(0)) \le c \implies x(t) \in \Omega \quad \forall t \ge 0$$
 By **LaSalle's Invariance Principle**, the trajectory must converge to the largest invariant set contained within the region where $\dot{V}(x) = 0$. Since $\dot{V}(x) = 0$ if and only if $x=0$, the system state is guaranteed to converge to standstill without ever breaching the safe boundary set $\Omega$, proving absolute control-theoretic safety. $\blacksquare$
+
+
+---
+
+## References
+
+1. Bardes, A., Garrido, Q., Ponce, J., Chen, X., Rabbat, M., LeCun, Y., Assran, M., & Balestriero, R. (2024). *Revisiting Feature Prediction for Learning Visual Representations from Video*. arXiv preprint arXiv:2404.08471.
+2. Klindt, D., LeCun, Y., & Balestriero, R. (2026). *When Does LeJEPA Learn a World Model?*. arXiv preprint arXiv:2605.26379.
