@@ -152,8 +152,8 @@ def compile_markdown_to_pdf():
     # Make custom adjustments for neat styling
     # 1. Format Author Block
     html_template = html_template.replace(
-        "<p><strong>4QDR AI Research Team</strong><br />\n<em>research@4qdr.ai</em><br />\n<a href=\"https://github.com/4qdrai/ALPS-4B\">GitHub Repository</a></p>",
-        "<div class='author-box'><strong>4QDR AI Research Team</strong><br/><em>research@4qdr.ai</em><br/><a href='https://github.com/4qdrai/ALPS-4B'>GitHub Repository</a></div>"
+        "<p><strong>Dr-Ing. M. Essayed Bouzouraa and 4QDR.AI Labs</strong><br />\n<em>research@4qdr.ai</em><br />\n<a href=\"https://github.com/4qdrai/ALPS-4B\">GitHub Repository</a></p>",
+        "<div class='author-box'><strong>Dr-Ing. M. Essayed Bouzouraa and 4QDR.AI Labs</strong><br/><em>research@4qdr.ai</em><br/><a href='https://github.com/4qdrai/ALPS-4B'>GitHub Repository</a></div>"
     )
     
     # 2. Format Abstract Block

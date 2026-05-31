@@ -1,6 +1,6 @@
 # ALPS-4B: Adaptive Latent Prediction System with Hierarchical Latent Predictive Architectures and Reflexive Safety Watchdogs
 
-**4QDR AI Research Team**  
+**Dr-Ing. M. Essayed Bouzouraa and 4QDR.AI Labs**  
 *research@4qdr.ai*  
 [GitHub Repository](https://github.com/4qdrai/ALPS-4B)
 
