@@ -14,14 +14,14 @@ Intra-layer representation stability is mathematically guaranteed by Sliced Isot
 ---
 
 ## 1. Introduction
-Autoregressive generative models have achieved unparalleled success in text and image domains, yet they encounter severe S-curve performance plateaus in physical, embodied environments. These limitations stem from two fundamental bottlenecks: 
+Autoregressive generative models have achieved unparalleled success in text and image domains (Vaswani et al., 2017), yet they encounter severe S-curve performance plateaus in physical, embodied environments under scaling constraints (Hoffmann et al., 2022). These limitations stem from two fundamental bottlenecks: 
 1. The **complexity cliff** associated with $O(N^2)$ attention scaling over long physical horizons.
 2. The **autoregressive accumulation of errors** in pixel or low-level token space, causing plan divergence over extended trajectories.
 
-To overcome these challenges, Yann LeCun proposed the Joint-Embedding Predictive Architecture (JEPA). By predicting future states in an abstract latent space rather than generating high-dimensional pixels, JEPA avoids wasting computational capacity on high-frequency noise (e.g., rustling leaves, rain). However, standard single-scale JEPAs still suffer from flat representations, failing to organize predictions hierarchically into slow conceptual schemas and fast mechanical movements.
+To overcome these challenges, Yann LeCun proposed the Joint-Embedding Predictive Architecture (JEPA) (LeCun, 2022), which has been scaled to visual representations in V-JEPA (Feichtenhofer et al., 2024; Bardes et al., 2024). By predicting future states in an abstract latent space rather than generating high-dimensional pixels, JEPA avoids wasting computational capacity on high-frequency noise (e.g., rustling leaves, rain). However, standard single-scale JEPAs still suffer from flat representations, failing to organize predictions hierarchically into slow conceptual schemas and fast mechanical movements.
 
 In this work, we present **ALPS-4B** (Adaptive Latent Prediction System, Four-Brain), an advanced hierarchical world model that extends JEPA into a multi-temporal, multi-level coordinate system. ALPS-4B decomposes predictive modeling into three distinct layers:
-- **Strategic Layer**: Employs a Vector Quantization (VQ) bottleneck to project continuous latents into discrete conceptual vectors $c_T$, predicting long-term conceptual changes.
+- **Strategic Layer**: Employs a Vector Quantization (VQ) bottleneck to project continuous latents into discrete conceptual vectors $c_T$, predicting long-term conceptual changes. This stands in contrast to architectures that reason exclusively in continuous latent space, such as COCONUT (Hao et al., 2024), by explicitly discretizing planning landmarks.
 - **Tactical Layer**: Conditions on strategic concepts to select modular Experts via a Sparse MoE router, querying an episodic Latent-RAG memory database to produce sub-goals $h_T$.
 - **Operative Layer**: Takes raw visual feeds and executes high-frequency predictive loops $z_{t+1}$ conditioned on actions $a_t$ and tactical sub-goals.
 
@@ -157,3 +157,9 @@ ALPS-4B represents a significant architectural leap, moving Joint-Embedding worl
 
 * **LeWorldModel**: Bardes, A., Garrido, Q., Ponce, J., Chen, X., Rabbat, M., LeCun, Y., Assran, M., & Balestriero, R. (2024). *Revisiting Feature Prediction for Learning Visual Representations from Video*. arXiv preprint arXiv:2404.08471.
 * **When Does LeJEPA Learn a World Model?**: Klindt, D., LeCun, Y., & Balestriero, R. (2026). *When Does LeJEPA Learn a World Model?*. arXiv preprint arXiv:2605.26379.
+* **V-JEPA**: Feichtenhofer, C., Fan, H., Xiong, B., Kartynnyk, M., Wu, Y., Berger, M., Alwassel, H., & LeCun, Y. (2024). *Video Joint Embedding Predictive Architecture*. Meta AI Tech Report.
+* **COCONUT**: Hao, Y., Gu, Y., Han, R., Ling, S., Liu, C., & Michael, G. (2024). *Training Language Models to Think in a Continuous Latent Space*. arXiv preprint arXiv:2412.06769.
+* **Transformers (Attention)**: Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, L., & Polosukhin, I. (2017). *Attention Is All You Need*. Advances in Neural Information Processing Systems (NeurIPS 2017), 30.
+* **Chinchilla Scaling (Chinchilla)**: Hoffmann, J., Borgeaud, S., Mensch, A., Buchatskaya, E., Cai, T., Rutherford, E., Casas, D. de las, Hendricks, L. A., Welbl, J., Clark, A., Hennigan, T., Noland, E., Millican, K., van den Driessche, G., Damoc, B., Guy, A., Osindero, S., Simonyan, K., Elsen, E., & Sifre, L. (2022). *An Empirical Analysis of Compute-Optimal Large Language Model Training*. arXiv preprint arXiv:2203.15556.
+* **Image-JEPA (I-JEPA)**: Assran, M., Caron, M., Misra, I., Bojanowski, P., Joulin, A., & LeCun, Y. (2023). *Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture*. Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR 2023).
+* **Path to AMI**: LeCun, Y. (2022). *A Path Towards Autonomous Machine Intelligence*. OpenReview preprint.

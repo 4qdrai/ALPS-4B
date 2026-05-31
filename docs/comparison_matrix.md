@@ -6,7 +6,7 @@ This document provides a systematic, feature-by-feature comparison between **ALP
 
 ## 1. Feature Comparison Table
 
-| Architecture Feature | ALPS-4B (Ours) | LeWorldModel (2026) | V-JEPA 2/2.1 (Meta) | Causal-JEPA (2026) | COCONUT (Meta) | Autoregressive (GPT-4/Gemini) |
+| Architecture Feature | ALPS-4B (Ours) | LeWorldModel (2026) | V-JEPA 2/2.1 (Meta) | Causal-JEPA (2026) | COCONUT (Meta) | Autoregressive (GPT-like) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Multi-Scale Temporal Decoupling** | **Yes** (3-Tier) | No | No | No | No | No |
 | **Intra-Layer Stability** | **SIGReg** (No EMA) | SIGReg | EMA / Teachers | EMA / Teachers | None | N/A (Generative) |
@@ -30,6 +30,6 @@ This document provides a systematic, feature-by-feature comparison between **ALP
 * **What V-JEPA is missing**: V-JEPA relies on student-teacher Exponential Moving Averages (EMA) and frozen DINOv2 encoders to prevent representation collapse. This makes it heavy, slow to train, and unable to optimize end-to-end from raw pixels. It has no predictive self-monitoring loops or memory.
 * **Key Differentiator**: ALPS-4B is 100% end-to-end. We train our spatiotemporal Vision Transformer from raw pixels without pre-trained backbones or momentum EMA layers, utilizing Epps-Pulley characteristic functions to guarantee stability.
 
-### 2.3 ALPS-4B vs. Autoregressive Generative Models (GPT-4o, Gemini, Claude)
+### 2.3 ALPS-4B vs. Autoregressive Generative Models (GPT-like, Claude)
 * **What they are missing**: They predict in pixel or text token space, wasting massive compute generating irrelevant high-frequency detail (e.g. background dust or rain). They scale as $\mathcal{O}(n^2)$ with sequence length, hitting a complexity cliff, and accumulate errors autoregressively, leading to plan divergence.
 * **Key Differentiator**: ALPS-4B operates entirely in abstract latent space, filtering out task-irrelevant noise. By decomposing planning into hierarchical, phase-shifted steps, we avoid sequence-length computational cliffs.
