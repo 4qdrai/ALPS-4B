@@ -6,7 +6,7 @@ class SIGReg(nn.Module):
     """
     SIGReg: Sketched Isotropic Gaussian Regularization
     
-    This module implements collapse prevention in Joint-Embedding Predictive Architectures (JEPAs)
+    This module implements collapse prevention in latent predictive architectures
     without momentum encoders or stop-gradients, as described in LeWorldModel (arXiv:2603.19312) 
     and LeJEPA.
     

@@ -1,7 +1,7 @@
 #!/bin/bash
 # run_training.sh - Launcher for ALPS-4B training pipeline
 
-echo "=== ALPS-4B: Launching Unsupervised Video JEPA Training ==="
+echo "=== ALPS-4B: Launching Unsupervised Video Training ==="
 
 # Set PYTHONPATH to include source root
 export PYTHONPATH="src"

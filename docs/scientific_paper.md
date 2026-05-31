@@ -1,4 +1,4 @@
-# ALPS-4B: Adaptive Latent Prediction System with Hierarchical Joint-Embedding Predictive Architectures and Reflexive Safety Watchdogs
+# ALPS-4B: Adaptive Latent Prediction System with Hierarchical Latent Predictive Architectures and Reflexive Safety Watchdogs
 
 **4QDR AI Research Team**  
 *research@4qdr.ai*  
@@ -7,9 +7,9 @@
 ---
 
 ## Abstract
-We introduce **ALPS-4B** (Adaptive Latent Prediction System, Four-Brain), a novel multi-scale Joint-Embedding Predictive Architecture (JEPA) designed for stable, lifelong, and safe learning in complex embodied environments. While existing world models struggle with representation collapse or sequence-length complexity cliffs, ALPS-4B decouples spatiotemporal dynamics into a three-tier hierarchy: a slow-varying Strategic Layer running on discrete conceptual bottleneck variables, a medium-frequency Tactical Layer utilizing Sparse Mixture of Experts (MoE) and Latent Retrieval-Augmented Generation (Latent-RAG) memory caches, and a high-frequency Operative Layer executing sensorimotor predictions. 
+We introduce **ALPS-4B** (Adaptive Latent Prediction System, Four-Brain), a novel multi-scale latent predictive architecture designed for stable, lifelong, and safe learning in complex embodied environments. While existing world models struggle with representation collapse or sequence-length complexity cliffs, ALPS-4B decouples spatiotemporal dynamics into a three-tier hierarchy: a slow-varying Strategic Layer running on discrete conceptual bottleneck variables, a medium-frequency Tactical Layer utilizing Sparse Mixture of Experts (MoE) and Latent Retrieval-Augmented Generation (Latent-RAG) memory caches, and a high-frequency Operative Layer executing sensorimotor predictions. 
 
-Intra-layer representation stability is mathematically guaranteed by Sliced Isotropic Gaussian Regularization (SIGReg) via the analytical Epps-Pulley characteristic function normality statistic, eliminating the need for student-teacher Exponential Moving Averages (EMA) or frozen encoders. Inter-layer coordination is bound under a unified Energy-Based Model (EBM) landscape, with refinement trajectories proved to converge to a unique fixed point via Banach Contraction checkers. Furthermore, we address the JEPA self-diagnosis blind spot by introducing an independent, out-of-gradient Fallback Watchdog that monitors representation variance and hypersphere pinning, executing a deterministic Minimal Risk Condition (MRC) on collapse. We evaluate ALPS-4B on spatiotemporal action tasks, demonstrating $O(1)$ computational scaling with expert capacity, zero-retraining failure correction, and instant fleet-wide learning.
+Intra-layer representation stability is mathematically guaranteed by Sliced Isotropic Gaussian Regularization (SIGReg) via the analytical Epps-Pulley characteristic function normality statistic, eliminating the need for student-teacher Exponential Moving Averages (EMA) or frozen encoders. Inter-layer coordination is bound under a unified Energy-Based Model (EBM) landscape, with refinement trajectories proved to converge to a unique fixed point via Banach Contraction checkers. Furthermore, we address the latent prediction self-diagnosis blind spot by introducing an independent, out-of-gradient Fallback Watchdog that monitors representation variance and hypersphere pinning, executing a deterministic Minimal Risk Condition (MRC) on collapse. We evaluate ALPS-4B on spatiotemporal action tasks, demonstrating $O(1)$ computational scaling with expert capacity, zero-retraining failure correction, and instant fleet-wide learning.
 
 ---
 
@@ -20,14 +20,14 @@ Autoregressive generative models have achieved unparalleled success in text and 
 
 To overcome these challenges, Yann LeCun proposed the Joint-Embedding Predictive Architecture (JEPA). By predicting future states in an abstract latent space rather than generating high-dimensional pixels, JEPA avoids wasting computational capacity on high-frequency noise (e.g., rustling leaves, rain). However, standard single-scale JEPAs still suffer from flat representations, failing to organize predictions hierarchically into slow conceptual schemas and fast mechanical movements.
 
-In this work, we present **ALPS-4B** (Adaptive Latent Prediction System, Four-Brain), an advanced hierarchical world model that scales JEPA into a multi-temporal, multi-level coordinate system. ALPS-4B decomposes predictive modeling into three distinct layers:
+In this work, we present **ALPS-4B** (Adaptive Latent Prediction System, Four-Brain), an advanced hierarchical world model that extends JEPA into a multi-temporal, multi-level coordinate system. ALPS-4B decomposes predictive modeling into three distinct layers:
 - **Strategic Layer**: Employs a Vector Quantization (VQ) bottleneck to project continuous latents into discrete conceptual vectors $c_T$, predicting long-term conceptual changes.
 - **Tactical Layer**: Conditions on strategic concepts to select modular Experts via a Sparse MoE router, querying an episodic Latent-RAG memory database to produce sub-goals $h_T$.
 - **Operative Layer**: Takes raw visual feeds and executes high-frequency predictive loops $z_{t+1}$ conditioned on actions $a_t$ and tactical sub-goals.
 
 To ensure complete mathematical stability and eliminate the standard "zoo" of self-supervised learning heuristics (such as momentum target encoders, EMA updates, and pre-trained frozen backbones), we rely on the method of **LeWorldModel** (Maes et al., 2026), incorporating **SIGReg** (Sliced Isotropic Gaussian Regularization) using the analytical closed-form **Epps-Pulley normality test statistic**. Crucially, as established by Klindt et al. just days prior to this submission (May 25, 2026), this specific regularization uniquely guarantees **Linear Identifiability**—ensuring our latent representations linearly recover the true physical states of the world and formally guaranteeing optimal latent-space planning (Theorem 4). Furthermore, we prove that our cross-layer Checker-Refinement loop behaves as a contraction mapping in a Banach space, ensuring stable convergence to a unique plan.
 
-Finally, we address a critical, unaddressed vulnerability in Joint-Embedding world models: the **JEPA Self-Diagnosis Blind Spot**. Because a representation-collapsed model outputs constant latents, its internal predictors also output constants with zero prediction error. Consequently, the model registers perfect performance while the physical system fails. ALPS-4B resolves this by running an out-of-gradient **Fallback Watchdog** that monitors representation variance and hypersphere pinning, immediately executing a deterministic Minimal Risk Condition (MRC) on trigger.
+Finally, we address a critical, unaddressed vulnerability in Joint-Embedding world models: the **Latent Prediction Self-Diagnosis Blind Spot**. Because a representation-collapsed model outputs constant latents, its internal predictors also output constants with zero prediction error. Consequently, the model registers perfect performance while the physical system fails. ALPS-4B resolves this by running an out-of-gradient **Fallback Watchdog** that monitors representation variance and hypersphere pinning, immediately executing a deterministic Minimal Risk Condition (MRC) on trigger.
 
 ---
 
@@ -106,7 +106,7 @@ A low energy state indicates perfect alignment between strategic conceptual plan
 ---
 
 ## 3. Reflexive Safety and the Fallback Watchdog
-Embodied systems require hard safety guarantees. In a JEPA model, representation collapse causes a catastrophic blind spot: because the collapsed encoder maps all inputs to a constant vector $z_{\text{collapse}}$, the predictor also outputs $z_{\text{collapse}}$ with a calculated prediction error of zero. The model registers perfect prediction performance while the physical system has crashed.
+Embodied systems require hard safety guarantees. In a latent predictive model, representation collapse causes a catastrophic blind spot: because the collapsed encoder maps all inputs to a constant vector $z_{\text{collapse}}$, the predictor also outputs $z_{\text{collapse}}$ with a calculated prediction error of zero. The model registers perfect prediction performance while the physical system has crashed.
 
 ALPS-4B solves this by incorporating a fourth layer: a reflexive **Fallback Watchdog** that runs entirely outside the gradient flow. It continuously checks three health indicators on the latent embeddings $z_t$:
 1. **NaN/Infinity Check**: Detects numerical overflow in gradients or activations.
@@ -148,4 +148,4 @@ Our empirical simulations validate the theoretical claims of ALPS-4B. Most notab
 ---
 
 ## 6. Conclusion
-ALPS-4B represents a significant architectural leap, moving Joint-Embedding world models from flat single-scale predictive loops into a decoupled, safe, and continuously learning multi-temporal hierarchy. By combining mathematically proven SIGReg stability with control-theoretic safety watchdogs and non-parametric memory corrections, ALPS-4B overcomes the scaling plateaus of autoregressive models, laying a solid, publication-grade foundation to win the SPRIND Next Frontier AI challenge.
+ALPS-4B represents a significant architectural leap, moving Joint-Embedding world models from flat single-scale predictive loops into a decoupled, safe, and continuously learning multi-temporal hierarchy. By combining mathematically proven SIGReg stability with control-theoretic safety watchdogs and non-parametric memory corrections, ALPS-4B overcomes the scaling plateaus of autoregressive models, laying a foundation for safe, continuously learning autonomous systems.

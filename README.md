@@ -8,14 +8,14 @@
 
 ---
 
-## The 42 Disruptive Capabilities of ALPS-4B
-ALPS-4B integrates 42 distinct architectural advantages over standard autoregressive and Joint-Embedding models, comprehensively solving physical reasoning, catastrophic forgetting, and robotic safety constraints. For a full mathematical breakdown, read our [Mathematical Foundations & Proofs](file:///h:/Meine%20Ablage/SayBouBase/raw/Projects/AIFrontTierChallenge/Synthese/FormulatioofEdgeHypotheses&Evidences/Evidences/ALPS-4B/docs/mathematical_foundations.md) and the [Scientific Paper](file:///h:/Meine%20Ablage/SayBouBase/raw/Projects/AIFrontTierChallenge/Synthese/FormulatioofEdgeHypotheses&Evidences/Evidences/ALPS-4B/docs/scientific_paper.md).
+## Architectural Capabilities
+ALPS-4B integrates 42 distinct architectural advantages over standard autoregressive and Joint-Embedding models, comprehensively solving physical reasoning, catastrophic forgetting, and robotic safety constraints. For a full mathematical breakdown, read our [Mathematical Foundations & Proofs](docs/mathematical_foundations.md) and the [Scientific Paper](docs/scientific_paper.md).
 
 <details>
 <summary><b>Click to expand all 42 Capabilities</b></summary>
 
 ### Hierarchical Multi-Scale Architecture
-1. **3-Tier Hierarchy**: Decouples temporal abstraction into independently trainable JEPA layers.
+1. **3-Tier Hierarchy**: Decouples temporal abstraction into independently trainable latent predictive layers.
 2. **Dynamic Compute Allocation**: Only activates expensive layers when physically surprised.
 3. **Temporal & Semantic Stability**: Strategic layer mathematically immune to high-frequency sensor noise.
 4. **Zero-Shot Physical Generalization**: Constraint cascade architecture enables potential transfer to novel tasks — validation pending at scale.
@@ -31,7 +31,7 @@ ALPS-4B integrates 42 distinct architectural advantages over standard autoregres
 12. **"Fast Failing in Imagination"**: Rejects bad plans in latent simulation before physical execution.
 13. **Zero-Shot Latent Halting**: Detects catastrophic failures *conceptually*.
 14. **Fallback Layer (Brainstem Reflex)**: Executes Minimal Risk Condition (MRC) out-of-gradient.
-15. **JEPA Self-Diagnosis Blind Spot**: Solves the paradox where a collapsed JEPA registers zero prediction error.
+15. **Latent Prediction Self-Diagnosis Blind Spot**: Solves the paradox where a collapsed latent predictor registers zero prediction error.
 16. **Simplified Fallback Scope**: Eliminates Timid Agent problem by focusing only on representation collapse.
 17. **3 Collapse Detection Mechanisms**: NaN/Inf, Variance Drop, Hypersphere Pinning.
 18. **HAL Watchdog**: Hardware-layer safety interface (sensor checksums, actuator handshakes) — planned for physical deployment.
@@ -77,16 +77,16 @@ ALPS-4B integrates 42 distinct architectural advantages over standard autoregres
 
 ---
 
-## 🚀 The Disruptive Paradigm Shift
+## 🚀 Design Rationale
 
 Autoregressive models (such as modern generative LLMs) process sequences under an $O(n^2)$ attention bottleneck, experiencing a **complexity cliff** over long horizons and accumulating errors until plans diverge. Standard Joint-Embedding Predictive Architectures (JEPAs) operating on flat sequences avoid pixel generation costs, yet they struggle to decouple slow conceptual planning from fast mechanical controls.
 
-**ALPS-4B (Adaptive Latent Prediction System, Four-Brain)** introduces a multi-scale, temporally decoupled JEPA hierarchy that represents the next S-curve of AI:
+**ALPS-4B (Adaptive Latent Prediction System, Four-Brain)** introduces a multi-scale, temporally decoupled latent predictive hierarchy that addresses these limitations:
 
 1. **Strategic Layer (System 2 - Concept Planning)**: Operates at slow temporal frequencies on discrete, conceptual bottleneck coordinates ($c_T$) using a VQ codebook, generating stable long-term plans immune to high-frequency noise.
 2. **Tactical Layer (System 2 - Sub-Goal Simulation)**: Conditions on strategic guidance to select spatiotemporal Expert modules via a **Sparse Mixture of Experts (MoE)** router, querying an episodic **Latent-RAG** KV cache to output sub-goal trajectories ($h_T$).
 3. **Operative Layer (System 1 - Sensorimotor Control)**: Processes raw visual streams through a spatiotemporal **3D Vision Transformer (ViT)**, running high-frequency predictive loops ($z_{t+1}$) conditioned on physical actions ($a_t$) and tactical sub-goals.
-4. **Fallback Watchdog (System Integrity Reflex)**: Operates out-of-gradient to resolve the **JEPA Self-Diagnosis Blind Spot**. Collapsed JEPA layers output constant values and register *perfect (zero) prediction error*. The watchdog monitors representation variance and hypersphere pinning, executing a deterministic **Minimal Risk Condition (MRC)** on trigger.
+4. **Fallback Watchdog (System Integrity Reflex)**: Operates out-of-gradient to resolve the **Latent Prediction Self-Diagnosis Blind Spot**. Collapsed latent predictive layers output constant values and register *perfect (zero) prediction error*. The watchdog monitors representation variance and hypersphere pinning, executing a deterministic **Minimal Risk Condition (MRC)** on trigger.
 
 ---
 
@@ -125,10 +125,10 @@ Our empirical simulations validate the theoretical claims of ALPS-4B. Most notab
 ### Autonomous Neural Routing via Physical Surprise
 We evaluated ALPS-4B on four distinct real-world action sequences spanning predictable and chaotic physical phenomena.
 
-- **Sunny Cases (Predictable Physics)**: For slow, continuous actions (e.g., people walking on a street, a tree blowing in the wind), the Operative Predictor confidently modeled the latent trajectory, registering microscopic Mean Squared Errors (MSE = 0.0108 and 0.0085 respectively). System 2 remained asleep, conserving massive compute power.
-- **Surprise Cases (Chaotic Physics)**: When fed highly unpredictable, fast-paced action trailers (e.g., Sintel and Megamind combat sequences), the Operative Predictor error instantly spiked (MSE = 202,246 and 394,028). This violent divergence flawlessly triggered the **Tactical Brain** to dynamically route physical properties to independent Experts, and subsequently escalated to the **Strategic Brain** to compress the chaos into the VQ concept codebook.
+- **Sunny Cases (Predictable Physics)**: For slow, continuous actions (e.g., people walking on a street, a tree blowing in the wind), the Operative Predictor confidently modeled the latent trajectory, registering microscopic Mean Squared Errors (MSE = 0.0108 and 0.0085 respectively). System 2 remained asleep, reducing computational overhead.
+- **Surprise Cases (Chaotic Physics)**: When fed highly unpredictable, fast-paced action trailers (e.g., Sintel and Megamind combat sequences), the Operative Predictor error instantly spiked (MSE = 202,246 and 394,028). This prediction error exceeded threshold, triggering the **Tactical Brain** to dynamically route physical properties to independent Experts, and subsequently escalated to the **Strategic Brain** to compress the chaos into the VQ concept codebook.
 
-**This mathematically proves our hierarchical threshold activation:** ALPS-4B autonomously learns the difference between predictable continuous physics and unpredictable chaotic events, routing compute dynamically based purely on predictive surprise.
+**This validates our hierarchical threshold activation:** ALPS-4B autonomously learns the difference between predictable continuous physics and unpredictable chaotic events, routing compute dynamically based purely on predictive surprise.
 
 For detailed mathematical proofs of all stability guarantees, see our [Mathematical Foundations](docs/mathematical_foundations.md) document.
 
@@ -138,7 +138,7 @@ For detailed mathematical proofs of all stability guarantees, see our [Mathemati
 
 ```
 ALPS-4B/                                    (GitHub: 4qdrai/ALPS-4B)
-├── README.md                               # World-class scientific pitch
+├── README.md                               # Main documentation
 ├── LICENSE                                  # Apache 2.0
 ├── CITATION.cff                             # Academic citation
 ├── pyproject.toml                           # Modern Python packaging
@@ -238,7 +238,7 @@ pytest -v
 ```
 
 ### 2. Run Empirical Simulations
-Generate scientific figures and metrics proving our disruptive claims:
+Generate scientific figures and metrics supporting the architecture's key properties:
 ```bash
 $env:PYTHONPATH="src"
 # 1. Banach checker convergence

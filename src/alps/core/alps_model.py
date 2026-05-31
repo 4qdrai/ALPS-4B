@@ -20,7 +20,7 @@ class ALPSModel(nn.Module):
     The master neural network orchestrator for the Adaptive Latent Prediction System (ALPS-4B).
     Integrates:
     - Spatiotemporal Video Encoding (ViT, 16 frames x 224x224)
-    - 3-Tier Multi-Scale Decoupled JEPA layers (Strategic / Tactical / Operative)
+    - 3-Tier Multi-Scale Decoupled latent predictive layers (Strategic / Tactical / Operative)
     - Dynamic Compute Gating (System 1 vs System 2 compute allocation)
     - Multimodal selective sensor gating (O(1) modality routing)
     - Banach Contraction Checker-Refinement Loop
@@ -109,7 +109,7 @@ class ALPSModel(nn.Module):
         # --- 1. ENCODE VISUAL INPUT & SHIFT TARGETS (True temporal dynamic learning) ---
         outputs = {}
         
-        # JEPA requires context-to-target shift. We split clip into context (0..T-2) and target (1..T-1).
+        # Latent prediction requires context-to-target shift. We split clip into context (0..T-2) and target (1..T-1).
         if video_frames.dim() == 5 and video_frames.shape[2] > 1:
             context_frames = video_frames[:, :, :-1]
             target_frames = video_frames[:, :, 1:]

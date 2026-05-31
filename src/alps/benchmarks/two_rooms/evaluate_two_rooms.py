@@ -1241,7 +1241,7 @@ An independent regression probe was trained to decode absolute physical (x, y) c
 
 ## 3. Conclusions
 
-These results provide rock-solid evidence for the SPRIND Jury:
+These results provide strong empirical evidence for the architecture's key claims:
 1. **Dynamic compute allocation** is functionally verified — System 2 only fires on boundary-crossings or high-uncertainty zones.
 2. **Discrete conceptual abstractions** (strategic layers) naturally discover spatial topologies (rooms) in a completely self-supervised manner.
 3. **High-frequency control** remains accurate and utilizes low-dimensional representations that are highly decodable, ensuring robust physical execution.

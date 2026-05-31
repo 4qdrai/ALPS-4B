@@ -3,13 +3,13 @@ message: "If you use this software in your research or find our world-modeling m
 authors:
   - family-names: "AI Research Team"
     given-names: "4QDR"
-title: "ALPS-4B: Adaptive Latent Prediction System with Hierarchical Joint-Embedding Predictive Architectures and Reflexive Safety Watchdogs"
+title: "ALPS-4B: Adaptive Latent Prediction System with Hierarchical Latent Predictive Architectures and Reflexive Safety Watchdogs"
 version: "0.1.0"
 date-released: "2026-05-25"
 url: "https://github.com/4qdrai/ALPS-4B"
 license: "Apache-2.0"
 repository-code: "https://github.com/4qdrai/ALPS-4B"
-abstract: "ALPS-4B (Adaptive Latent Prediction System, Four-Brain) is a multi-scale, temporally decoupled Joint-Embedding Predictive Architecture (JEPA) incorporating spatiotemporal tube masking, Banach checker convergence proofs, and out-of-gradient safety watchdogs for lifelong learning and system integrity."
+abstract: "ALPS-4B (Adaptive Latent Prediction System, Four-Brain) is a multi-scale, temporally decoupled latent predictive architecture incorporating spatiotemporal tube masking, Banach checker convergence proofs, and out-of-gradient safety watchdogs for lifelong learning and system integrity."
 
 references:
   - type: article

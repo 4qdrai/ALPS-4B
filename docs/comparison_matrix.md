@@ -24,12 +24,12 @@ This document provides a systematic, feature-by-feature comparison between **ALP
 
 ### 2.1 ALPS-4B vs. LeWorldModel (LeCun et al., 2026)
 * **What LeWorldModel is missing**: It is single-scale only. It runs on flat pixel-to-latent sequences without hierarchical abstraction, meaning it cannot separate high-frequency muscle control from slow conceptual reasoning. It contains no long-term memory, expert routing, or safety watchdogs.
-* **Our Disruptive Advantage**: ALPS-4B extends LeWM by scaling its elegant SIGReg-only approach into a multi-scale, temporally decoupled hierarchy. We add spatiotemporal Expert modules, Latent-RAG for zero-retraining adaptations, and a control-theoretic safety brainstem.
+* **Key Differentiator**: ALPS-4B extends LeWM by scaling its elegant SIGReg-only approach into a multi-scale, temporally decoupled hierarchy. We add spatiotemporal Expert modules, Latent-RAG for zero-retraining adaptations, and a control-theoretic safety brainstem.
 
 ### 2.2 ALPS-4B vs. V-JEPA 2.1 (Meta AI)
 * **What V-JEPA is missing**: V-JEPA relies on student-teacher Exponential Moving Averages (EMA) and frozen DINOv2 encoders to prevent representation collapse. This makes it heavy, slow to train, and unable to optimize end-to-end from raw pixels. It has no predictive self-monitoring loops or memory.
-* **Our Disruptive Advantage**: ALPS-4B is 100% end-to-end. We train our spatiotemporal Vision Transformer from raw pixels without pre-trained backbones or momentum EMA layers, utilizing Epps-Pulley characteristic functions to guarantee stability.
+* **Key Differentiator**: ALPS-4B is 100% end-to-end. We train our spatiotemporal Vision Transformer from raw pixels without pre-trained backbones or momentum EMA layers, utilizing Epps-Pulley characteristic functions to guarantee stability.
 
 ### 2.3 ALPS-4B vs. Autoregressive Generative Models (GPT-4o, Gemini, Claude)
 * **What they are missing**: They predict in pixel or text token space, wasting massive compute generating irrelevant high-frequency detail (e.g. background dust or rain). They scale as $\mathcal{O}(n^2)$ with sequence length, hitting a complexity cliff, and accumulate errors autoregressively, leading to plan divergence.
-* **Our Disruptive Advantage**: ALPS-4B operates entirely in abstract latent space, filtering out task-irrelevant noise. By decomposing planning into hierarchical, phase-shifted steps, we avoid sequence-length computational cliffs.
+* **Key Differentiator**: ALPS-4B operates entirely in abstract latent space, filtering out task-irrelevant noise. By decomposing planning into hierarchical, phase-shifted steps, we avoid sequence-length computational cliffs.
