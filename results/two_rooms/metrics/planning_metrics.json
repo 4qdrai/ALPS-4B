@@ -1,0 +1,10 @@
+{
+  "num_episodes": 20,
+  "overall_success_rate": 0.05,
+  "same_room_success_rate": 0.1,
+  "cross_room_success_rate": 0.0,
+  "avg_path_length": 143.85,
+  "avg_system2_activations": 3.7,
+  "max_system2_activations": 8,
+  "mean_step_prediction_mse": 0.0017866100684594303
+}

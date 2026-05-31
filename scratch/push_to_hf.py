@@ -13,7 +13,7 @@ def main():
         token = input().strip()
         
     repo_id = "Free2035/4QDR4BWorldModel"
-    local_file = "results/two_rooms/two_rooms_model.pt"
+    local_file = "results/two_rooms/two_rooms_model_epoch010_384.pt"
     
     if not os.path.exists(local_file):
         print(f"Error: {local_file} not found!")

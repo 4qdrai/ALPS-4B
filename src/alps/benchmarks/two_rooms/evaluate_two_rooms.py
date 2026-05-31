@@ -270,16 +270,18 @@ def run_planning_evaluation(
     # MPC configuration (aligned with LeWM §D)
     mpc_replan_interval = 5  # Replan every 5 environment steps
     max_eval_budget = 150    # Maximum steps per episode
-    cem_candidates = 300     # CEM population size (LeWM uses 300)
-    cem_iterations = 10      # CEM optimization iterations (LeWM uses 10)
-    cem_elites = 30          # Top candidates retained per iteration
+    cem_candidates = 100     # CEM population size (optimized to prevent VRAM paging thrashing)
+    cem_iterations = 10      # CEM optimization iterations
+    cem_elites = 10          # Top candidates retained per iteration
     plan_horizon = 15        # Planning lookahead in latent steps
 
     # Prepare trials configuration
     trials = []
-    for _ in range(half_episodes):
-        trials.append((0, 0))  # Start Left, Goal Left (Same room)
-        trials.append((0, 1))  # Start Left, Goal Right (Cross room)
+    for idx in range(num_episodes):
+        start_room = 0
+        # Distribute same-room (even index) and cross-room (odd index)
+        goal_room = 0 if idx % 2 == 0 else 1
+        trials.append((start_room, goal_room))
 
     for i, (start_room, goal_room) in enumerate(trials):
         # 1. Reset env to config
@@ -562,7 +564,7 @@ def plot_trajectory_overlay(
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()
-    print(f"  💾 Trajectory overlay saved: {save_path}")
+    print(f"  [Saved] Trajectory overlay saved: {save_path}")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -676,7 +678,7 @@ def plot_energy_landscape(
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()
-    print(f"  💾 Energy landscape saved: {save_path}")
+    print(f"  [Saved] Energy landscape saved: {save_path}")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -786,7 +788,7 @@ def plot_latent_clustering(
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()
-    print(f"  💾 Latent clustering plot saved: {save_path}")
+    print(f"  [Saved] Latent clustering plot saved: {save_path}")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -892,7 +894,7 @@ def plot_vq_codebook_usage(
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()
-    print(f"  💾 VQ codebook mapping saved: {save_path}")
+    print(f"  [Saved] VQ codebook mapping saved: {save_path}")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1046,7 +1048,7 @@ def plot_prediction_comparison(
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()
-    print(f"  💾 Prediction comparison saved: {save_path}")
+    print(f"  [Saved] Prediction comparison saved: {save_path}")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1132,7 +1134,29 @@ def generate_all_results(
             nn.GELU()
         ).to(device)
         
-    model.load_state_dict(state_dict, strict=True)
+    # Check for shape mismatches for keys that exist in both checkpoint and model
+    model_keys = model.state_dict()
+    mismatch_found = False
+    mismatch_errors = []
+    
+    for key, val in state_dict.items():
+        if key in model_keys:
+            chk_shape = list(val.shape) if hasattr(val, "shape") else []
+            mod_shape = list(model_keys[key].shape) if hasattr(model_keys[key], "shape") else []
+            if chk_shape != mod_shape:
+                err_msg = f"Shape mismatch for key '{key}': checkpoint shape {chk_shape} vs model shape {mod_shape}"
+                print(f"[ERROR] {err_msg}")
+                mismatch_errors.append(err_msg)
+                mismatch_found = True
+                
+    if mismatch_found:
+        raise RuntimeError("Shape mismatches detected during state dict loading:\n" + "\n".join(mismatch_errors))
+        
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    if missing_keys:
+        print(f"  [Info] Gracefully ignored missing keys: {len(missing_keys)} keys (such as sigreg buffers or auxiliary heads).")
+    if unexpected_keys:
+        print(f"  [Info] Gracefully ignored unexpected keys: {len(unexpected_keys)} keys.")
     print("Model loaded successfully.")
 
     # 3. Train decoding probe
@@ -1146,7 +1170,7 @@ def generate_all_results(
     metrics_path = os.path.join(metrics_dir, metrics_name)
     with open(metrics_path, "w") as f:
         json.dump(eval_metrics, f, indent=2)
-    print(f"\n  💾 Quant metrics JSON saved: {metrics_path}")
+    print(f"\n  [Saved] Quant metrics JSON saved: {metrics_path}")
 
     # 5. Generate Figures
     traj_path = os.path.join(save_dir, "trajectory_overlay.png")
@@ -1225,10 +1249,10 @@ These results provide rock-solid evidence for the SPRIND Jury:
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_content.strip())
-    print(f"\n  💾 Summary Evaluation Report saved: {report_path}")
+    print(f"\n  [Saved] Summary Evaluation Report saved: {report_path}")
 
     print("\n" + "=" * 72)
-    print("  Evaluation Completed Successfully! ✓")
+    print("  Evaluation Completed Successfully! [Done]")
     print("=" * 72 + "\n")
 
 

@@ -130,6 +130,38 @@ def rollout_latent(
     return z, z_trajectory
 
 
+def rollout_latent_batched(
+    model: nn.Module,
+    z_start: torch.Tensor,
+    action_onehots: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Roll out a batch of action sequences in parallel through the operative predictor.
+
+    Args:
+        model: ALPSModel with `operative_layer.predict_next_state`.
+        z_start: Starting latent, shape [1, N, D].
+        action_onehots: One-hot action sequences, shape [B, horizon, 4].
+
+    Returns:
+        z_final: Final latent states, shape [B, N, D].
+        z_trajectory: Full trajectories, shape [B, horizon+1, N, D].
+    """
+    B, horizon, _ = action_onehots.shape
+    device = z_start.device
+    
+    # Expand z_start to match batch size B
+    z = z_start.expand(B, -1, -1)  # [B, N, D]
+    trajectory = [z]
+    
+    for t in range(horizon):
+        a = action_onehots[:, t]  # [B, 4]
+        z = model.operative_layer.predict_next_state(z, a)  # [B, N, D]
+        trajectory.append(z)
+        
+    z_trajectory = torch.stack(trajectory, dim=1)  # [B, horizon+1, N, D]
+    return z, z_trajectory
+
+
 # ---------------------------------------------------------------------------
 # CEM Planner
 # ---------------------------------------------------------------------------
@@ -201,17 +233,12 @@ class CEMPlanner:
                 dist = torch.distributions.Categorical(probs=action_probs[t])
                 candidates[:, t] = dist.sample((num_candidates,))
 
-            # --- Step 3b: roll out each candidate ---
-            scores = torch.zeros(num_candidates, device=device)
-            trajectories = []
-
-            for c in range(num_candidates):
-                act_onehots = one_hot_actions(candidates[c], CEMPlanner.NUM_ACTIONS)  # [H, 4]
-                z_final, z_traj = rollout_latent(model, z_start, act_onehots)
-                # Score = negative squared L2 distance to goal latent
-                score = -(z_final - z_goal).pow(2).sum()
-                scores[c] = score
-                trajectories.append(z_traj)
+            # --- Step 3b: roll out candidates in batch ---
+            act_onehots_batched = one_hot_actions(candidates, CEMPlanner.NUM_ACTIONS)  # [num_candidates, horizon, 4]
+            z_finals, z_trajs = rollout_latent_batched(model, z_start, act_onehots_batched)
+            
+            # Score = negative squared L2 distance to goal latent
+            scores = -(z_finals - z_goal).pow(2).sum(dim=(1, 2))  # [num_candidates]
 
             # --- Step 3c: select elites ---
             elite_indices = torch.topk(scores, num_elites).indices
@@ -226,7 +253,7 @@ class CEMPlanner:
             if iter_best_score > best_global_score:
                 best_global_score = iter_best_score
                 best_global_actions = candidates[iter_best_idx].clone()
-                best_global_trajectory = trajectories[iter_best_idx].clone()
+                best_global_trajectory = z_trajs[iter_best_idx].clone()
 
             # --- Step 3d: update distribution from elite frequencies ---
             new_probs = torch.zeros(horizon, CEMPlanner.NUM_ACTIONS, device=device)
