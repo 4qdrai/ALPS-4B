@@ -67,6 +67,22 @@ def save_gif(frames, path, duration=90):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     frames[0].save(path, save_all=True, append_images=frames[1:], duration=duration, loop=0)
     print(f"[video] {path} ({len(frames)} frames)")
+    _to_mp4(path)
+
+
+def _to_mp4(gif_path):
+    """Best-effort GIF->MP4 (yuv420p, even dims) if ffmpeg is on PATH."""
+    import shutil, subprocess
+    if shutil.which("ffmpeg") is None:
+        return
+    mp4 = gif_path[:-4] + ".mp4"
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", gif_path,
+                        "-movflags", "+faststart", "-pix_fmt", "yuv420p",
+                        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", mp4], check=True)
+        print(f"[video] {mp4}")
+    except Exception as e:
+        print(f"[video] mp4 conversion skipped: {e}")
 
 
 def run_record(env, obs, select_action, label, size, max_steps=130, decode_fn=None, model=None, device=None):

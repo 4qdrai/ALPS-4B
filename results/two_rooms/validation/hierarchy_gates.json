@@ -1,0 +1,77 @@
+{
+  "G_str": {
+    "room_acc_from_concept": 0.7224448897795591,
+    "room_acc_from_operative": 0.9549098196392786,
+    "strategic_pred_err_rel": 0.6965894849293064,
+    "code_change_rate": 0.31605562579013907,
+    "room_change_rate": 0.018963337547408345,
+    "code_room_purity": 0.7830197232630581,
+    "active_codes": 11,
+    "passed": false
+  },
+  "G_tac": {
+    "tac_pred_err_rel": 0.6932837807656034,
+    "tac_decode_err_world_units": 0.7156562209129333,
+    "passed": true
+  },
+  "G_op": {
+    "op_decode_err_world_units": 0.6691935062408447,
+    "directional_consistency": 0.75,
+    "passed": false
+  },
+  "G_goals": {
+    "operative_only": {
+      "n": 20,
+      "overall_success": 0.05,
+      "same_room_success": 0.1,
+      "cross_room_success": 0.0,
+      "overall_spl": 0.05,
+      "cross_room_spl": 0.0,
+      "avg_path_len": 114.05,
+      "avg_replans": 114.05
+    },
+    "learned_hierarchy": {
+      "n": 20,
+      "overall_success": 0.1,
+      "same_room_success": 0.2,
+      "cross_room_success": 0.0,
+      "overall_spl": 0.09333333333333334,
+      "cross_room_spl": 0.0,
+      "avg_path_len": 108.8,
+      "avg_replans": 108.8
+    },
+    "oracle": {
+      "n": 20,
+      "overall_success": 0.85,
+      "same_room_success": 1.0,
+      "cross_room_success": 0.7,
+      "overall_spl": 0.85,
+      "cross_room_spl": 0.7,
+      "avg_path_len": 39.75,
+      "avg_replans": 0.0
+    },
+    "edge_cross_room_gain": 0.0,
+    "passed": false
+  },
+  "G_rag": {
+    "write_oneshot": {
+      "err_no_rag": 57.610377716064455,
+      "err_with_rag": 45.421484939575194,
+      "reduction_pct": 21.157460269680595,
+      "n": 125
+    },
+    "test_generalization": {
+      "err_no_rag": 60.13662677001953,
+      "err_with_rag": 47.129419906616214,
+      "reduction_pct": 21.629425463364903,
+      "n": 125
+    },
+    "control_interference": {
+      "err_no_rag": 35.146452705383304,
+      "err_with_rag": 35.146452705383304,
+      "reduction_pct": 0.0,
+      "n": 250
+    },
+    "passed": true
+  }
+}

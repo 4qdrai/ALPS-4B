@@ -80,7 +80,49 @@ Concrete fix: **surprise-gated retrieval** (only add the correction when the
 operative prediction error is high) plus a higher `sim_threshold` and
 similarity-margin scaling, so corrections don't fire on well-predicted contexts.
 
+## Full learned hierarchy (HierWorldModel) — per-layer gates
+
+This is the harder claim: not the latent-graph *proxy*, but the **learned**
+strategic (VQ) + tactical (MoE) layers + goal-conditioned sub-goal head + RAG,
+trained with strided multi-scale prediction, hindsight goal relabeling, and
+**stop-gradient layer isolation** (encoder trained only by operative+position).
+Reproduce with `python -m alps.training.train_hier` then
+`python -m alps.evaluation.validate_hierarchy` (or stages 5–6 of the A40 script).
+Numbers below are a bounded local run (4k samples, 18 epochs).
+
+| Gate | Metric | Result | Verdict |
+|---|---|---|---|
+| G_op  | operative decode (fresh probe, world units) | 0.67 | near-pass |
+| G_op  | action directional consistency | 0.75 | — |
+| G_tac | tactical decode / medium-horizon pred | 0.72 wu / 0.69 rel | **PASS** |
+| G_str | room-acc from concept vs operative | 0.72 vs 0.95 | partial |
+| G_str | active VQ codes / code↔room purity | 11 / 0.78 | — |
+| G_str | code-change vs room-change rate (slow-varying) | 0.32 vs 0.02 | — |
+| G_rag | write / **test (generalize)** / **control (interfere)** | +21% / **+22%** / **0%** | **PASS** |
+| G_goals | cross-room: operative / **learned** / oracle | 0.00 / **0.00** / 0.70 | **FAIL** |
+| G_goals | same-room: operative / learned / oracle | 0.10 / 0.20 / 1.00 | — |
+
+**Honest reading.** Stop-gradient isolation (an ALPS design principle that was
+initially omitted) recovered per-layer learning: the tactical layer predicts and
+is position-decodable (PASS), surprise-gated RAG generalizes without interference
+(PASS), and the discrete strategic concept now uses 11 room-aligned codes and
+varies more slowly than the operative latent. **But G_goals is bottlenecked by
+operative *execution*** — even operative-only solves only 10% same-room here, vs
+44% for the ReprWorldModel pipeline, because the hierarchy run gave the operative
+~4k transitions/epoch vs ~14k. With same-room control that weak, the **learned
+goal-emission claim is not cleanly testable yet** (confounded by operative
+quality), not proven or disproven.
+
+**Two real bugs the validation surfaced and fixed:** (1) a BatchNorm train/eval
+gap that corrupted the model's own decode heads → all decode metrics/control now
+use fresh probes on frozen eval-mode latents; (2) shared-encoder corruption from
+training 9 objectives at once → stop-gradient isolation (encoder ← operative+pos
+only). G_op decode improved 3.0 → 0.67 wu after the fix.
+
 ## What is NOT yet shown
+- **Learned hierarchical goal-emission solving cross-room** (G_goals): needs the
+  operative controller to first reach ReprWorldModel-level same-room success —
+  i.e. more operative training data/epochs (the A40 run, stages 5–6, with denser
+  sampling). Only then is the learned-vs-operative cross-room comparison decisive.
 - Complex (4-room, key-gated) mode end-to-end.
 - Closing the cross-room gap to the oracle (needs the larger A40 run).
-- A higher G2 ratio (data/scale dependent).

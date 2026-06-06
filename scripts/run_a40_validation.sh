@@ -26,6 +26,9 @@ SIGREG_SLICES="${SIGREG_SLICES:-512}"
 PROBE_EPOCHS="${PROBE_EPOCHS:-150}"
 N_EPISODES_EVAL="${N_EPISODES_EVAL:-200}"
 GRAPH_K="${GRAPH_K:-24}"
+NUM_CODES="${NUM_CODES:-64}"          # strategic VQ codebook size
+NUM_EXPERTS="${NUM_EXPERTS:-4}"       # tactical MoE experts
+ACTIVE_EXPERTS="${ACTIVE_EXPERTS:-2}"
 DATA="data/two_rooms/trajectories.pt"
 MODEL="results/two_rooms/validation/repr_world_model_fs4.pt"
 
@@ -57,12 +60,30 @@ python -m alps.benchmarks.two_rooms.run_ablation_ladder \
     --n-episodes "$N_EPISODES_EVAL" --graph-k "$GRAPH_K"
 
 # ---- 4. Self-learning (Latent-RAG) validation -------------------------------
-echo "--- [4/4] self-learning validation (WRITE/TEST/CONTROL) ---"
+echo "--- [4/6] self-learning validation (WRITE/TEST/CONTROL) ---"
 python -m alps.evaluation.self_learning_validation \
     --model-path "$MODEL" --data-path "$DATA" --frame-skip "$FRAME_SKIP"
+
+# ---- 5. FULL hierarchy: train learned strategic/tactical layers --------------
+HIER_EPOCHS="${HIER_EPOCHS:-60}"
+HIER_SAMPLES="${HIER_SAMPLES:-0}"          # 0 = use all multi-scale samples
+HIER_SAMPLE_STRIDE="${HIER_SAMPLE_STRIDE:-1}"  # 1 = densest sampling (most operative transitions)
+echo "--- [5/6] training FULL hierarchy (strategic VQ + tactical MoE + goal head + RAG) ---"
+python -m alps.training.train_hier \
+    --data-path "$DATA" --epochs "$HIER_EPOCHS" --d-model "$DMODEL" \
+    --num-codes "$NUM_CODES" --num-experts "$NUM_EXPERTS" --active-experts "$ACTIVE_EXPERTS" \
+    --sample-stride "$HIER_SAMPLE_STRIDE" --limit-samples "$HIER_SAMPLES" --save-model \
+    --out results/two_rooms/validation/hier_world_model.pt
+
+# ---- 6. Per-layer hierarchy gates (G_op/G_str/G_tac/G_goals/G_rag) -----------
+echo "--- [6/6] per-layer hierarchy validation ---"
+python -m alps.evaluation.validate_hierarchy \
+    --model-path results/two_rooms/validation/hier_world_model.pt \
+    --data-path "$DATA" --n-episodes "$N_EPISODES_EVAL"
 
 echo "================ DONE ================"
 echo "Artifacts:"
 echo "  results/two_rooms/validation/repr_decoder_gate_trained_fs${FRAME_SKIP}.json   (G1/G2)"
 echo "  results/two_rooms/ablation/ladder_metrics.json + ladder_success.png + latent_graph.png"
 echo "  results/two_rooms/validation/self_learning_validation.json"
+echo "  results/two_rooms/validation/hierarchy_gates.json   (G_op/G_str/G_tac/G_goals/G_rag)"
