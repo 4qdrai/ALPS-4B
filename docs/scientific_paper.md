@@ -133,17 +133,82 @@ During the **Sleep Consolidation** phase, the system audits the RAG cache, isola
 ---
 
 ## 5. Experimental Results
-Our empirical simulations validate the theoretical claims of ALPS-4B. Most notably, our end-to-end inference demonstration proves that ALPS-4B correctly organizes continuous physical semantics into distinct temporal hierarchies without any human labels:
 
-- **Autonomous Neural Routing via Physical Surprise**: We evaluated ALPS-4B on four distinct real-world action sequences. 
-  - **Sunny Cases (Predictable Physics)**: For slow, continuous physical actions (e.g., people walking, a tree blowing in the wind), the Operative Predictor registered microscopic Mean Squared Errors (MSE = 0.0108 and 0.0085 respectively). System 2 remained asleep, conserving massive compute power.
-  - **Surprise Cases (Chaotic Physics)**: When fed highly unpredictable, fast-paced action trailers (e.g., Sintel and Megamind combat sequences), the Operative Predictor error instantly spiked (MSE = 202,246 and 394,028). This divergence flawlessly triggered the **Tactical Brain** to dynamically route physical properties to independent Experts, and subsequently triggered the **Strategic Brain** to compress the chaos into the VQ concept codebook. This mathematically proves our hierarchical threshold activation.
+We evaluate ALPS-4B on the **Two Rooms** continuous navigation benchmark: a 10×10
+world split by a wall with a one-unit door, discrete 4-way actions, 128×128 RGB
+observations, and goals that may lie in the same or the opposite chamber. The
+agent learns purely self-supervised from offline trajectories (mixed
+random-momentum and heuristic policies); no reward or goal labels are used in
+training. Evaluation follows a **falsifiable gate protocol** (full specification
+and acceptance thresholds in `docs/VALIDATION_PLAN.md`); all numbers below are
+reproduced by `scripts/run_a40_validation.sh`.
 
-- **Banach Contraction Convergence**: Under $L < 1$, the refinement checker converges geometrically to the fixed point in under 4 iterations, whereas non-contractive baselines ($L > 1$) diverge.
-- **SIGReg Preservation**: Center covariance singular-value decomposition shows that unregularized networks collapse their latent spectrum to less than 3% active dimensions, while SIGReg maintains a flat, high-dimensional spectrum across all channels.
-- **O(1) Sparse MoE Scaling**: As the total number of expert networks scales from 4 to 64, the forward FLOP pass remains completely flat ($O(1)$ scaling), achieving high-capacity modularity with constant computational costs.
-- **Zero-Retraining Failure Correction**: Querying the Latent-RAG cache for episodic corrections results in a $>98\%$ prediction error reduction instantly, before any backpropagation.
-- **Hive-Mind Fleet Transfer**: Instantaneous transfer of the RAG database to a naive robot decreases its failure rate to zero on identical tasks without any local weight updates.
+### 5.1 Representation and dynamics gates (G1, G2)
+
+A latent world model can only support planning if (i) its representation encodes
+state decodably and (ii) actions move that representation in a decodable,
+correct direction. We test both directly.
+
+- **G1 — decoder gate.** Freeze the encoder; train an *independent* linear-probe
+  regressor to recover absolute (x, y) from pooled latents; report held-out mean
+  Euclidean error in world units. ALPS-4B reaches **0.19 world units** (threshold
+  0.30) — i.e. position is preserved to ≈2% of the world width.
+- **G2 — world-model gate.** We measure *action sensitivity*
+  $\mathbb{E}_{i\neq j}\lVert \mathrm{Pred}(z,a_i)-\mathrm{Pred}(z,a_j)\rVert$ and
+  the *directional consistency* of the decoded one-step displacement against the
+  intended action. ALPS-4B obtains action sensitivity **18.6** and directional
+  consistency **1.00** (all four actions move the decoded position in the correct
+  direction).
+
+Two methodological findings were required to reach these: the closed-form
+Epps-Pulley SIGReg statistic scales with the batch row count $N$ and, unnormalized,
+dominates the prediction/decoding gradients (we normalize per row); and an explicit
+**action-grounded dynamics loss** $\lVert \mathrm{Decode}(\mathrm{Pred}(z,a)) -
+\mathrm{pos}_{t+1}\rVert^2$ is what makes actions actually move the latent.
+
+### 5.2 The hierarchy edge (ablation ladder, G3)
+
+We run identical navigation evaluation (30 balanced episodes, success = reaching
+the goal within 0.6 units, SPL = success weighted by path optimality) across a
+ladder of controllers. To avoid compounding error from multi-step latent
+roll-outs, the world-model controllers re-encode the true observation each step
+and act greedily on the *validated one-step* dynamics in decoded position space.
+
+| Controller | same-room | cross-room | SPL |
+|---|---|---|---|
+| Random | 0.44 | 0.00 | 0.10 |
+| Operative only (System 1, goal-only) | 0.44 | 0.07 | 0.25 |
+| Strategic waypoint [door, goal] | 0.44 | 0.21 | 0.32 |
+| **Latent-graph (System 2)** | 0.63 | **0.36** | 0.43 |
+| Oracle (true state, ceiling) | 1.00 | 0.57 | 0.80 |
+
+The **latent transition graph** — landmark nodes from clustered latents, edges from
+observed transitions, shortest-path sub-goals decoded into waypoints — lifts
+cross-room success from 0.07 (operative-only) to **0.36**, a ~5× gain, improving
+monotonically toward the oracle. This is the central claim of the architecture
+(slow conceptual planning enabling what fast control cannot) demonstrated as a
+controlled ablation rather than asserted.
+
+### 5.3 Non-parametric self-learning (G5)
+
+We test the Latent-RAG correction loop under a proper protocol: write Δz
+corrections for one half of the model's *highest-error* (surprising) contexts,
+then measure on (a) those same contexts, (b) a disjoint half of surprising
+contexts (generalization), and (c) well-predicted contexts (interference). RAG
+generalizes to unseen surprising contexts (**+18.8%** error reduction) but
+one-shot recall is partial (**+20%**) and it *interferes* with already-good
+predictions (**−24%**). The mechanism therefore requires **surprise-gated
+retrieval** (apply the correction only when prediction error is high) before it
+can be claimed as lifelong learning; this is ongoing work.
+
+### 5.4 Scope and limitations
+
+These results are from a deliberately small/fast configuration ($d_\text{model}=128$,
+≈2k clips, 15 epochs). The complex four-room, key-gated variant and closing the
+remaining cross-room gap to the oracle are pending the larger-scale run. We make no
+empirical claim for the $O(1)$ MoE scaling, Banach convergence, EBM binding, or
+fleet-transfer properties beyond their mathematical formulation; they are design
+hypotheses awaiting the same falsifiable treatment.
 
 ---
 

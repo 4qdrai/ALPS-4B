@@ -1,0 +1,58 @@
+{
+  "n_episodes": 30,
+  "frame_skip": 4,
+  "decoder_error_world_units": 0.19172392785549164,
+  "graph_k": 20,
+  "rungs": {
+    "rung0_random": {
+      "n": 30,
+      "overall_success": 0.23333333333333334,
+      "same_room_success": 0.4375,
+      "cross_room_success": 0.0,
+      "overall_spl": 0.0996643658031014,
+      "cross_room_spl": 0.0,
+      "avg_path_len": 124.5,
+      "avg_replans": 0.0
+    },
+    "rung2_operative_greedy": {
+      "n": 30,
+      "overall_success": 0.26666666666666666,
+      "same_room_success": 0.4375,
+      "cross_room_success": 0.07142857142857142,
+      "overall_spl": 0.25277777777777777,
+      "cross_room_spl": 0.07142857142857142,
+      "avg_path_len": 76.13333333333334,
+      "avg_replans": 76.13333333333334
+    },
+    "rung4a_strategic_doorgoal": {
+      "n": 30,
+      "overall_success": 0.3333333333333333,
+      "same_room_success": 0.4375,
+      "cross_room_success": 0.21428571428571427,
+      "overall_spl": 0.3186111111111111,
+      "cross_room_spl": 0.2125,
+      "avg_path_len": 72.26666666666667,
+      "avg_replans": 72.26666666666667
+    },
+    "rung4b_latent_graph": {
+      "n": 30,
+      "overall_success": 0.5,
+      "same_room_success": 0.625,
+      "cross_room_success": 0.35714285714285715,
+      "overall_spl": 0.429603403972268,
+      "cross_room_spl": 0.3278401122019635,
+      "avg_path_len": 60.5,
+      "avg_replans": 60.5
+    },
+    "rung5_oracle": {
+      "n": 30,
+      "overall_success": 0.8,
+      "same_room_success": 1.0,
+      "cross_room_success": 0.5714285714285714,
+      "overall_spl": 0.8,
+      "cross_room_spl": 0.5714285714285714,
+      "avg_path_len": 45.53333333333333,
+      "avg_replans": 0.0
+    }
+  }
+}

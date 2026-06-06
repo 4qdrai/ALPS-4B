@@ -9,7 +9,9 @@
 ---
 
 ## Architectural Capabilities
-ALPS-4B integrates 42 distinct architectural advantages over standard autoregressive and Joint-Embedding models, comprehensively solving physical reasoning, catastrophic forgetting, and robotic safety constraints. For a full mathematical breakdown, read our [Mathematical Foundations & Proofs](docs/mathematical_foundations.md) and the [Scientific Paper](docs/scientific_paper.md).
+ALPS-4B is built around **42 design goals** (listed below) spanning hierarchical prediction, reflexive safety, lifelong memory, and multi-modal efficiency. These are *design hypotheses*, not all yet empirically demonstrated. For what has actually been **measured end-to-end on the Two Rooms benchmark**, see **[Validated Results](#-validated-results-measured)** below, the full **[Validation Plan & Gates](docs/VALIDATION_PLAN.md)**, and the reproduced metrics in [`results/two_rooms/validation/RESULTS_SUMMARY.md`](results/two_rooms/validation/RESULTS_SUMMARY.md). For the mathematical formulations, read the [Mathematical Foundations](docs/mathematical_foundations.md) and the [Scientific Paper](docs/scientific_paper.md).
+
+> **Status note (honesty first):** an earlier version of this README reported a "0.002 units" decoding accuracy and chaotic-surprise MSE spikes as validation. Those were, respectively, a *mislabeled latent MSE* and *unnormalized encoder blow-up* — not evidence. They have been replaced by the falsifiable gate-based results below.
 
 <details>
 <summary><b>Click to expand all 42 Capabilities</b></summary>
@@ -118,19 +120,33 @@ When the bottom-up **Inverse Monitor** registers a prediction failure (surprise)
 
 ---
 
-## 📊 Experimental Results & Validation
+## 📊 Validated Results (measured)
 
-Our empirical simulations validate the theoretical claims of ALPS-4B. Most notably, our **end-to-end inference demonstration** proves that ALPS-4B correctly organizes continuous physical semantics into distinct temporal hierarchies without any human labels.
+These are reproduced numbers from the **Two Rooms** navigation benchmark, run with the gate-based validation program (`docs/VALIDATION_PLAN.md`, `scripts/run_a40_validation.sh`). They replace the earlier unbacked claims.
 
-### Autonomous Neural Routing via Physical Surprise
-We evaluated ALPS-4B on four distinct real-world action sequences spanning predictable and chaotic physical phenomena.
+**Before → after the root-cause fixes** (real temporal input, position-aware latent, per-row SIGReg normalization, action-grounded dynamics loss):
 
-- **Sunny Cases (Predictable Physics)**: For slow, continuous actions (e.g., people walking on a street, a tree blowing in the wind), the Operative Predictor confidently modeled the latent trajectory, registering microscopic Mean Squared Errors (MSE = 0.0108 and 0.0085 respectively). System 2 remained asleep, reducing computational overhead.
-- **Surprise Cases (Chaotic Physics)**: When fed highly unpredictable, fast-paced action trailers (e.g., Sintel and Megamind combat sequences), the Operative Predictor error instantly spiked (MSE = 202,246 and 394,028). This prediction error exceeded threshold, triggering the **Tactical Brain** to dynamically route physical properties to independent Experts, and subsequently escalated to the **Strategic Brain** to compress the chaos into the VQ concept codebook.
+| Metric | Shipped model | After fixes |
+|---|---|---|
+| **G1** decoder error (held-out, world units) | 3.26 (≈ random) | **0.19 — PASS** |
+| **G2** action sensitivity | 0.14 | **18.6** |
+| **G2** directional consistency | 0.50 (chance) | **1.00** |
 
-**This validates our hierarchical threshold activation:** ALPS-4B autonomously learns the difference between predictable continuous physics and unpredictable chaotic events, routing compute dynamically based purely on predictive surprise.
+**The edge — hierarchy benefit on cross-room navigation (ablation ladder, 30 episodes):**
 
-For detailed mathematical proofs of all stability guarantees, see our [Mathematical Foundations](docs/mathematical_foundations.md) document.
+| Controller | same-room | **cross-room** | SPL |
+|---|---|---|---|
+| random | 0.44 | **0.00** | 0.10 |
+| operative-only (System 1) | 0.44 | **0.07** | 0.25 |
+| strategic [door, goal] | 0.44 | **0.21** | 0.32 |
+| **latent-graph (System 2)** | 0.63 | **0.36** | 0.43 |
+| oracle (ceiling) | 1.00 | **0.57** | 0.80 |
+
+The latent-graph strategic layer delivers **~5× the cross-room success of the operative-only baseline**, improving monotonically toward the oracle — the architectural edge, measured rather than asserted. Proof videos: `results/two_rooms/videos/` (operative-vs-graph side-by-side, decoder overlay, solved cross-room episodes). Figures: `results/two_rooms/ablation/{ladder_success.png, latent_graph.png}`.
+
+**Self-learning (Latent-RAG), honest held-out protocol:** generalizes to unseen surprise contexts (+18.8%) but one-shot recall is weak (+20%) and it interferes with well-predicted contexts (−24%) → *needs work* (surprise-gated retrieval). The shipped demo's ">98%" was trivial recall of the exact stored vector.
+
+For detailed mathematical formulations, see [Mathematical Foundations](docs/mathematical_foundations.md).
 
 ---
 

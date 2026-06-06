@@ -1,0 +1,26 @@
+{
+  "write_oneshot": {
+    "n": 500,
+    "err_no_rag": 48.08536326599121,
+    "err_with_rag": 38.27579337692261,
+    "reduction_pct": 20.400323971362212
+  },
+  "test_generalization": {
+    "n": 501,
+    "err_no_rag": 49.11879695199445,
+    "err_with_rag": 39.89091126980658,
+    "reduction_pct": 18.786872347884678
+  },
+  "control_interference": {
+    "n": 1001,
+    "err_no_rag": 27.67772237451879,
+    "err_with_rag": 34.33699209802039,
+    "reduction_pct": -24.060035119191696
+  },
+  "verdict": {
+    "oneshot_ok": false,
+    "generalizes": true,
+    "no_interference": false
+  },
+  "pass": false
+}

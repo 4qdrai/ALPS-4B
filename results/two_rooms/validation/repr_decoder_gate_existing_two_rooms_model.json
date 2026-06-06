@@ -1,0 +1,53 @@
+{
+  "tag": "existing_two_rooms_model",
+  "mode": "probe-existing",
+  "frame_skip": 4,
+  "device": "cuda",
+  "d_model": 128,
+  "G1_decoder_gate": {
+    "held_out_decode_error_world_units": 3.2553067207336426,
+    "threshold": 0.3,
+    "passed": false,
+    "n_train_pairs": 936,
+    "n_val_pairs": 232
+  },
+  "G2_world_model_gate": {
+    "n_transitions": 203,
+    "action_sensitivity": 0.14381810650229454,
+    "one_step_pred_error": 6.841850280761719,
+    "sensitivity_to_error_ratio": 0.0210203527394463,
+    "ratio_threshold": 2.0,
+    "static_decode_error_world_units": 7.799392223358154,
+    "dynamics_decode_error_world_units": 7.793942928314209,
+    "expected_step_displacement_world_units": 0.7497216463088989,
+    "directional_consistency": 0.5,
+    "per_action": {
+      "up": {
+        "mean_decoded_dx": -0.010602246038615704,
+        "mean_decoded_dy": 0.00437445193529129,
+        "cosine_to_intended": 0.3814069926738739
+      },
+      "down": {
+        "mean_decoded_dx": -0.01059042476117611,
+        "mean_decoded_dy": 0.004375525284558535,
+        "cosine_to_intended": -0.3818506896495819
+      },
+      "left": {
+        "mean_decoded_dx": -0.010562567971646786,
+        "mean_decoded_dy": 0.004233383573591709,
+        "cosine_to_intended": 0.9282224178314209
+      },
+      "right": {
+        "mean_decoded_dx": -0.010482839308679104,
+        "mean_decoded_dy": 0.0042542992159724236,
+        "cosine_to_intended": -0.92659991979599
+      }
+    },
+    "passed": false
+  },
+  "overall_pass": false,
+  "figures": [
+    "results/two_rooms/validation\\g1_decoding_existing_two_rooms_model.png",
+    "results/two_rooms/validation\\g2_action_quiver_existing_two_rooms_model.png"
+  ]
+}

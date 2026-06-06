@@ -1,0 +1,53 @@
+{
+  "tag": "trained_fs4",
+  "mode": "train",
+  "frame_skip": 4,
+  "device": "cuda",
+  "d_model": 128,
+  "G1_decoder_gate": {
+    "held_out_decode_error_world_units": 2.0203003883361816,
+    "threshold": 0.3,
+    "passed": false,
+    "n_train_pairs": 936,
+    "n_val_pairs": 232
+  },
+  "G2_world_model_gate": {
+    "n_transitions": 203,
+    "action_sensitivity": 18.589329719543457,
+    "one_step_pred_error": 45.75731658935547,
+    "sensitivity_to_error_ratio": 0.4062591756048322,
+    "ratio_threshold": 2.0,
+    "static_decode_error_world_units": 2.022946834564209,
+    "dynamics_decode_error_world_units": 2.1708292961120605,
+    "expected_step_displacement_world_units": 0.7497216463088989,
+    "directional_consistency": 1.0,
+    "per_action": {
+      "up": {
+        "mean_decoded_dx": 0.2733055353164673,
+        "mean_decoded_dy": 0.3032340109348297,
+        "cosine_to_intended": 0.7428129315376282
+      },
+      "down": {
+        "mean_decoded_dx": 0.20132286846637726,
+        "mean_decoded_dy": -0.6079727411270142,
+        "cosine_to_intended": 0.9493067264556885
+      },
+      "left": {
+        "mean_decoded_dx": -0.1743767112493515,
+        "mean_decoded_dy": -0.022385427728295326,
+        "cosine_to_intended": 0.9918605089187622
+      },
+      "right": {
+        "mean_decoded_dx": 0.6949830055236816,
+        "mean_decoded_dy": -0.5739652514457703,
+        "cosine_to_intended": 0.7710440754890442
+      }
+    },
+    "passed": false
+  },
+  "overall_pass": false,
+  "figures": [
+    "results/two_rooms/validation\\g1_decoding_trained_fs4.png",
+    "results/two_rooms/validation\\g2_action_quiver_trained_fs4.png"
+  ]
+}
