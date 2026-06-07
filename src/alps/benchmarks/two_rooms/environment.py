@@ -58,13 +58,17 @@ class TwoRoomsEnv:
 
     NUM_ACTIONS = 4
 
-    def __init__(self, seed: Optional[int] = None, complex_mode: bool = False):
+    def __init__(self, seed: Optional[int] = None, complex_mode: bool = False,
+                 hazards: bool = True):
         """
         Args:
             seed: optional RNG seed for reproducibility.
-            complex_mode: whether to enable the 4-room key-hazard complex navigation mode.
+            complex_mode: whether to enable the 4-room key-gated complex navigation mode.
+            hazards: in complex mode, apply ice/wind momentum (System-1 control
+                challenge). Set False to test key-gated routing (System-2) in isolation.
         """
         self.complex_mode = complex_mode
+        self.hazards = hazards
         self.rng = np.random.RandomState(seed)
 
         # State
@@ -134,7 +138,9 @@ class TwoRoomsEnv:
         delta = self.ACTION_DELTAS[action].copy()
 
         # --- Apply Variable Physics (Complex Mode Only) ---
-        if self.complex_mode:
+        # Hazards (ice/wind) are a System-1 control challenge; disable them to test
+        # the System-2 key-gated ROUTING challenge in isolation (self.hazards=False).
+        if self.complex_mode and self.hazards:
             current_room = self.get_room_id(old_pos, self.complex_mode)
 
             # Room 1: Slippery Ice (Low friction momentum slide)

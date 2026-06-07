@@ -146,6 +146,50 @@ def build_graph_raw(model, decode_op, frames, positions, room_ids, starts, total
 
 
 @torch.no_grad()
+def gate_complex(model, W, graph, decode_op, device, n_episodes=30, max_steps=200):
+    """COMPLEX mode (4-room, key->door->goal). Success requires reaching the goal
+    WITH the key (env.done already enforces this). Compares operative-only vs
+    latent-graph routing vs the complex heuristic oracle. This is the test the
+    hierarchy must win — greedy alone cannot represent 'fetch key, then goal'."""
+    from alps.benchmarks.two_rooms.data_generator import HeuristicPolicy
+
+    def run(strategy, seed):
+        env = TwoRoomsEnv(seed=seed, complex_mode=True, hazards=False); obs = env.reset()
+        goal_xy = obs["target"].copy()
+        buf = HistoryBuffer(model, W, device); buf.reset(obs_to_frame(obs, device))
+        waypoints, wp = None, 0
+        if strategy == "graph":
+            eg = TwoRoomsEnv(seed=seed, complex_mode=True, hazards=False); eg.reset()
+            eg.agent_pos = goal_xy.copy(); eg.has_key = True
+            zs = model.pool(buf.cur_z).squeeze(0).cpu().numpy()
+            zg = model.pool(model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))).squeeze(0).cpu().numpy()
+            waypoints = graph.waypoints(zs, zg) + [goal_xy.copy()]
+        for s in range(max_steps):
+            sub = waypoints[min(wp, len(waypoints) - 1)] if strategy == "graph" else goal_xy
+            a = hist_greedy_action(buf, decode_op, sub, device)
+            obs, _, done, info = env.step(a); buf.push(obs_to_frame(obs, device), a)
+            if strategy == "graph" and wp < len(waypoints) - 1 and \
+                    np.linalg.norm(obs["position"] - waypoints[wp]) < REACH:
+                wp += 1
+            if done:
+                return True
+        return False
+
+    def run_oracle(seed):
+        from alps.benchmarks.two_rooms.optimal_planner import optimal_episode
+        ok, _, _ = optimal_episode(seed, complex_mode=True, hazards=False, max_steps=max_steps)
+        return ok
+
+    res = {"operative": [], "graph": [], "oracle": []}
+    for i in range(n_episodes):
+        seed = 2000 + i
+        res["operative"].append(run("operative", seed))
+        res["graph"].append(run("graph", seed))
+        res["oracle"].append(run_oracle(seed))
+    return {k: float(np.mean(v)) for k, v in res.items()}
+
+
+@torch.no_grad()
 def run_episode(model, W, env, sr, gr, seed, device, decode_op, decode_tac=None,
                 graph=None, strategy="operative", max_steps=120):
     """strategy in {operative, graph, subgoal}. 'graph' = latent-graph shortest-path
@@ -236,6 +280,23 @@ def run(args):
     # head is kept as a comparison (it fails OOD at far goals).
     graph = build_graph_raw(model, decode_op, frames, positions, room_ids, starts, total,
                             device, k=args.graph_k, S=args.stride)
+
+    if args.complex:
+        # COMPLEX mode: key-gated 4-room. The decisive test for the hierarchy.
+        out["G_complex"] = gate_complex(model, W, graph, decode_op, device,
+                                        n_episodes=args.n_episodes)
+        os.makedirs(args.save_dir, exist_ok=True)
+        p = os.path.join(args.save_dir, "temporal_gates_complex.json")
+        with open(p, "w") as f:
+            json.dump(out, f, indent=2, default=float)
+        gc2 = out["G_complex"]
+        print("\n===== TEMPORAL COMPLEX (key->door->goal) =====")
+        print(f"G1 {g1:.3f}wu | G_str {acc_c:.2f} | G_tac {tac_dec:.3f}wu")
+        print(f"G_complex success  operative {gc2['operative']:.2f} | GRAPH {gc2['graph']:.2f} | oracle {gc2['oracle']:.2f}")
+        print(f"  -> hierarchy edge over operative: {gc2['graph']-gc2['operative']:+.2f}")
+        print(f"[report] {p}")
+        return out
+
     cfgs = [(i % 2, (i % 2) if (i // 2) % 2 == 0 else 1 - (i % 2), 1000 + i) for i in range(args.n_episodes)]
     rop = [run_episode(model, W, TwoRoomsEnv(seed=s), sr, gr, s, device, decode_op, strategy="operative") for sr, gr, s in cfgs]
     rgr = [run_episode(model, W, TwoRoomsEnv(seed=s), sr, gr, s, device, decode_op, decode_tac, graph=graph, strategy="graph") for sr, gr, s in cfgs]
@@ -323,6 +384,7 @@ def main():
     ap.add_argument("--stride", type=int, default=4)
     ap.add_argument("--roll-h", type=int, default=4)
     ap.add_argument("--graph-k", type=int, default=24)
+    ap.add_argument("--complex", action="store_true", help="4-room key-gated complex mode")
     run(ap.parse_args())
 
 
