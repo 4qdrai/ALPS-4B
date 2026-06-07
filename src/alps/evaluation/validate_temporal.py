@@ -108,25 +108,77 @@ def hist_greedy_action(buf, decode_op, subgoal_xy, device):
 
 
 @torch.no_grad()
+def build_graph_raw(model, decode_op, frames, positions, room_ids, starts, total, device,
+                    k=24, S=4, max_eps=500):
+    """Build a latent transition graph (concept landmarks + observed edges) directly
+    from raw episode frames using the temporal model's pooled latents. Strategic
+    routing = Dijkstra shortest path over this graph (goal-conditioned by
+    construction), which avoids the raw sub-goal head's hindsight OOD failure."""
+    from alps.core.latent_graph import LatentGraph, _kmeans
+    per_z, per_xy, per_rm = [], [], []
+    E = starts.shape[0]
+    for e in range(min(E, max_eps)):
+        s = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else total
+        seq = list(range(s, end, S))
+        if len(seq) < 2:
+            continue
+        f = frames[torch.tensor(seq)].to(device).float() / 255.0
+        per_z.append(model.pool(model.encode_frame(f)).cpu().numpy())
+        per_xy.append(positions[torch.tensor(seq)].numpy())
+        per_rm.append(room_ids[torch.tensor(seq)].numpy())
+    Z = np.concatenate(per_z); XY = np.concatenate(per_xy); RM = np.concatenate(per_rm)
+    centroids, labels = _kmeans(Z, k)
+    decoded = decode_op(torch.tensor(centroids, device=device).unsqueeze(1)).cpu().numpy()
+    true_xy = np.zeros((k, 2), np.float32); room = np.zeros(k, np.int64)
+    for j in range(k):
+        m = labels == j
+        if m.any():
+            true_xy[j] = XY[m].mean(0); room[j] = int(round(RM[m].mean()))
+    edges = np.zeros((k, k))
+    off = 0
+    for zp in per_z:
+        L = len(zp); lab = labels[off:off + L]; off += L
+        for t in range(L - 1):
+            edges[lab[t], lab[t + 1]] += 1
+    return LatentGraph(k=k, centroids=centroids.astype("float32"),
+                       decoded_xy=decoded.astype("float32"), true_xy=true_xy,
+                       room_id=room, edges=edges)
+
+
+@torch.no_grad()
 def run_episode(model, W, env, sr, gr, seed, device, decode_op, decode_tac=None,
-                strategy="operative", max_steps=120):
+                graph=None, strategy="operative", max_steps=120):
+    """strategy in {operative, graph, subgoal}. 'graph' = latent-graph shortest-path
+    waypoints (the strategic layer done right); 'subgoal' = raw learned sub-goal head."""
     obs = env.reset(start_room=sr, goal_room=gr); goal_xy = obs["target"].copy()
     opt = _oracle_path_len(sr, gr, seed)
     buf = HistoryBuffer(model, W, device); buf.reset(obs_to_frame(obs, device))
-    if strategy == "hierarchy":
+
+    h_goal, waypoints, wp_idx = None, None, 0
+    if strategy in ("subgoal", "graph"):
         eg = TwoRoomsEnv(seed=seed); eg.reset(start_room=gr, goal_room=gr); eg.agent_pos = goal_xy.copy()
         z_goal = model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))
-        h_goal, _ = model.tac_encode(z_goal)
+        if strategy == "subgoal":
+            h_goal, _ = model.tac_encode(z_goal)
+        else:
+            zs = model.pool(buf.cur_z).squeeze(0).cpu().numpy()
+            zg = model.pool(z_goal).squeeze(0).cpu().numpy()
+            waypoints = graph.waypoints(zs, zg) + [goal_xy.copy()]
+
     for s in range(max_steps):
-        if strategy == "hierarchy":
+        if strategy == "subgoal":
             h, _ = model.tac_encode(buf.cur_z)
-            waypoint = decode_tac(model.emit_subgoal(h, h_goal))[0].cpu().numpy()
-            sub = waypoint
+            sub = decode_tac(model.emit_subgoal(h, h_goal))[0].cpu().numpy()
+        elif strategy == "graph":
+            sub = waypoints[min(wp_idx, len(waypoints) - 1)]
         else:
             sub = goal_xy
         a = hist_greedy_action(buf, decode_op, sub, device)
         obs, _, done, info = env.step(a)
         buf.push(obs_to_frame(obs, device), a)
+        if strategy == "graph" and wp_idx < len(waypoints) - 1 and \
+                np.linalg.norm(obs["position"] - waypoints[wp_idx]) < REACH:
+            wp_idx += 1
         if done or info["distance"] < REACH:
             return EpisodeResult(True, s + 1, opt, s + 1, sr != gr)
     return EpisodeResult(False, max_steps, opt, max_steps, sr != gr)
@@ -179,12 +231,18 @@ def run(args):
     out["G_roll"] = gate_rollout(model, W, frames, actions, positions, starts, total, device,
                                  decode_op, H=args.roll_h, stride=args.stride)
 
-    # G_goals: history-aware navigation
+    # G_goals: history-aware navigation. Strategic routing via the latent GRAPH
+    # (goal-conditioned shortest path) is the fixed hierarchy; the raw sub-goal
+    # head is kept as a comparison (it fails OOD at far goals).
+    graph = build_graph_raw(model, decode_op, frames, positions, room_ids, starts, total,
+                            device, k=args.graph_k, S=args.stride)
     cfgs = [(i % 2, (i % 2) if (i // 2) % 2 == 0 else 1 - (i % 2), 1000 + i) for i in range(args.n_episodes)]
     rop = [run_episode(model, W, TwoRoomsEnv(seed=s), sr, gr, s, device, decode_op, strategy="operative") for sr, gr, s in cfgs]
-    rhi = [run_episode(model, W, TwoRoomsEnv(seed=s), sr, gr, s, device, decode_op, decode_tac, strategy="hierarchy") for sr, gr, s in cfgs]
+    rgr = [run_episode(model, W, TwoRoomsEnv(seed=s), sr, gr, s, device, decode_op, decode_tac, graph=graph, strategy="graph") for sr, gr, s in cfgs]
+    rsg = [run_episode(model, W, TwoRoomsEnv(seed=s), sr, gr, s, device, decode_op, decode_tac, strategy="subgoal") for sr, gr, s in cfgs]
     ror = [run_baseline_episode(TwoRoomsEnv(seed=s), heuristic_oracle_policy(), sr, gr, s) for sr, gr, s in cfgs]
-    out["G_goals"] = {"operative_only": summarize(rop), "learned_hierarchy": summarize(rhi), "oracle": summarize(ror)}
+    out["G_goals"] = {"operative_only": summarize(rop), "latent_graph": summarize(rgr),
+                      "subgoal_head": summarize(rsg), "oracle": summarize(ror)}
 
     os.makedirs(args.save_dir, exist_ok=True)
     p = os.path.join(args.save_dir, "temporal_gates.json")
@@ -201,9 +259,13 @@ def run(args):
     r = out['G_roll']; print(f"G_roll {r['horizon']}-step rollout drift {r['rollout_drift_wu']:.3f}wu (1-step {r['one_step_wu']:.3f}wu)")
     g = out["G_goals"]
     print(f"G_goals cross-room  operative {g['operative_only']['cross_room_success']:.2f} | "
-          f"LEARNED {g['learned_hierarchy']['cross_room_success']:.2f} | oracle {g['oracle']['cross_room_success']:.2f}")
+          f"GRAPH {g['latent_graph']['cross_room_success']:.2f} | "
+          f"subgoal {g['subgoal_head']['cross_room_success']:.2f} | oracle {g['oracle']['cross_room_success']:.2f}")
     print(f"        same-room  operative {g['operative_only']['same_room_success']:.2f} | "
-          f"LEARNED {g['learned_hierarchy']['same_room_success']:.2f} | oracle {g['oracle']['same_room_success']:.2f}")
+          f"GRAPH {g['latent_graph']['same_room_success']:.2f} | "
+          f"subgoal {g['subgoal_head']['same_room_success']:.2f} | oracle {g['oracle']['same_room_success']:.2f}")
+    edge = g['latent_graph']['cross_room_success'] - g['operative_only']['cross_room_success']
+    print(f"        -> strategic-graph cross-room edge over operative: {edge:+.2f}")
     print(f"[report] {p}")
     return out
 
@@ -260,6 +322,7 @@ def main():
     ap.add_argument("--limit-samples", type=int, default=6000)
     ap.add_argument("--stride", type=int, default=4)
     ap.add_argument("--roll-h", type=int, default=4)
+    ap.add_argument("--graph-k", type=int, default=24)
     run(ap.parse_args())
 
 

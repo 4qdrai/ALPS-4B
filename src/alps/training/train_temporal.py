@@ -30,9 +30,10 @@ from alps.training.train_hier import load_raw, var_cov_reg
 
 
 def build_windows(actions, starts, total, W, S, sample_stride):
-    """Return [M,W] frame-index array and [M,W] dominant-action array."""
+    """Return [M,W] frame-index, [M,W] dominant-action, and [M] episode-end-index
+    (the last frame of the episode, for sampling variable far-horizon goals)."""
     span = (W - 1) * S
-    FIDX, AIDX = [], []
+    FIDX, AIDX, GEND = [], [], []
     E = starts.shape[0]
     for e in range(E):
         s = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else total
@@ -43,20 +44,20 @@ def build_windows(actions, starts, total, W, S, sample_stride):
             for k in range(W):
                 blk = actions[fidx[k]: fidx[k] + S] if k < W - 1 else actions[fidx[k]:fidx[k] + 1]
                 acts.append(int(torch.bincount(blk, minlength=4).argmax().item()) if len(blk) else 0)
-            FIDX.append(fidx); AIDX.append(acts)
+            FIDX.append(fidx); AIDX.append(acts); GEND.append(end - 1)
             i += sample_stride * S
-    return np.array(FIDX), np.array(AIDX)
+    return np.array(FIDX), np.array(AIDX), np.array(GEND)
 
 
 def train(args):
     device = torch.device(args.device)
     frames, actions, positions, room_ids, starts = load_raw(args.data_path)
     total = frames.shape[0]
-    FIDX, AIDX = build_windows(actions, starts, total, args.window, args.stride, args.sample_stride)
+    FIDX, AIDX, GEND = build_windows(actions, starts, total, args.window, args.stride, args.sample_stride)
     n = len(FIDX)
     if args.limit_samples and n > args.limit_samples:
         sel = np.random.RandomState(0).choice(n, args.limit_samples, replace=False)
-        FIDX, AIDX = FIDX[sel], AIDX[sel]; n = len(FIDX)
+        FIDX, AIDX, GEND = FIDX[sel], AIDX[sel], GEND[sel]; n = len(FIDX)
     print(f"[data] {total} frames | {n} windows (W={args.window}, S={args.stride}, "
           f"K_tac={args.k_tac}, K_str={args.k_str})")
 
@@ -83,6 +84,7 @@ def train(args):
         for b0 in range(0, n - args.batch_size + 1, args.batch_size):
             bw = FIDX[order[b0:b0 + args.batch_size]]      # [B,W]
             ba = AIDX[order[b0:b0 + args.batch_size]]      # [B,W]
+            bg = GEND[order[b0:b0 + args.batch_size]]      # [B] episode-end frame idx
             B = bw.shape[0]
             fl = torch.from_numpy(bw.reshape(-1))
             fr = frames[fl].to(device).float() / 255.0     # [B*W,3,H,W]
@@ -114,9 +116,17 @@ def train(args):
             L_tac = F.mse_loss(tac_pred[:, :W-Kt], h_win[:, Kt:].detach()) if W > Kt else torch.zeros((), device=device)
             L_tacpos = F.mse_loss(model.tac_pos_head(h_win), pos_n)
 
-            # hindsight goal-conditioned sub-goal: goal = last frame's tactical state
-            h_goal = h_win[:, W-1:W].detach().expand(-1, W, -1)
-            subgoal = model.emit_subgoal(h_win, h_goal)     # [B,W,D]
+            # hindsight goal-conditioned sub-goal with VARIABLE FAR-HORIZON goals:
+            # sample a goal frame beyond the window on the same episode, so the head
+            # is trained for distant goals (the inference regime) — fixes the OOD
+            # failure where it was only ever trained on window-end goals.
+            last = bw[:, -1]
+            off = rng.randint(1, args.goal_max + 1, size=B) * args.stride
+            goal_idx = np.minimum(last + off, bg)
+            gframe = frames[torch.from_numpy(goal_idx)].to(device).float() / 255.0
+            with torch.no_grad():
+                h_goal = model.tac_encode(model.encode_frame(gframe))[0]      # [B,D]
+            subgoal = model.emit_subgoal(h_win, h_goal.unsqueeze(1).expand(-1, W, -1))   # [B,W,D]
             L_sub = F.mse_loss(subgoal[:, :W-Kt], h_win[:, Kt:].detach()) if W > Kt else torch.zeros((), device=device)
 
             n_rows = B * W * N
@@ -171,6 +181,7 @@ def main():
     ap.add_argument("--stride", type=int, default=4)         # base stride S (env frames/op-step)
     ap.add_argument("--k-tac", type=int, default=2)
     ap.add_argument("--k-str", type=int, default=4)
+    ap.add_argument("--goal-max", type=int, default=12, help="max far-goal offset (op-steps) for sub-goal training")
     ap.add_argument("--sample-stride", type=int, default=2)
     ap.add_argument("--pos-weight", type=float, default=1.0)
     ap.add_argument("--collapse-weight", type=float, default=1.0)
