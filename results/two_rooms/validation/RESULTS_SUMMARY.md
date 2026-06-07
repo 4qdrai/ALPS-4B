@@ -119,10 +119,36 @@ use fresh probes on frozen eval-mode latents; (2) shared-encoder corruption from
 training 9 objectives at once → stop-gradient isolation (encoder ← operative+pos
 only). G_op decode improved 3.0 → 0.67 wu after the fix.
 
+## K-frame temporal history (LeWM-style) — the fix that proved the hierarchy
+
+The original LeWorldModel predictor uses a **history of N frames** (4-frame
+sub-trajectories), not one. Our single-frame predictor was the bottleneck. The
+`TemporalHierWorldModel` (`core/temporal_predictor.py`, `core/temporal_world_model.py`,
+`training/train_temporal.py`, `evaluation/validate_temporal.py`) restores a
+**causal K-frame history at every scale** (operative/tactical/strategic). Bounded
+local run (W=6, d192, enc-depth 6, 12 epochs):
+
+| Metric | Single-frame HierWorldModel | **K-frame temporal** |
+|---|---|---|
+| Operative same-room success | 0.10 | **0.67** |
+| Operative cross-room success | 0.00 | **0.17** |
+| **Learned-hierarchy cross-room** | 0.00 | **0.33** (vs operative 0.17 → ~2×) |
+| Strategic room-acc (concept) | 0.72 | **0.85** |
+| G1 decode (world units) | 0.19 (d=128/10ep) | 0.30 (d192/depth6/12ep, near-pass) |
+| Open-loop 4-step rollout drift | — | 2.2 wu (1-step 1.18, sub-linear) |
+
+**This is the decisive result for the full architecture.** With a multi-frame
+history the operative controller actually works (same-room 0.10→0.67), which
+finally makes the goal-emission claim testable — and the **learned hierarchy beats
+operative-only on cross-room (0.33 vs 0.17)**. The previously inconclusive G_goals
+is now a clear win, and the strategic abstraction also improved (room-acc 0.72→0.85).
+The A40 run (stages 5–6, now temporal; d192/depth10, more data/epochs) should push
+all of these toward the oracle (cross-room 0.67).
+
 ## What is NOT yet shown
-- **Learned hierarchical goal-emission solving cross-room** (G_goals): needs the
-  operative controller to first reach ReprWorldModel-level same-room success —
-  i.e. more operative training data/epochs (the A40 run, stages 5–6, with denser
-  sampling). Only then is the learned-vs-operative cross-room comparison decisive.
-- Complex (4-room, key-gated) mode end-to-end.
-- Closing the cross-room gap to the oracle (needs the larger A40 run).
+- **Closing the cross-room gap to the oracle** (learned 0.33 vs oracle 0.67) —
+  needs the full A40 run (depth-10 encoder, all windows, more epochs).
+- **Complex (4-room, key-gated) mode** end-to-end — and this is exactly where the
+  K-frame history is *required* (ice momentum / wind are non-Markovian from one
+  frame), so it should now be tractable.
+- Real-video (UCF101) transfer of the same lean architecture.

@@ -67,22 +67,22 @@ echo "--- [4/6] self-learning validation (WRITE/TEST/CONTROL) ---"
 python -m alps.evaluation.self_learning_validation \
     --model-path "$MODEL" --data-path "$DATA" --frame-skip "$FRAME_SKIP"
 
-# ---- 5. FULL hierarchy: train learned strategic/tactical layers --------------
-HIER_EPOCHS="${HIER_EPOCHS:-60}"
-HIER_SAMPLES="${HIER_SAMPLES:-0}"          # 0 = use all multi-scale samples
-HIER_SAMPLE_STRIDE="${HIER_SAMPLE_STRIDE:-1}"  # 1 = densest sampling (most operative transitions)
-echo "--- [5/6] training FULL hierarchy (strategic VQ + tactical MoE + goal head + RAG) ---"
-python -m alps.training.train_hier \
+# ---- 5. FULL hierarchy with K-frame TEMPORAL history (LeWM-style) ------------
+HIER_EPOCHS="${HIER_EPOCHS:-40}"
+HIER_SAMPLES="${HIER_SAMPLES:-0}"          # 0 = use all windows
+TEMPORAL_WINDOW="${TEMPORAL_WINDOW:-6}"    # K-frame causal history window
+echo "--- [5/6] training TEMPORAL hierarchy (K-frame history: strategic VQ + tactical MoE + goal head + RAG) ---"
+python -m alps.training.train_temporal \
     --data-path "$DATA" --epochs "$HIER_EPOCHS" --d-model "$DMODEL" \
-    --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" \
+    --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" --window "$TEMPORAL_WINDOW" \
     --num-codes "$NUM_CODES" --num-experts "$NUM_EXPERTS" --active-experts "$ACTIVE_EXPERTS" \
-    --sample-stride "$HIER_SAMPLE_STRIDE" --limit-samples "$HIER_SAMPLES" --save-model \
-    --out results/two_rooms/validation/hier_world_model.pt
+    --limit-samples "$HIER_SAMPLES" --save-model \
+    --out results/two_rooms/validation/temporal_world_model.pt
 
-# ---- 6. Per-layer hierarchy gates (G_op/G_str/G_tac/G_goals/G_rag) -----------
-echo "--- [6/6] per-layer hierarchy validation ---"
-python -m alps.evaluation.validate_hierarchy \
-    --model-path results/two_rooms/validation/hier_world_model.pt \
+# ---- 6. Per-layer temporal gates (G1/G_str/G_tac/G_roll/G_goals) -------------
+echo "--- [6/6] temporal hierarchy validation ---"
+python -m alps.evaluation.validate_temporal \
+    --model-path results/two_rooms/validation/temporal_world_model.pt \
     --data-path "$DATA" --n-episodes "$N_EPISODES_EVAL"
 
 echo "================ DONE ================"
@@ -90,4 +90,4 @@ echo "Artifacts:"
 echo "  results/two_rooms/validation/repr_decoder_gate_trained_fs${FRAME_SKIP}.json   (G1/G2)"
 echo "  results/two_rooms/ablation/ladder_metrics.json + ladder_success.png + latent_graph.png"
 echo "  results/two_rooms/validation/self_learning_validation.json"
-echo "  results/two_rooms/validation/hierarchy_gates.json   (G_op/G_str/G_tac/G_goals/G_rag)"
+echo "  results/two_rooms/validation/temporal_gates.json   (G1/G_str/G_tac/G_roll/G_goals)"
