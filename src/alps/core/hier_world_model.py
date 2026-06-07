@@ -59,7 +59,9 @@ class HierWorldModel(nn.Module):
     ):
         super().__init__()
         self.d_model = d_model
-        self.SINGLE_FRAME_T = 8
+        # min pseudo-clip length (patch temporal stride 2): T=2 → 1 temporal patch
+        # (64 tokens) carries all info for a static frame; old T=8 was 4× redundant.
+        self.SINGLE_FRAME_T = 2
         self.lambda_sigreg = lambda_sigreg
 
         # ── Encoder (shared) ──

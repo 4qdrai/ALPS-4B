@@ -85,7 +85,10 @@ ACTION_DIRECTIONS = torch.tensor(
     [[0.0, 1.0], [0.0, -1.0], [-1.0, 0.0], [1.0, 0.0]], dtype=torch.float32
 )
 ACTION_NAMES = ["up", "down", "left", "right"]
-SINGLE_FRAME_T = 8  # broadcast a single frame to a pseudo-clip for the 3D ViT
+SINGLE_FRAME_T = 2  # min pseudo-clip length for the 3D ViT (patch temporal stride 2).
+# A static frame has no temporal dynamics, so T=2 → 1 temporal patch (64 tokens)
+# carries all the info; the old T=8 produced 4 identical temporal copies (256
+# tokens) — 4× redundant compute for zero gain.
 
 
 # ════════════════════════════════════════════════════════════════════════════
