@@ -18,7 +18,9 @@ export PYTHONUNBUFFERED=1
 EPISODES="${EPISODES:-3000}"      # number of trajectory episodes to generate
 MAXSTEPS="${MAXSTEPS:-100}"
 FRAME_SKIP="${FRAME_SKIP:-4}"     # consecutive clip frames differ by ~1.2 world units
-DMODEL="${DMODEL:-192}"           # latent width (must be divisible by 4)
+DMODEL="${DMODEL:-192}"           # latent width (must be divisible by ENC_HEADS)
+ENC_DEPTH="${ENC_DEPTH:-10}"      # encoder ViT depth (≈ViT-Tiny at d192,depth12; 4 = sub-tiny)
+ENC_HEADS="${ENC_HEADS:-8}"       # encoder heads (must divide DMODEL: 8 works for 128/192/256)
 EPOCHS="${EPOCHS:-100}"
 POS_WEIGHT="${POS_WEIGHT:-1.0}"
 DYN_WEIGHT="${DYN_WEIGHT:-1.0}"
@@ -50,6 +52,7 @@ fi
 echo "--- [2/4] training ReprWorldModel + gates G1/G2 ---"
 python -m alps.evaluation.repr_decoder_gate train \
     --data-path "$DATA" --frame-skip "$FRAME_SKIP" --d-model "$DMODEL" \
+    --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" \
     --epochs "$EPOCHS" --pos-weight "$POS_WEIGHT" --dyn-weight "$DYN_WEIGHT" \
     --sigreg-slices "$SIGREG_SLICES" --probe-epochs "$PROBE_EPOCHS" --save-model
 
@@ -71,6 +74,7 @@ HIER_SAMPLE_STRIDE="${HIER_SAMPLE_STRIDE:-1}"  # 1 = densest sampling (most oper
 echo "--- [5/6] training FULL hierarchy (strategic VQ + tactical MoE + goal head + RAG) ---"
 python -m alps.training.train_hier \
     --data-path "$DATA" --epochs "$HIER_EPOCHS" --d-model "$DMODEL" \
+    --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" \
     --num-codes "$NUM_CODES" --num-experts "$NUM_EXPERTS" --active-experts "$ACTIVE_EXPERTS" \
     --sample-stride "$HIER_SAMPLE_STRIDE" --limit-samples "$HIER_SAMPLES" --save-model \
     --out results/two_rooms/validation/hier_world_model.pt

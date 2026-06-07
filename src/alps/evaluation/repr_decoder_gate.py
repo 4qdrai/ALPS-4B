@@ -194,9 +194,11 @@ def train_model(
     dyn_weight: float = 1.0,
     limit_batches: Optional[int] = None,
     sigreg_slices: int = 256,
+    enc_depth: int = 4,
+    enc_heads: int = 4,
 ) -> ReprWorldModel:
-    model = ReprWorldModel(d_model=d_model, lambda_sigreg=lambda_sigreg,
-                           sigreg_slices=sigreg_slices).to(device)
+    model = ReprWorldModel(d_model=d_model, enc_depth=enc_depth, enc_heads=enc_heads,
+                           lambda_sigreg=lambda_sigreg, sigreg_slices=sigreg_slices).to(device)
 
     # Fit position normalization from the data (more stable pos-loss gradients).
     pos = dataset.positions.float()
@@ -585,13 +587,14 @@ def run(args):
             dataset, train_idx, device, d_model=args.d_model, epochs=args.epochs,
             batch_size=args.batch_size, lr=args.lr, lambda_sigreg=args.lambda_sigreg,
             pos_weight=args.pos_weight, dyn_weight=args.dyn_weight,
-            sigreg_slices=args.sigreg_slices,
+            sigreg_slices=args.sigreg_slices, enc_depth=args.enc_depth, enc_heads=args.enc_heads,
             limit_batches=args.limit_batches if args.limit_batches > 0 else None,
         )
         if args.save_model:
             mp = os.path.join(save_dir, f"repr_world_model_fs{frame_skip}.pt")
             torch.save({"model_state_dict": model.state_dict(),
-                        "d_model": args.d_model, "frame_skip": frame_skip}, mp)
+                        "d_model": args.d_model, "enc_depth": args.enc_depth,
+                        "enc_heads": args.enc_heads, "frame_skip": frame_skip}, mp)
             print(f"[save] model -> {mp}")
     else:  # probe-existing
         tag = "existing_" + Path(args.ckpt).stem
@@ -642,6 +645,8 @@ def build_parser():
     common.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     common.add_argument("--frame-skip", type=int, default=4)
     common.add_argument("--d-model", type=int, default=128)
+    common.add_argument("--enc-depth", type=int, default=4, help="encoder ViT depth (12 ≈ ViT-Tiny/Small)")
+    common.add_argument("--enc-heads", type=int, default=4, help="encoder attention heads (must divide d_model)")
     common.add_argument("--probe-epochs", type=int, default=120)
     common.add_argument("--g1-threshold", type=float, default=0.3)
     common.add_argument("--g2-ratio", type=float, default=2.0)

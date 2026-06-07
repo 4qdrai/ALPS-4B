@@ -47,8 +47,10 @@ from alps.evaluation.repr_decoder_gate import ReprWorldModel, gate_g1, split_dat
 
 
 def load_world_model(path: str, device) -> ReprWorldModel:
-    ckpt = torch.load(path, map_location=device, weights_only=True)
-    m = ReprWorldModel(d_model=ckpt.get("d_model", 128)).to(device)
+    ckpt = torch.load(path, map_location="cpu", weights_only=True)
+    m = ReprWorldModel(d_model=ckpt.get("d_model", 128),
+                       enc_depth=ckpt.get("enc_depth", 4),
+                       enc_heads=ckpt.get("enc_heads", 4)).to(device)
     m.load_state_dict(ckpt["model_state_dict"])
     m.eval()
     return m

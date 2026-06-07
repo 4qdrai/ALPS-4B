@@ -45,7 +45,8 @@ REACH = 0.6
 def load_model(path, device):
     ck = torch.load(path, map_location="cpu", weights_only=True)
     m = HierWorldModel(d_model=ck.get("d_model", 128), num_codes=ck.get("num_codes", 64),
-                       num_experts=ck.get("num_experts", 4), active_experts=ck.get("active_experts", 2)).to(device)
+                       num_experts=ck.get("num_experts", 4), active_experts=ck.get("active_experts", 2),
+                       enc_depth=ck.get("enc_depth", 4), enc_heads=ck.get("enc_heads", 4)).to(device)
     m.load_state_dict(ck["model_state_dict"]); m.eval()
     return m, ck
 

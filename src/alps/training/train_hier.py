@@ -87,6 +87,7 @@ def train(args):
 
     model = HierWorldModel(d_model=args.d_model, num_codes=args.num_codes,
                            num_experts=args.num_experts, active_experts=args.active_experts,
+                           enc_depth=args.enc_depth, enc_heads=args.enc_heads,
                            lambda_sigreg=args.lambda_sigreg, sigreg_slices=args.sigreg_slices).to(device)
     pm = positions.mean(0); ps = positions.std(0) + 1e-6
     model.pos_mean.copy_(pm.to(device)); model.pos_std.copy_(ps.to(device))
@@ -172,7 +173,8 @@ def train(args):
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
         torch.save({"model_state_dict": model.state_dict(), "d_model": args.d_model,
                     "num_codes": args.num_codes, "num_experts": args.num_experts,
-                    "active_experts": args.active_experts, "stride": args.stride,
+                    "active_experts": args.active_experts, "enc_depth": args.enc_depth,
+                    "enc_heads": args.enc_heads, "stride": args.stride,
                     "k_tac": args.k_tac, "k_str": args.k_str, "log": log}, args.out)
         print(f"[save] {args.out}")
     return model
@@ -190,6 +192,8 @@ def main():
     ap.add_argument("--num-codes", type=int, default=64)
     ap.add_argument("--num-experts", type=int, default=4)
     ap.add_argument("--active-experts", type=int, default=2)
+    ap.add_argument("--enc-depth", type=int, default=4, help="encoder ViT depth (12 ≈ ViT-Tiny/Small)")
+    ap.add_argument("--enc-heads", type=int, default=4, help="encoder heads (must divide d_model)")
     ap.add_argument("--stride", type=int, default=4)          # base stride S (env frames per op-step)
     ap.add_argument("--k-tac", type=int, default=2)           # tactical horizon in op-steps
     ap.add_argument("--k-str", type=int, default=4)           # strategic/goal horizon in op-steps
