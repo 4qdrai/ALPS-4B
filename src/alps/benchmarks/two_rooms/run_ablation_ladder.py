@@ -51,7 +51,11 @@ def load_world_model(path: str, device) -> ReprWorldModel:
     m = ReprWorldModel(d_model=ckpt.get("d_model", 128),
                        enc_depth=ckpt.get("enc_depth", 4),
                        enc_heads=ckpt.get("enc_heads", 4)).to(device)
-    m.load_state_dict(ckpt["model_state_dict"])
+    # Load only shape-matching tensors; skip non-learned buffers that depend on
+    # config (e.g. sigreg.projection_matrix at a different num_slices, unused at eval).
+    msd = m.state_dict()
+    sd = {k: v for k, v in ckpt["model_state_dict"].items() if k in msd and msd[k].shape == v.shape}
+    m.load_state_dict(sd, strict=False)
     m.eval()
     return m
 

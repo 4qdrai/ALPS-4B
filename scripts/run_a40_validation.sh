@@ -49,12 +49,18 @@ else
 fi
 
 # ---- 2. Train world model + run gates G1/G2 ---------------------------------
-echo "--- [2/4] training ReprWorldModel + gates G1/G2 ---"
-python -m alps.evaluation.repr_decoder_gate train \
-    --data-path "$DATA" --frame-skip "$FRAME_SKIP" --d-model "$DMODEL" \
-    --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" \
-    --epochs "$EPOCHS" --pos-weight "$POS_WEIGHT" --dyn-weight "$DYN_WEIGHT" \
-    --sigreg-slices "$SIGREG_SLICES" --probe-epochs "$PROBE_EPOCHS" --save-model
+# Skip if already trained (set RETRAIN=1 to force). Lets you resume after a later
+# stage failed without re-doing the ~1h foundation training.
+if [ -f "$MODEL" ] && [ -z "${RETRAIN:-}" ]; then
+  echo "--- [2/4] ReprWorldModel already exists at $MODEL (skipping; set RETRAIN=1 to force) ---"
+else
+  echo "--- [2/4] training ReprWorldModel + gates G1/G2 ---"
+  python -m alps.evaluation.repr_decoder_gate train \
+      --data-path "$DATA" --frame-skip "$FRAME_SKIP" --d-model "$DMODEL" \
+      --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" \
+      --epochs "$EPOCHS" --pos-weight "$POS_WEIGHT" --dyn-weight "$DYN_WEIGHT" \
+      --sigreg-slices "$SIGREG_SLICES" --probe-epochs "$PROBE_EPOCHS" --save-model
+fi
 
 # ---- 3. Planning ablation ladder (the edge evidence) ------------------------
 echo "--- [3/4] ablation ladder (rungs 0/2/4a/4b/5) ---"
@@ -71,13 +77,18 @@ python -m alps.evaluation.self_learning_validation \
 HIER_EPOCHS="${HIER_EPOCHS:-40}"
 HIER_SAMPLES="${HIER_SAMPLES:-0}"          # 0 = use all windows
 TEMPORAL_WINDOW="${TEMPORAL_WINDOW:-6}"    # K-frame causal history window
-echo "--- [5/6] training TEMPORAL hierarchy (K-frame history: strategic VQ + tactical MoE + goal head + RAG) ---"
-python -m alps.training.train_temporal \
-    --data-path "$DATA" --epochs "$HIER_EPOCHS" --d-model "$DMODEL" \
-    --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" --window "$TEMPORAL_WINDOW" \
-    --num-codes "$NUM_CODES" --num-experts "$NUM_EXPERTS" --active-experts "$ACTIVE_EXPERTS" \
-    --limit-samples "$HIER_SAMPLES" --save-model \
-    --out results/two_rooms/validation/temporal_world_model.pt
+TEMPORAL_MODEL="results/two_rooms/validation/temporal_world_model.pt"
+if [ -f "$TEMPORAL_MODEL" ] && [ -z "${RETRAIN:-}" ]; then
+  echo "--- [5/6] temporal model already exists at $TEMPORAL_MODEL (skipping; set RETRAIN=1 to force) ---"
+else
+  echo "--- [5/6] training TEMPORAL hierarchy (K-frame history: strategic VQ + tactical MoE + goal head + RAG) ---"
+  python -m alps.training.train_temporal \
+      --data-path "$DATA" --epochs "$HIER_EPOCHS" --d-model "$DMODEL" \
+      --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" --window "$TEMPORAL_WINDOW" \
+      --num-codes "$NUM_CODES" --num-experts "$NUM_EXPERTS" --active-experts "$ACTIVE_EXPERTS" \
+      --limit-samples "$HIER_SAMPLES" --save-model \
+      --out "$TEMPORAL_MODEL"
+fi
 
 # ---- 6. Per-layer temporal gates (G1/G_str/G_tac/G_roll/G_goals) -------------
 echo "--- [6/6] temporal hierarchy validation ---"
