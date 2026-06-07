@@ -150,6 +150,23 @@ def run(args):
     g1 = (decode_op(Zva.to(device)) - Pva.to(device)).norm(dim=1).mean().item()
     out["G1"] = {"decode_err_world_units": g1, "passed": g1 < 0.3}
 
+    # G_collapse: latent spread diagnostic (effective rank / dead dims / pinning).
+    # Catastrophic collapse -> eff_rank~1, dead_dims>0, pairwise cosine~1. Low rank
+    # is OK if it matches the task's intrinsic dim AND G1 still decodes.
+    Zc = Zva - Zva.mean(0)
+    ev = torch.linalg.eigvalsh((Zc.t() @ Zc) / (Zva.shape[0] - 1)).clamp(min=0)
+    eff_rank = float((ev.sum() ** 2 / (ev ** 2).sum()))
+    std = Zva.std(0)
+    zn = torch.nn.functional.normalize(Zva[:600], dim=1)
+    cos = zn @ zn.t()
+    cos_mean = float(cos[~torch.eye(zn.shape[0], dtype=torch.bool)].mean())
+    out["G_collapse"] = {
+        "d_model": int(Zva.shape[1]), "effective_rank": eff_rank,
+        "dead_dims": int((std < 0.01).sum()), "min_dim_std": float(std.min()),
+        "mean_pairwise_cosine": cos_mean,
+        "catastrophic_collapse": bool(eff_rank < 1.5 or cos_mean > 0.99),
+    }
+
     # G_str / G_tac (probes)
     acc_c = room_probe_acc(Ctr, Rtr, Cva, Rva); acc_z = room_probe_acc(Ztr, Rtr, Zva, Rva)
     tac_dec = (decode_tac(Hva.to(device)) - Pva.to(device)).norm(dim=1).mean().item()
@@ -173,6 +190,10 @@ def run(args):
         json.dump(out, f, indent=2, default=float)
     print("\n===== TEMPORAL (K-frame history) GATES =====")
     print(f"G1     decode {g1:.3f}wu -> {'PASS' if out['G1']['passed'] else 'FAIL'}")
+    gc = out["G_collapse"]
+    print(f"G_coll eff-rank {gc['effective_rank']:.1f}/{gc['d_model']} | dead-dims {gc['dead_dims']} "
+          f"| pairwise-cos {gc['mean_pairwise_cosine']:.2f} -> "
+          f"{'COLLAPSE' if gc['catastrophic_collapse'] else 'no catastrophic collapse'}")
     print(f"G_str  room-acc concept {acc_c:.2f} (op {acc_z:.2f})")
     print(f"G_tac  decode {tac_dec:.3f}wu")
     r = out['G_roll']; print(f"G_roll {r['horizon']}-step rollout drift {r['rollout_drift_wu']:.3f}wu (1-step {r['one_step_wu']:.3f}wu)")
