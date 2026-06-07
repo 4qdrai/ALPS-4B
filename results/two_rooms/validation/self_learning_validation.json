@@ -1,26 +1,26 @@
 {
   "write_oneshot": {
     "n": 500,
-    "err_no_rag": 48.08536326599121,
-    "err_with_rag": 38.27579337692261,
-    "reduction_pct": 20.400323971362212
+    "err_no_rag": 18.991634449005126,
+    "err_with_rag": 16.187152656555178,
+    "reduction_pct": 14.766932251040988
   },
   "test_generalization": {
     "n": 501,
-    "err_no_rag": 49.11879695199445,
-    "err_with_rag": 39.89091126980658,
-    "reduction_pct": 18.786872347884678
+    "err_no_rag": 19.0943174609643,
+    "err_with_rag": 16.436819752295335,
+    "reduction_pct": 13.917741307600306
   },
   "control_interference": {
     "n": 1001,
-    "err_no_rag": 27.67772237451879,
-    "err_with_rag": 34.33699209802039,
-    "reduction_pct": -24.060035119191696
+    "err_no_rag": 12.827027341821692,
+    "err_with_rag": 10.380050897836448,
+    "reduction_pct": 19.076722757166316
   },
   "verdict": {
     "oneshot_ok": false,
     "generalizes": true,
-    "no_interference": false
+    "no_interference": true
   },
   "pass": false
 }

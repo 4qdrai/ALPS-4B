@@ -5,49 +5,49 @@
   "device": "cuda",
   "d_model": 128,
   "G1_decoder_gate": {
-    "held_out_decode_error_world_units": 2.0203003883361816,
+    "held_out_decode_error_world_units": 0.06687916815280914,
     "threshold": 0.3,
-    "passed": false,
-    "n_train_pairs": 936,
-    "n_val_pairs": 232
+    "passed": true,
+    "n_train_pairs": 8000,
+    "n_val_pairs": 8000
   },
   "G2_world_model_gate": {
-    "n_transitions": 203,
-    "action_sensitivity": 18.589329719543457,
-    "one_step_pred_error": 45.75731658935547,
-    "sensitivity_to_error_ratio": 0.4062591756048322,
+    "n_transitions": 3003,
+    "action_sensitivity": 26.9616306951512,
+    "one_step_pred_error": 28.38712516324821,
+    "sensitivity_to_error_ratio": 0.949783767486241,
     "ratio_threshold": 2.0,
-    "static_decode_error_world_units": 2.022946834564209,
-    "dynamics_decode_error_world_units": 2.1708292961120605,
-    "expected_step_displacement_world_units": 0.7497216463088989,
+    "static_decode_error_world_units": 0.0657879719526181,
+    "dynamics_decode_error_world_units": 0.7715911052245281,
+    "expected_step_displacement_world_units": 0.7122438718508054,
     "directional_consistency": 1.0,
     "per_action": {
       "up": {
-        "mean_decoded_dx": 0.2733055353164673,
-        "mean_decoded_dy": 0.3032340109348297,
-        "cosine_to_intended": 0.7428129315376282
+        "mean_decoded_dx": 0.09269876033067703,
+        "mean_decoded_dy": 0.37909772992134094,
+        "cosine_to_intended": 0.9713810682296753
       },
       "down": {
-        "mean_decoded_dx": 0.20132286846637726,
-        "mean_decoded_dy": -0.6079727411270142,
-        "cosine_to_intended": 0.9493067264556885
+        "mean_decoded_dx": 0.05100775882601738,
+        "mean_decoded_dy": -0.7608295679092407,
+        "cosine_to_intended": 0.9977601766586304
       },
       "left": {
-        "mean_decoded_dx": -0.1743767112493515,
-        "mean_decoded_dy": -0.022385427728295326,
-        "cosine_to_intended": 0.9918605089187622
+        "mean_decoded_dx": -0.40787580609321594,
+        "mean_decoded_dy": -0.06240104138851166,
+        "cosine_to_intended": 0.9884984493255615
       },
       "right": {
-        "mean_decoded_dx": 0.6949830055236816,
-        "mean_decoded_dy": -0.5739652514457703,
-        "cosine_to_intended": 0.7710440754890442
+        "mean_decoded_dx": 0.5935417413711548,
+        "mean_decoded_dy": -0.16046293079853058,
+        "cosine_to_intended": 0.9653444886207581
       }
     },
     "passed": false
   },
   "overall_pass": false,
   "figures": [
-    "results/two_rooms/validation\\g1_decoding_trained_fs4.png",
-    "results/two_rooms/validation\\g2_action_quiver_trained_fs4.png"
+    "results/two_rooms/validation/g1_decoding_trained_fs4.png",
+    "results/two_rooms/validation/g2_action_quiver_trained_fs4.png"
   ]
 }
