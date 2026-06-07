@@ -51,6 +51,12 @@ def build_windows(actions, starts, total, W, S, sample_stride):
 
 def train(args):
     device = torch.device(args.device)
+    if getattr(args, "self_supervised", False):
+        args.pos_weight = 0.0
+        args.dyn_weight = 0.0
+        print("[mode] PURE SELF-SUPERVISED (LeWM): encoder trained ONLY by feature "
+              "prediction + collapse prevention; NO position/dynamics labels. "
+              "Latent is read out by a frozen probe at eval.")
     frames, actions, positions, room_ids, starts = load_raw(args.data_path)
     total = frames.shape[0]
     FIDX, AIDX, GEND = build_windows(actions, starts, total, args.window, args.stride, args.sample_stride)
@@ -131,10 +137,20 @@ def train(args):
 
             n_rows = B * W * N
             L_sig = model.lambda_sigreg * model.sigreg(z.reshape(B * W, N, D)) / n_rows
-            L_col = var_cov_reg(h_win.reshape(B * W, D)) + var_cov_reg(model.str_pre(zd.reshape(B * W, N, D)))
+            # Operative VICReg variance/covariance floor (trains the encoder). In the
+            # pure self-supervised (LeWM) mode with no position labels, THIS is what
+            # forces the operative latent to stay high-variance & decorrelated so that
+            # feature prediction can't be solved by collapse — the only anti-collapse
+            # signal on the encoder.
+            L_col_op = var_cov_reg(z.mean(dim=2).reshape(B * W, D))
+            L_col = (L_col_op + var_cov_reg(h_win.reshape(B * W, D))
+                     + var_cov_reg(model.str_pre(zd.reshape(B * W, N, D))))
 
-            loss = (L_op + L_dyn + args.pos_weight * (L_pos + L_tacpos) + L_tac + L_str
-                    + vq_tot + L_sub + L_sig + 0.01 * moe_tot + args.collapse_weight * L_col)
+            # Pure self-supervised (LeWM): pos_weight=dyn_weight=0 -> NO position/dynamics
+            # supervision on the encoder; latent is read out by a frozen probe at eval.
+            loss = (L_op + args.dyn_weight * L_dyn + args.pos_weight * (L_pos + L_tacpos)
+                    + L_tac + L_str + vq_tot + L_sub + L_sig
+                    + 0.01 * moe_tot + args.collapse_weight * L_col)
             opt.zero_grad(set_to_none=True); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step()
 
@@ -184,6 +200,10 @@ def main():
     ap.add_argument("--goal-max", type=int, default=12, help="max far-goal offset (op-steps) for sub-goal training")
     ap.add_argument("--sample-stride", type=int, default=2)
     ap.add_argument("--pos-weight", type=float, default=1.0)
+    ap.add_argument("--dyn-weight", type=float, default=1.0)
+    ap.add_argument("--self-supervised", action="store_true",
+                    help="LeWM-faithful: zero position/dynamics supervision; encoder learns "
+                         "only from feature prediction + collapse prevention (probe at eval)")
     ap.add_argument("--collapse-weight", type=float, default=1.0)
     ap.add_argument("--lambda-sigreg", type=float, default=0.1)
     ap.add_argument("--sigreg-slices", type=int, default=256)
