@@ -74,8 +74,15 @@ ALPS-4B is built around **42 design goals** (listed below) spanning hierarchical
 
 ## 🖼️ Full System Architecture
 
-### Publication-Quality Academic Architecture Diagram
-![ALPS-4B Publication-Quality Academic Architecture](figures/alps4b_clean_architecture.png)
+### Full Architecture (every concept, with validation status)
+The diagram below shows the complete ALPS-4B architecture — all three predictive
+tiers, the coordination/safety/lifelong-learning modules, and the data/stop-gradient
+flow. Each block is tagged with its empirical status: **✓ validated** (a gate or
+ablation demonstrates it), **◐ partial** (works but below target, or a proxy was
+shown), **○ design hypothesis** (implemented but not yet validated end-to-end).
+Regenerate with `python docs/make_architecture_diagram.py`.
+
+![ALPS-4B Full Architecture with validation status](figures/alps4b_architecture_full.png)
 
 ---
 

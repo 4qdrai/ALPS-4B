@@ -223,8 +223,13 @@ def train_model(
             positions = batch["positions"].to(device)         # [B,T,2]
             B, _, T = frames.shape[0], frames.shape[1], frames.shape[2]
 
-            # Encode every frame (real consecutive frames -> real temporal signal).
-            zs = [model.encode_frame(frames[:, :, t]) for t in range(T)]
+            # Encode every frame in ONE batched call (B*T) instead of a Python
+            # loop of T calls — same FLOPs, far less kernel-launch overhead.
+            flat = frames.permute(0, 2, 1, 3, 4).reshape(B * T, frames.shape[1],
+                                                          frames.shape[3], frames.shape[4])
+            z_all = model.encode_frame(flat)                      # [B*T, N, D]
+            z_all = z_all.reshape(B, T, z_all.shape[1], z_all.shape[2])
+            zs = [z_all[:, t] for t in range(T)]
             n_rows = B * T * zs[0].shape[1]
 
             # Position auxiliary loss (forces spatial decodability into the latent).
