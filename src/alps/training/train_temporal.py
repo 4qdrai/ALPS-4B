@@ -78,7 +78,7 @@ def train(args):
     for epoch in range(1, args.epochs + 1):
         t0 = time.perf_counter()
         order = rng.permutation(n)
-        agg = {k: 0.0 for k in ["loss", "op", "dyn", "pos", "tac", "str", "vq", "sub", "col"]}
+        agg = {k: 0.0 for k in ["loss", "op", "dyn", "pos", "tac", "str", "vq", "sub", "sig", "col"]}
         nb = 0
         for b0 in range(0, n - args.batch_size + 1, args.batch_size):
             bw = FIDX[order[b0:b0 + args.batch_size]]      # [B,W]
@@ -130,13 +130,14 @@ def train(args):
 
             agg["loss"] += loss.item(); agg["op"] += L_op.item(); agg["dyn"] += L_dyn.item()
             agg["pos"] += L_pos.item(); agg["tac"] += float(L_tac); agg["str"] += float(L_str)
-            agg["vq"] += float(vq_tot); agg["sub"] += float(L_sub); agg["col"] += float(L_col); nb += 1
+            agg["vq"] += float(vq_tot); agg["sub"] += float(L_sub)
+            agg["sig"] += float(L_sig); agg["col"] += float(L_col); nb += 1
 
         nb = max(1, nb)
         print(f"  ep {epoch:03d}/{args.epochs:03d} | loss {agg['loss']/nb:.3f} | op {agg['op']/nb:.3f} "
               f"dyn {agg['dyn']/nb:.3f} pos {agg['pos']/nb:.3f} tac {agg['tac']/nb:.3f} "
               f"str {agg['str']/nb:.3f} vq {agg['vq']/nb:.3f} sub {agg['sub']/nb:.3f} "
-              f"col {agg['col']/nb:.3f} | {time.perf_counter()-t0:.1f}s")
+              f"sig {agg['sig']/nb:.4f} col {agg['col']/nb:.3f} | {time.perf_counter()-t0:.1f}s")
 
     if args.save_model:
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
