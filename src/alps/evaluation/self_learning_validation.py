@@ -73,9 +73,13 @@ def run(args):
         dataset.clip_indices = dataset.clip_indices[: args.limit_clips]
     _, val_idx = split_dataset(dataset, val_frac=0.4, seed=0)
 
-    ckpt = torch.load(args.model_path, map_location=device, weights_only=True)
-    model = ReprWorldModel(d_model=ckpt.get("d_model", 128)).to(device)
-    model.load_state_dict(ckpt["model_state_dict"]); model.eval()
+    ckpt = torch.load(args.model_path, map_location="cpu", weights_only=True)
+    model = ReprWorldModel(d_model=ckpt.get("d_model", 128),
+                           enc_depth=ckpt.get("enc_depth", 4),
+                           enc_heads=ckpt.get("enc_heads", 4)).to(device)
+    msd = model.state_dict()
+    sd = {k: v for k, v in ckpt["model_state_dict"].items() if k in msd and msd[k].shape == v.shape}
+    model.load_state_dict(sd, strict=False); model.eval()
 
     ctx, ZT, ZN, ZP, ERR = gather_transitions(model, dataset, val_idx, device)
     print(f"[data] {len(ERR)} held-out transitions | mean err {ERR.mean():.3f}")
