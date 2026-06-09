@@ -82,7 +82,8 @@ TEMPORAL_WINDOW="${TEMPORAL_WINDOW:-6}"    # K-frame causal history window
 # NO position/dynamics labels (the latent is read out by a FROZEN probe at eval).
 # Default ON; set SELF_SUP=0 for the position-grounded (weakly-supervised) variant.
 SELF_SUP="${SELF_SUP:-1}"
-SELFSUP_FLAG=""; [ "$SELF_SUP" = "1" ] && SELFSUP_FLAG="--self-supervised"
+SELFSUP_FLAG=""
+if [ "$SELF_SUP" = "1" ]; then SELFSUP_FLAG="--self-supervised"; fi
 TEMPORAL_MODEL="results/two_rooms/validation/temporal_world_model.pt"
 if [ -f "$TEMPORAL_MODEL" ] && [ -z "${RETRAIN:-}" ]; then
   echo "--- [5/6] temporal model already exists at $TEMPORAL_MODEL (skipping; set RETRAIN=1 to force) ---"
@@ -94,6 +95,20 @@ else
       --num-codes "$NUM_CODES" --num-experts "$NUM_EXPERTS" --active-experts "$ACTIVE_EXPERTS" \
       --limit-samples "$HIER_SAMPLES" --save-model $SELFSUP_FLAG \
       --out "$TEMPORAL_MODEL"
+fi
+
+# ---- 5b. G1 LINEAR IDENTIFIABILITY: self-supervised vs supervised, head-to-head ----
+# Trains TWO encoders (SSL: no labels / SUP: pos+dyn labels) on the same config and
+# reports frozen-probe decode error for each. The gap quantifies how much the pure
+# unsupervised representation gives up (LeWM: little -> position is linearly
+# identifiable from the SSL latent). Doubles temporal training; set G1_COMPARE=0 to skip.
+G1_COMPARE="${G1_COMPARE:-1}"
+if [ "$G1_COMPARE" = "1" ]; then
+  echo "--- [5b] G1 linear identifiability (SSL vs SUP) ---"
+  python -m alps.evaluation.g1_identifiability \
+      --data-path "$DATA" --epochs "$HIER_EPOCHS" --d-model "$DMODEL" \
+      --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" --window "$TEMPORAL_WINDOW" \
+      --num-codes "$NUM_CODES" --eval-samples 6000
 fi
 
 # ---- 6. FOUR-BRAIN gates, SIMPLE mode (operative/+strategic/+tactical ablation)
@@ -135,5 +150,6 @@ echo "Artifacts:"
 echo "  results/two_rooms/validation/repr_decoder_gate_trained_fs${FRAME_SKIP}.json   (G1/G2)"
 echo "  results/two_rooms/ablation/ladder_metrics.json + ladder_success.png + latent_graph.png"
 echo "  results/two_rooms/validation/self_learning_validation.json"
+echo "  results/two_rooms/validation/g1_identifiability.json       (SSL vs SUP frozen-probe G1 + collapse)"
 echo "  results/two_rooms/validation/temporal_gates.json           (simple Four-Brain: G1/G_str/G_tac/G_roll/G_4brain)"
 echo "  results/two_rooms/validation/temporal_gates_complex.json    (COMPLEX Four-Brain: key->door->goal 3-tier ablation)"

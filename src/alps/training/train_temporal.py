@@ -183,7 +183,7 @@ def train(args):
     return model
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-path", default="data/two_rooms/trajectories_large.pt")
     ap.add_argument("--out", default="results/two_rooms/validation/temporal_world_model.pt")
@@ -215,7 +215,11 @@ def main():
     ap.add_argument("--sigreg-slices", type=int, default=256)
     ap.add_argument("--limit-samples", type=int, default=0)
     ap.add_argument("--save-model", action="store_true")
-    train(ap.parse_args())
+    return ap
+
+
+def main():
+    train(build_parser().parse_args())
 
 
 if __name__ == "__main__":

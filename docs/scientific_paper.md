@@ -224,6 +224,14 @@ This isolates the System-2 routing problem from the System-1 momentum control
 
 ### 5.4 Scope and limitations
 
+All encoder training is **self-supervised by default** (LeWM-faithful: feature
+prediction + SIGReg/VICReg collapse prevention only; no position/dynamics labels touch
+the encoder), with state read out *post hoc* by a fresh linear probe on the frozen
+latents. The `g1_identifiability` gate trains a self-supervised and a position-grounded
+encoder on the same config and reports the frozen-probe decode gap `G1_ssl − G1_sup`,
+directly testing the linear-identifiability premise that planning/control inherit from
+an unsupervised representation rather than a labelled one.
+
 The headline edge (§5.2) is the robustly validated claim: the System-2 latent graph
 delivers cross-room success the System-1 operative cannot. The §5.3 three-tier
 ablation and the closed-loop complex key-gated success are **pending the larger-scale
