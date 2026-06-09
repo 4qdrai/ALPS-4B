@@ -78,16 +78,21 @@ python -m alps.evaluation.self_learning_validation \
 HIER_EPOCHS="${HIER_EPOCHS:-40}"
 HIER_SAMPLES="${HIER_SAMPLES:-0}"          # 0 = use all windows
 TEMPORAL_WINDOW="${TEMPORAL_WINDOW:-6}"    # K-frame causal history window
+# LeWM-FAITHFUL: encoder trained ONLY by feature prediction + collapse prevention,
+# NO position/dynamics labels (the latent is read out by a FROZEN probe at eval).
+# Default ON; set SELF_SUP=0 for the position-grounded (weakly-supervised) variant.
+SELF_SUP="${SELF_SUP:-1}"
+SELFSUP_FLAG=""; [ "$SELF_SUP" = "1" ] && SELFSUP_FLAG="--self-supervised"
 TEMPORAL_MODEL="results/two_rooms/validation/temporal_world_model.pt"
 if [ -f "$TEMPORAL_MODEL" ] && [ -z "${RETRAIN:-}" ]; then
   echo "--- [5/6] temporal model already exists at $TEMPORAL_MODEL (skipping; set RETRAIN=1 to force) ---"
 else
-  echo "--- [5/6] training TEMPORAL hierarchy (K-frame history: strategic VQ + tactical MoE + goal head + RAG) ---"
+  echo "--- [5/6] training TEMPORAL hierarchy (self_sup=$SELF_SUP: strategic VQ + tactical MoE + goal head + RAG) ---"
   python -m alps.training.train_temporal \
       --data-path "$DATA" --epochs "$HIER_EPOCHS" --d-model "$DMODEL" \
       --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" --window "$TEMPORAL_WINDOW" \
       --num-codes "$NUM_CODES" --num-experts "$NUM_EXPERTS" --active-experts "$ACTIVE_EXPERTS" \
-      --limit-samples "$HIER_SAMPLES" --save-model \
+      --limit-samples "$HIER_SAMPLES" --save-model $SELFSUP_FLAG \
       --out "$TEMPORAL_MODEL"
 fi
 
@@ -113,12 +118,12 @@ fi
 if [ -f "$CX_MODEL" ] && [ -z "${RETRAIN:-}" ]; then
   echo "--- [7/7] complex temporal model exists at $CX_MODEL (skipping; set RETRAIN=1 to force) ---"
 else
-  echo "--- [7/7] training COMPLEX temporal hierarchy ---"
+  echo "--- [7/7] training COMPLEX temporal hierarchy (self_sup=$SELF_SUP) ---"
   python -m alps.training.train_temporal \
       --data-path "$CX_DATA" --epochs "$HIER_EPOCHS" --d-model "$DMODEL" \
       --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" --window "$TEMPORAL_WINDOW" \
       --num-codes "$NUM_CODES" --num-experts "$NUM_EXPERTS" --active-experts "$ACTIVE_EXPERTS" \
-      --limit-samples "$HIER_SAMPLES" --save-model --out "$CX_MODEL"
+      --limit-samples "$HIER_SAMPLES" --save-model $SELFSUP_FLAG --out "$CX_MODEL"
 fi
 echo "--- [7/7] FOUR-BRAIN validation, COMPLEX mode (key-gated) ---"
 python -m alps.evaluation.validate_temporal --complex \
