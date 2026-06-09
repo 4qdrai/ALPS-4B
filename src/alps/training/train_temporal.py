@@ -118,7 +118,13 @@ def train(args):
 
             str_pred = model.str_predict_window(c_win)
             L_str = F.mse_loss(str_pred[:, :W-Ks], c_win[:, Ks:].detach()) if W > Ks else torch.zeros((), device=device)
-            tac_pred = model.tac_predict_window(h_win, c_win.detach())
+            # GOAL-CONDITIONED tactical: condition on the TARGET strategic concept
+            # (the concept K_tac steps ahead = where we're heading), so at inference
+            # the tactical emits a rough sub-goal region toward the NEXT strategic
+            # landmark. Robust because strategic concepts are coarse/discrete (unlike
+            # the far continuous goal that broke the sub-goal head).
+            c_tgt = torch.cat([c_win[:, Kt:], c_win[:, -1:].expand(-1, Kt, -1)], dim=1)  # cond[k]=c[k+Kt]
+            tac_pred = model.tac_predict_window(h_win, c_tgt.detach())
             L_tac = F.mse_loss(tac_pred[:, :W-Kt], h_win[:, Kt:].detach()) if W > Kt else torch.zeros((), device=device)
             L_tacpos = F.mse_loss(model.tac_pos_head(h_win), pos_n)
 

@@ -62,6 +62,12 @@ class LatentGraph:
     true_xy: np.ndarray                # [k, 2] mean true positions (validation)
     room_id: np.ndarray                # [k] majority room id (validation)
     edges: np.ndarray                  # [k, k] transition counts
+    # --- optional: SEMANTIC graph (centroids live in decoded (x,y,key) feature
+    # space, not raw latent space). z_centroids keeps the mean pooled LATENT per
+    # node (so the tactical layer can still be conditioned on str_encode(node)).
+    z_centroids: np.ndarray = None     # [k, D] mean pooled latent per node
+    key_state: np.ndarray = None       # [k] mean has-key score per node
+    key_node: int = None               # index of the explicit key-acquisition landmark
 
     def node_of_latent(self, z_pooled: np.ndarray) -> int:
         d = ((self.centroids - z_pooled[None, :]) ** 2).sum(-1)

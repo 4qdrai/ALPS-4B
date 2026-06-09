@@ -28,6 +28,7 @@ SIGREG_SLICES="${SIGREG_SLICES:-512}"
 PROBE_EPOCHS="${PROBE_EPOCHS:-150}"
 N_EPISODES_EVAL="${N_EPISODES_EVAL:-200}"
 GRAPH_K="${GRAPH_K:-24}"
+COARSE_K="${COARSE_K:-8}"             # COARSE strategic landmarks for the Four-Brain ablation
 NUM_CODES="${NUM_CODES:-64}"          # strategic VQ codebook size
 NUM_EXPERTS="${NUM_EXPERTS:-4}"       # tactical MoE experts
 ACTIVE_EXPERTS="${ACTIVE_EXPERTS:-2}"
@@ -90,15 +91,44 @@ else
       --out "$TEMPORAL_MODEL"
 fi
 
-# ---- 6. Per-layer temporal gates (G1/G_str/G_tac/G_roll/G_goals) -------------
-echo "--- [6/6] temporal hierarchy validation ---"
+# ---- 6. FOUR-BRAIN gates, SIMPLE mode (operative/+strategic/+tactical ablation)
+echo "--- [6/7] FOUR-BRAIN validation, simple mode (G1/G_str/G_tac/G_roll/G_4brain) ---"
 python -m alps.evaluation.validate_temporal \
-    --model-path results/two_rooms/validation/temporal_world_model.pt \
-    --data-path "$DATA" --n-episodes "$N_EPISODES_EVAL"
+    --model-path "$TEMPORAL_MODEL" \
+    --data-path "$DATA" --n-episodes "$N_EPISODES_EVAL" --coarse-k "$COARSE_K"
+
+# ---- 7. FOUR-BRAIN gates, COMPLEX mode (key->door->goal: the decisive test) ---
+# Greedy operative CANNOT represent "fetch key, then goal"; the strategic graph +
+# tactical rough-region refinement is what threads it. Trained on BFS-optimal +
+# random complex data (hazards off -> isolates the System-2 routing problem).
+CX_EPISODES="${CX_EPISODES:-2500}"
+CX_BFS_FRACTION="${CX_BFS_FRACTION:-0.5}"
+CX_DATA="data/two_rooms/trajectories_complex.pt"
+CX_MODEL="results/two_rooms/validation/temporal_world_model_complex.pt"
+if [ ! -f "$CX_DATA" ]; then
+  echo "--- [7/7] generating $CX_EPISODES-episode COMPLEX dataset (BFS-optimal + random) ---"
+  python -m alps.benchmarks.two_rooms.generate_complex \
+      --save-path "$CX_DATA" --num-episodes "$CX_EPISODES" --bfs-fraction "$CX_BFS_FRACTION"
+fi
+if [ -f "$CX_MODEL" ] && [ -z "${RETRAIN:-}" ]; then
+  echo "--- [7/7] complex temporal model exists at $CX_MODEL (skipping; set RETRAIN=1 to force) ---"
+else
+  echo "--- [7/7] training COMPLEX temporal hierarchy ---"
+  python -m alps.training.train_temporal \
+      --data-path "$CX_DATA" --epochs "$HIER_EPOCHS" --d-model "$DMODEL" \
+      --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" --window "$TEMPORAL_WINDOW" \
+      --num-codes "$NUM_CODES" --num-experts "$NUM_EXPERTS" --active-experts "$ACTIVE_EXPERTS" \
+      --limit-samples "$HIER_SAMPLES" --save-model --out "$CX_MODEL"
+fi
+echo "--- [7/7] FOUR-BRAIN validation, COMPLEX mode (key-gated) ---"
+python -m alps.evaluation.validate_temporal --complex \
+    --model-path "$CX_MODEL" --data-path "$CX_DATA" \
+    --n-episodes "$N_EPISODES_EVAL" --coarse-k "$COARSE_K"
 
 echo "================ DONE ================"
 echo "Artifacts:"
 echo "  results/two_rooms/validation/repr_decoder_gate_trained_fs${FRAME_SKIP}.json   (G1/G2)"
 echo "  results/two_rooms/ablation/ladder_metrics.json + ladder_success.png + latent_graph.png"
 echo "  results/two_rooms/validation/self_learning_validation.json"
-echo "  results/two_rooms/validation/temporal_gates.json   (G1/G_str/G_tac/G_roll/G_goals)"
+echo "  results/two_rooms/validation/temporal_gates.json           (simple Four-Brain: G1/G_str/G_tac/G_roll/G_4brain)"
+echo "  results/two_rooms/validation/temporal_gates_complex.json    (COMPLEX Four-Brain: key->door->goal 3-tier ablation)"

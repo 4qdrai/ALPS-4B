@@ -201,14 +201,39 @@ predictions (**−24%**). The mechanism therefore requires **surprise-gated
 retrieval** (apply the correction only when prediction error is high) before it
 can be claimed as lifelong learning; this is ongoing work.
 
+### 5.3 The Four-Brain three-tier ablation and the key-gated benchmark
+
+The hierarchy edge above is generalized into an explicit **three-tier ablation**
+(`validate_temporal.py`, gate `G_4brain`), comparing navigation control at three
+abstraction scales — all decoded from the *same frozen latent space*:
+
+- **Operative (System 1):** one-step greedy on the validated dynamics toward the goal.
+- **Strategic (System 2, coarse):** a *coarse* latent transition graph (few room /
+  key-state landmarks); sparse waypoints that stall when a landmark sits behind a wall.
+- **Tactical (System 2, fine):** a *fine* latent graph of reachable sub-regions that
+  threads the doors the operative and coarse layers cannot.
+
+For the **complex four-room, key-gated** variant (`--complex`; the operative greedy
+*cannot in principle* fetch a key before the goal) the landmarks are clustered in the
+frozen-decoded $(x, y, \widehat{\text{has\_key}})$ space — a `has_key` linear probe
+recovers the key state at **0.997–0.998** accuracy (gate `G_key`), so keyed and
+unkeyed states form distinct landmarks — plus an explicit key landmark, so the
+strategic plan provably routes *start → key → goal* (verified by path inspection).
+This isolates the System-2 routing problem from the System-1 momentum control
+(hazards disabled), with a BFS-optimal planner as the success ceiling.
+
 ### 5.4 Scope and limitations
 
-These results are from a deliberately small/fast configuration ($d_\text{model}=128$,
-≈2k clips, 15 epochs). The complex four-room, key-gated variant and closing the
-remaining cross-room gap to the oracle are pending the larger-scale run. We make no
-empirical claim for the $O(1)$ MoE scaling, Banach convergence, EBM binding, or
-fleet-transfer properties beyond their mathematical formulation; they are design
-hypotheses awaiting the same falsifiable treatment.
+The headline edge (§5.2) is the robustly validated claim: the System-2 latent graph
+delivers cross-room success the System-1 operative cannot. The §5.3 three-tier
+ablation and the closed-loop complex key-gated success are **pending the larger-scale
+A40 run** (`scripts/run_a40_validation.sh`, stages 6–7): the closed-loop controller is
+decode-precision-bound (the key landmark must be decoded to within the environment's
+pickup radius), which the small/fast local configuration ($d_\text{model}=128$, ≈2k
+clips) does not reliably meet, and the small offline corpus yields a high-variance
+latent graph. We make no empirical claim for the $O(1)$ MoE scaling, Banach
+convergence, EBM binding, or fleet-transfer properties beyond their mathematical
+formulation; they are design hypotheses awaiting the same falsifiable treatment.
 
 ---
 
