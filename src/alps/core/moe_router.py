@@ -26,10 +26,16 @@ class SparseMoERouter(nn.Module):
         
         # Expert modules list
         self.experts = nn.ModuleList([Expert(d_model, d_ff) for _ in range(num_experts)])
-        
+
         # Router gate: maps inputs to raw routing logit scores
         self.gate = nn.Linear(d_model, num_experts, bias=False)
-        
+
+        # --- eval-only instrumentation (plain attributes, NOT parameters/buffers,
+        # so existing checkpoints load unchanged) ---
+        self.expert_mask = None      # optional [num_experts] bool; False = expert knocked out
+        self.record_routing = False  # when True, stash routing of the last forward
+        self.last_routing = None     # {"indices","weights","probs"} (detached, CPU)
+
     def forward(self, x: torch.Tensor) -> tuple:
         """
         Args:
@@ -45,17 +51,26 @@ class SparseMoERouter(nn.Module):
         
         # 1. Compute routing logits
         logits = self.gate(flat_x) # [B*N, num_experts]
-        
+
         # Add noise to logits during training to aid exploration (standard MoE practice)
         if self.training:
             noise = torch.randn_like(logits) * (1.0 / self.num_experts)
             logits = logits + noise
-            
+
+        # Knockout mask (eval-time causal test): masked experts can never be selected
+        if self.expert_mask is not None:
+            logits = logits.masked_fill(~self.expert_mask.to(logits.device), float("-inf"))
+
         # 2. Select top-K experts
         scores, indices = torch.topk(logits, k=self.active_experts, dim=-1) # [B*N, active_experts]
-        
+
         # Apply softmax over the selected top-K expert scores
         routing_weights = F.softmax(scores, dim=-1) # [B*N, active_experts]
+
+        if self.record_routing:
+            self.last_routing = {"indices": indices.detach().cpu(),
+                                 "weights": routing_weights.detach().cpu(),
+                                 "probs": F.softmax(logits, dim=-1).detach().cpu()}
         
         # 3. Load Balancing Loss Calculation
         # Load balancing is calculated to ensure experts are used equally.

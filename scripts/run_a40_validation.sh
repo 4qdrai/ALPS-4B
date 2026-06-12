@@ -145,6 +145,27 @@ python -m alps.evaluation.validate_temporal --complex \
     --model-path "$CX_MODEL" --data-path "$CX_DATA" \
     --n-episodes "$N_EPISODES_EVAL" --coarse-k "$COARSE_K"
 
+# ---- 8. FOURTH BRAIN (H8/H9/H10) + MoE specialization (H11) -------------------
+# Self-monitoring -> escalation -> fallback (RSRA loop, minimal form) and the
+# tactical-expert causal knockout. Set FOURTH_BRAIN=0 to skip.
+FOURTH_BRAIN="${FOURTH_BRAIN:-1}"
+FB_CAL="${FB_CAL:-60}"; FB_EVAL="${FB_EVAL:-100}"
+if [ "$FOURTH_BRAIN" = "1" ]; then
+  echo "--- [8a] Fourth Brain, simple mode (monitors/escalation/fallback) ---"
+  python -m alps.evaluation.fourth_brain \
+      --model-path "$TEMPORAL_MODEL" --data-path "$DATA" \
+      --n-cal "$FB_CAL" --n-eval "$FB_EVAL"
+  echo "--- [8b] Fourth Brain, COMPLEX mode ---"
+  python -m alps.evaluation.fourth_brain --complex \
+      --model-path "$CX_MODEL" --data-path "$CX_DATA" \
+      --n-cal "$FB_CAL" --n-eval "$FB_EVAL"
+  echo "--- [8c] MoE expert specialization, simple + complex ---"
+  python -m alps.evaluation.moe_specialization \
+      --model-path "$TEMPORAL_MODEL" --data-path "$DATA"
+  python -m alps.evaluation.moe_specialization --complex \
+      --model-path "$CX_MODEL" --data-path "$CX_DATA"
+fi
+
 echo "================ DONE ================"
 echo "Artifacts:"
 echo "  results/two_rooms/validation/repr_decoder_gate_trained_fs${FRAME_SKIP}.json   (G1/G2)"
@@ -153,3 +174,5 @@ echo "  results/two_rooms/validation/self_learning_validation.json"
 echo "  results/two_rooms/validation/g1_identifiability.json       (SSL vs SUP frozen-probe G1 + collapse)"
 echo "  results/two_rooms/validation/temporal_gates.json           (simple Four-Brain: G1/G_str/G_tac/G_roll/G_4brain)"
 echo "  results/two_rooms/validation/temporal_gates_complex.json    (COMPLEX Four-Brain: key->door->goal 3-tier ablation)"
+echo "  results/two_rooms/validation/fourth_brain{,_complex}.json   (H8 monitoring / H9 escalation / H10 fallback)"
+echo "  results/two_rooms/validation/moe_specialization{,_complex}.json (H11 expert routing + knockout matrix)"
