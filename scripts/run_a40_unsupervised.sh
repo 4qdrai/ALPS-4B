@@ -120,8 +120,20 @@ echo "--- [7/8] RAG-in-the-loop self-learning (H7) ---"
 python -m alps.evaluation.fourth_brain --rag \
     --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT"
 
-# ---- 8. Self-learning WRITE/TEST/CONTROL on the unsupervised hierarchy --------
-echo "--- [8/8] DONE ---"
+# ---- 8. PROOF VIDEOS: Four-Brain solving SIMPLE + COMPLEX (unsupervised model) -
+# Side-by-side operative(stalls) vs Four-Brain(solves), env's own frames, GIF + MP4.
+# Renders the model's ACTUAL behaviour -> a genuine proof when the model solves.
+MAKE_VIDEOS="${MAKE_VIDEOS:-1}"
+if [ "$MAKE_VIDEOS" = "1" ]; then
+  echo "--- [8/8] proof videos: simple + complex (unsupervised) ---"
+  python -m alps.benchmarks.two_rooms.make_videos_4b \
+      --model-path "$MODEL" --data-path "$DATA" \
+      --complex-model-path "$CX_MODEL" --complex-data-path "$CX_DATA" \
+      --save-dir results/two_rooms/videos_unsup \
+      --coarse-k "$COARSE_K" --fine-k "$FINE_K" --stride "$STRIDE" --n-clips "${N_CLIPS:-3}"
+fi
+
+echo "--- DONE ---"
 echo "All gates ran on the UNSUPERVISED (--lewm-ssl) models. Artifacts in $OUT/ :"
 echo "  temporal_gates.json          (G1 / G_collapse / G_str / G_tac / G_roll / G_4brain)"
 echo "  temporal_gates_complex.json  (COMPLEX key->door->goal four-brain)"
@@ -129,6 +141,7 @@ echo "  abstraction_gates.json       (strategic/tactical latent prediction + goa
 echo "  fourth_brain{,_complex}.json (H8 monitoring / H9 escalation / H10 fallback)"
 echo "  moe_specialization{,_complex}.json (H11 expert routing + knockout)"
 echo "  rag_selflearning.json        (H7 surprise-gated RAG-in-the-loop)"
+echo "  ../videos_unsup/fourbrain_simple_*.{gif,mp4}, fourbrain_complex_*.{gif,mp4}  (proof clips)"
 echo ""
 echo "READ FIRST: $OUT/temporal_gates.json -> G1. If G1<0.30 the architecture is"
 echo "validated end-to-end WITHOUT labels. If high, raise EPOCHS/EPISODES/STRIDE."
