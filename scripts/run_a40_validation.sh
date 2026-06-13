@@ -172,6 +172,44 @@ if [ "$FOURTH_BRAIN" = "1" ]; then
   echo "--- [8d] abstraction-layer gates: strategic/tactical predict latent + emit goals ---"
   python -m alps.evaluation.validate_abstraction \
       --model-path "$TEMPORAL_MODEL" --data-path "$DATA"
+  echo "--- [8e] RAG-in-the-loop self-learning (surprise-gated memory + monitoring) ---"
+  python -m alps.evaluation.fourth_brain --rag \
+      --model-path "$TEMPORAL_MODEL" --data-path "$DATA" --n-eval "$FB_EVAL"
+fi
+
+# ---- 9. LeWM PURE-SSL identifiability track (full hierarchy, SIGReg-only) -----
+# Opt-in (LEWM_SSL=1): trains the FULL hierarchy (operative+tactical+strategic) with
+# pure SIGReg-only collapse prevention (no EMA, no stop-grad, no labels) on LeWM's
+# 10k-episode regime, then reports G1 / collapse / abstraction. This is the
+# fully-unsupervised foundation experiment (see docs/SIGREG_FINDINGS.md).
+LEWM_SSL="${LEWM_SSL:-0}"
+LEWM_EPISODES="${LEWM_EPISODES:-10000}"
+LEWM_EPOCHS="${LEWM_EPOCHS:-80}"
+LEWM_DATA="data/two_rooms/trajectories_lewm10k.pt"
+LEWM_MODEL="results/two_rooms/validation/temporal_ssl_lewm.pt"
+LEWM_DIR="results/two_rooms/validation/lewm_ssl"
+if [ "$LEWM_SSL" = "1" ]; then
+  if [ ! -f "$LEWM_DATA" ]; then
+    echo "--- [9] generating $LEWM_EPISODES-episode LeWM-SSL dataset ---"
+    python -m alps.benchmarks.two_rooms.data_generator \
+        --save-path "$LEWM_DATA" --num-episodes "$LEWM_EPISODES" --max-steps "$MAXSTEPS" \
+        --heuristic-fraction 0.4 --seed 11
+  fi
+  if [ ! -f "$LEWM_MODEL" ] || [ -n "${RETRAIN:-}" ]; then
+    echo "--- [9] training FULL-hierarchy pure-SSL (--lewm-ssl, $LEWM_EPOCHS ep) ---"
+    python -m alps.training.train_temporal --lewm-ssl \
+        --data-path "$LEWM_DATA" --out "$LEWM_MODEL" --epochs "$LEWM_EPOCHS" \
+        --d-model "$DMODEL" --enc-depth "$ENC_DEPTH" --enc-heads "$ENC_HEADS" \
+        --window "$TEMPORAL_WINDOW" --num-codes "$NUM_CODES" --num-experts "$NUM_EXPERTS" \
+        --active-experts "$ACTIVE_EXPERTS" --batch-size 64 --sigreg-slices 1024 --save-model
+  fi
+  mkdir -p "$LEWM_DIR"
+  echo "--- [9] pure-SSL validation: G1 / collapse / abstraction (frozen probe) ---"
+  python -m alps.evaluation.validate_temporal \
+      --model-path "$LEWM_MODEL" --data-path "$LEWM_DATA" \
+      --n-episodes "$N_EPISODES_EVAL" --save-dir "$LEWM_DIR"
+  python -m alps.evaluation.validate_abstraction \
+      --model-path "$LEWM_MODEL" --data-path "$LEWM_DATA" --save-dir "$LEWM_DIR"
 fi
 
 echo "================ DONE ================"
@@ -185,3 +223,8 @@ echo "  results/two_rooms/validation/temporal_gates_complex.json    (COMPLEX Fou
 echo "  results/two_rooms/validation/fourth_brain{,_complex}.json   (H8 monitoring / H9 escalation / H10 fallback)"
 echo "  results/two_rooms/validation/moe_specialization{,_complex}.json (H11 expert routing + knockout matrix)"
 echo "  results/two_rooms/validation/abstraction_gates.json        (strategic/tactical latent prediction + goal emission)"
+echo "  results/two_rooms/validation/rag_selflearning.json         (H7 surprise-gated RAG-in-the-loop self-learning)"
+if [ "${LEWM_SSL:-0}" = "1" ]; then
+echo "  results/two_rooms/validation/lewm_ssl/temporal_gates.json  (pure-SSL G1/collapse, full hierarchy)"
+echo "  results/two_rooms/validation/lewm_ssl/abstraction_gates.json (pure-SSL strategic/tactical prediction)"
+fi

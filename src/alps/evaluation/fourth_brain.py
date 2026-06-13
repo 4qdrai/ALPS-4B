@@ -217,6 +217,74 @@ def _result(success, steps, sr, gr, cx, m1s, m2s, m3s, alarms, fb_would, fb_acti
             "tiers_used": sorted(tiers_used)}
 
 
+@torch.no_grad()
+def run_episode_rag(model, W, seed, sr, gr, device, decode_op, graph, featurize, m1_thr,
+                    mode, complex_mode=False, max_steps=140):
+    """Latent-RAG in the control loop, gated by the SELF-MONITOR surprise signal m1.
+      mode 'experience' : act; when surprise m1 > thr (the monitor fires), WRITE memory
+                          key=context-latent, value=correction (actual_next - predicted).
+      mode 'recall'     : act, but first RETRIEVE a correction for the current context
+                          and APPLY it to the operative prediction (surprise-gated by the
+                          RAG similarity threshold) -> memory steers control.
+    Returns success (1/0)."""
+    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
+    goal_xy = obs["target"].copy()
+    buf = HistoryBuffer(model, W, device); buf.reset(obs_to_frame(obs, device))
+    waypoints = plan_waypoints(model, graph, featurize, buf, goal_xy, seed, gr,
+                               complex_mode, bool(obs.get("has_key", 0)), device)
+    wp = 0
+    for s in range(max_steps):
+        sub = torch.tensor(waypoints[min(wp, len(waypoints) - 1)], device=device, dtype=torch.float32)
+        ctx = buf.cur_z                                         # context BEFORE the step
+        z_hist = torch.stack(buf.z, dim=1)
+        best_a, best_d, best_pred = 0, 1e30, None
+        for a in range(4):
+            a_idx = buf.a[1:] + [a]
+            a_hist = F.one_hot(torch.tensor(a_idx, device=device), 4).float().unsqueeze(0)
+            z_next = model.op_predict_next(z_hist, a_hist)
+            if mode == "recall":
+                z_next = model.rag_correct(z_next, ctx)         # surprise-gated by RAG sim
+            d = float((decode_op(z_next)[0] - sub).norm())
+            if d < best_d:
+                best_d, best_a, best_pred = d, a, model.pool(z_next).squeeze(0)
+        obs, _, done, info = env.step(best_a); buf.push(obs_to_frame(obs, device), best_a)
+        za = model.pool(buf.cur_z).squeeze(0)
+        m1 = float((best_pred - za).norm())
+        if mode == "experience" and m1 > m1_thr:               # monitor fires -> memorize
+            model.rag.write_memory(model.pool(ctx).squeeze(0), za - best_pred)
+        if wp < len(waypoints) - 1 and np.linalg.norm(obs["position"] - waypoints[wp]) < REACH:
+            wp += 1
+        if (done if complex_mode else (done or info["distance"] < REACH)):
+            return 1
+    return 0
+
+
+def gate_rag_selflearning(model, W, device, decode_op, graph, featurize, m1_thr,
+                          n_episodes, complex_mode=False):
+    """H7 lifelong learning: surprise-gated WRITE (experience) then RETRIEVE (recall) on
+    the SAME layouts must improve success with NO weight update; a disjoint nominal set
+    checks for interference."""
+    def cfgs(base, n):
+        if complex_mode:
+            return [(0, 3, base + i) for i in range(n)]
+        return [(i % 2, (i % 2) if (i // 2) % 2 == 0 else 1 - (i % 2), base + i) for i in range(n)]
+    model.rag.current_size.zero_()                             # clear episodic memory
+    learn = cfgs(5000, n_episodes); ctrl = cfgs(6000, n_episodes)
+    rag = lambda seed, sr, gr, mode: run_episode_rag(
+        model, W, seed, sr, gr, device, decode_op, graph, featurize, m1_thr, mode, complex_mode)
+    ctrl_baseline = float(np.mean([rag(s, a, b, "recall") for a, b, s in ctrl]))  # empty memory
+    exp = float(np.mean([rag(s, a, b, "experience") for a, b, s in learn]))       # writes on surprise
+    mem = int(model.rag.current_size.item())
+    rec = float(np.mean([rag(s, a, b, "recall") for a, b, s in learn]))           # memory used
+    ctrl_after = float(np.mean([rag(s, a, b, "recall") for a, b, s in ctrl]))     # interference check
+    return {"experience_success": exp, "recall_success": rec,
+            "learning_gain": rec - exp, "memory_entries": mem,
+            "control_before": ctrl_baseline, "control_after": ctrl_after,
+            "interference": ctrl_baseline - ctrl_after,
+            "passed": bool(rec - exp >= 0.05 and (ctrl_baseline - ctrl_after) <= 0.02)}
+
+
 def first_persistent_alarm(alarms, patience):
     run = 0
     for i, a in enumerate(alarms):
@@ -277,6 +345,25 @@ def run(args):
           "m2": _q(np.concatenate([r["m2"] for r in good]) if good else [], 0.90, 1e9),
           "m3": _q([v for r in good for v in r["m3"]], 0.10, 0.0)}
     out["thresholds"] = {**th, "cal_success_rate": float(np.mean([r["success"] for r in cal]))}
+
+    # ── RAG-in-the-loop self-learning (surprise-gated memory + monitoring) ──
+    if getattr(args, "rag", False):
+        rg = gate_rag_selflearning(model, W, device, decode_op, graph, featurize,
+                                   th["m1"], args.n_eval, complex_mode=args.complex)
+        out["H7_rag_selflearning"] = rg
+        os.makedirs(args.save_dir, exist_ok=True)
+        p = os.path.join(args.save_dir, "rag_selflearning_complex.json" if args.complex
+                         else "rag_selflearning.json")
+        with open(p, "w") as f:
+            json.dump(out, f, indent=2, default=float)
+        print("\n===== RAG-IN-THE-LOOP SELF-LEARNING (H7, surprise-gated) =====")
+        print(f"  surprise thr m1>{th['m1']:.3f} | memory entries {rg['memory_entries']}")
+        print(f"  experience {rg['experience_success']:.2f} -> recall {rg['recall_success']:.2f} "
+              f"(gain {rg['learning_gain']:+.2f})")
+        print(f"  control before {rg['control_before']:.2f} -> after {rg['control_after']:.2f} "
+              f"(interference {rg['interference']:+.2f}) -> {'PASS' if rg['passed'] else 'FAIL'}")
+        print(f"[report] {p}")
+        return out
 
     # PASS B — H8 on held-out: do monitors predict failure?
     ho = [ep(seed, sr, gr, "tactical", th, "record") for sr, gr, seed in cfgs(4000, args.n_eval)]
@@ -366,6 +453,9 @@ def main():
     ap.add_argument("--grace", type=int, default=6)
     ap.add_argument("--stall-w", type=int, default=8)
     ap.add_argument("--complex", action="store_true")
+    ap.add_argument("--rag", action="store_true",
+                    help="run the RAG-in-the-loop self-learning gate (H7): surprise-gated "
+                         "memory write/retrieve in the control loop, instead of H8-H10")
     run(ap.parse_args())
 
 
