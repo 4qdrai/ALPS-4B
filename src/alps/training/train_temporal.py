@@ -162,9 +162,18 @@ def train(args):
             h_flat = h_win.reshape(B * W, D)
             s_flat = model.str_pre(zd.reshape(B * W, N, D))
             if args.lewm_ssl:
-                # LeWM Eq.3: SIGReg-only, applied directly (Epps-Pulley carries its *N
-                # factor, so paper lambda=0.1 is used as-is). The SOLE mechanism.
-                L_sig = model.lambda_sigreg * (model.sigreg(z_pool) + model.sigreg(h_flat) + model.sigreg(s_flat))
+                # LeWM Eq.3 across the FULL hierarchy (not just the operative): SIGReg on
+                # each scale's EMBEDDINGS *and* its PREDICTIONS (z_t, z_{t+1}, AND z-hat),
+                # the predictions passed through that scale's BatchNorm predictor-projector
+                # (LeWM "the predictor is also followed by a projector"). SIGReg-only, no
+                # EMA, no stop-grad. This keeps operative + tactical + strategic all
+                # collapse-free and predicting in latent space.
+                op_pred_pool = model.op_pred_proj(op_pred.mean(dim=2).reshape(B * W, D))
+                tac_pred_p = model.tac_pred_proj(tac_pred.reshape(B * W, D))
+                str_pred_p = model.str_pred_proj(str_pred.reshape(B * W, D))
+                L_sig = model.lambda_sigreg * (
+                    model.sigreg(z_pool) + model.sigreg(h_flat) + model.sigreg(s_flat)
+                    + model.sigreg(op_pred_pool) + model.sigreg(tac_pred_p) + model.sigreg(str_pred_p))
                 L_col = torch.zeros((), device=device)
             else:
                 # Anchored hierarchy (validated): per-row-normalized SIGReg as a light

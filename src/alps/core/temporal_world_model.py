@@ -59,6 +59,17 @@ class TemporalHierWorldModel(nn.Module):
                                                      num_heads=enc_heads, max_frames=max_frames)
         self.rag = LatentRAG(d_model=d_model, sim_threshold=rag_sim_threshold)
         self.sigreg = SIGReg(d_model=d_model, num_slices=sigreg_slices)
+        # LeWM "the predictor is also followed by a projector": a BatchNorm projector on
+        # EACH scale's PREDICTED embedding, so SIGReg can be applied to the predictions
+        # (z_t, z_{t+1} AND the prediction) at every level of the hierarchy -- operative,
+        # tactical, strategic -- not just the operative encoder. Batch-stat BN (no
+        # train/eval gap). Used in --lewm-ssl mode.
+        def _pred_proj():
+            return nn.Sequential(nn.Linear(d_model, d_model),
+                                 nn.BatchNorm1d(d_model, track_running_stats=False))
+        self.op_pred_proj = _pred_proj()
+        self.tac_pred_proj = _pred_proj()
+        self.str_pred_proj = _pred_proj()
         self.register_buffer("pos_mean", torch.tensor([5.0, 5.0]))
         self.register_buffer("pos_std", torch.tensor([3.0, 3.0]))
 

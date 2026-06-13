@@ -135,3 +135,27 @@ collapse is an implementation/config gap vs LeWM, to close by matching their set
 
 This is the SSL path (no EMA). Until it lands, the anchored hierarchy (default) gives
 the healthy encoder the strategic/tactical layers need.
+
+## Update 4 — SIGReg on PREDICTIONS at all 3 scales FIXES the collapse (2026-06)
+Implemented LeWM "the predictor is also followed by a projector" across the FULL
+hierarchy (not just operative): a BatchNorm predictor-projector for each of
+operative/tactical/strategic (`op_pred_proj`, `tac_pred_proj`, `str_pred_proj`,
+batch-stat BN), and in `--lewm-ssl` mode SIGReg is now applied to each scale's
+EMBEDDINGS *and* its PREDICTIONS (z_t, z_{t+1}, AND z-hat). Still SIGReg-only, no EMA,
+no stop-grad; all layers (op+tac+str) trained together.
+
+Local result (d128, 18 ep, 1k eps) vs prior pure-SSL:
+
+| metric | prior pure-SSL | + pred-SIGReg (all scales) |
+|---|---|---|
+| dead dims | 105–128 | **0** |
+| pairwise cosine | **1.00** (collapsed) | **0.07** (isotropic) |
+| effective rank | 1.0–1.2 | 2.7 |
+| G1 (decode) | 3.5 | 3.29 |
+
+**The catastrophic collapse is GONE** (dead-dims 0, cosine 0.07 — the embedding is
+spread/isotropic, strategic loss varies). What remains is **linear position
+identifiability** (G1 still ~3.3): the latent is healthy but does not yet linearly
+encode position at this small scale. Per LeWM this requires their regime — **10k
+episodes + more epochs + meaningful inter-frame motion**. That is the A40 job for the
+`--lewm-ssl` track. Collapse prevention (the hard part) is now SIGReg-only and works.
