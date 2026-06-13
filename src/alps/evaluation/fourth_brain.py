@@ -47,8 +47,9 @@ from alps.benchmarks.two_rooms.world_model_planning import obs_to_frame
 from alps.training.train_hier import load_raw
 from alps.evaluation.validate_hierarchy import fit_probe
 from alps.evaluation.validate_temporal import (
-    load_model, gather, HistoryBuffer, hist_greedy_action, build_graph_raw,
-    build_graph_semantic, fit_key_probe, make_featurize, load_has_keys, REACH)
+    load_model, load_has_keys, gather, HistoryBuffer, hist_greedy_action_latent,
+    build_graph_raw, build_graph_semantic, make_featurize, fit_key_probe, REACH,
+    detect_key_pickups_unsup, gate_h4_key_detector)
 
 TIERS = ("operative", "tactical", "strategic", "fallback")
 
@@ -64,26 +65,24 @@ def predicted_pooled(model, buf, a, device):
 
 
 @torch.no_grad()
-def plan_waypoints(model, graph, featurize, buf, goal_xy, seed, gr, complex_mode,
-                   has_key, device):
-    """Fine-graph waypoint plan from the CURRENT state (mirrors run_episode_4b's
-    planning block incl. the mandatory key waypoint when the key is still needed)."""
+def goal_latent(model, seed, gr, goal_xy, complex_mode, device):
+    """Goal specified as a goal IMAGE -> goal LATENT (no labels)."""
     eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
     eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
     eg.agent_pos = goal_xy.copy()
     if complex_mode:
         eg.has_key = True
-    zg = model.pool(model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))).squeeze(0).cpu().numpy()
-    zs = model.pool(buf.cur_z).squeeze(0).cpu().numpy()
-    sn, gn = graph.node_of_latent(featurize(zs)), graph.node_of_latent(featurize(zg))
-    if complex_mode and graph.key_node is not None and not has_key:
-        p1 = graph.shortest_path(sn, graph.key_node) or [graph.key_node]
-        p2 = graph.shortest_path(graph.key_node, gn) or [gn]
-        path = p1 + p2[1:]
-    else:
-        path = graph.shortest_path(sn, gn) or [gn]
-    seg = path[1:] if len(path) > 1 else path
-    return [graph.decoded_xy[n] for n in seg] + [goal_xy.copy()]
+    return model.pool(model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))).squeeze(0)
+
+
+@torch.no_grad()
+def plan_path(model, graph, buf, goal_lat, device):
+    """LABEL-FREE latent-graph plan: node indices from current node -> goal node (start
+    skipped). The latent transition graph routes through key-acquisition on its own."""
+    sn = graph.node_of_latent(model.pool(buf.cur_z).squeeze(0).cpu().numpy())
+    gn = graph.node_of_latent(goal_lat.cpu().numpy())
+    path = graph.shortest_path(sn, gn) or [gn]
+    return path[1:] if len(path) > 1 else path[:]
 
 
 def safe_node_of(graph):
@@ -109,54 +108,53 @@ def auroc(scores, labels):
 
 # ---------------- the monitored episode ----------------
 @torch.no_grad()
-def run_episode_fb(model, W, seed, sr, gr, device, decode_op, graph, featurize, ZC,
-                   policy, thr=None, complex_mode=False, max_steps=140,
-                   alarm_k=2, patience=4, grace=6, stall_w=8, fallback="record"):
-    """policy in {operative, tactical, escalation}. Monitors always logged.
-    fallback: 'record' = note the would-trigger step but keep trying (tier<=2);
-              'on'     = execute the safe-state routing at tier 3;
-              'random' = random actions after the trigger (H10 baseline)."""
+def run_episode_fb(model, W, seed, sr, gr, device, graph, ZC, policy, thr=None,
+                   complex_mode=False, max_steps=140, alarm_k=2, patience=4, grace=6,
+                   stall_w=8, fallback="record"):
+    """LABEL-FREE control (latent-space). policy in {operative, tactical, escalation}.
+    Monitors are all latent: m1 surprise (pred vs actual pooled latent), m2 off-manifold
+    (latent dist to nearest landmark), m3 stall (pooled-latent displacement over a window).
+    fallback: 'record' note would-trigger; 'on' route to the safe node; 'random' baseline."""
     env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
     obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
     buf = HistoryBuffer(model, W, device); buf.reset(obs_to_frame(obs, device))
-    safe = safe_node_of(graph); safe_xy = graph.decoded_xy[safe]
+    goal_lat = goal_latent(model, seed, gr, goal_xy, complex_mode, device)
+    cents = torch.tensor(graph.centroids, device=device, dtype=torch.float32)
+    safe = safe_node_of(graph)
 
     tier = 0 if policy in ("operative", "escalation") else 1
-    waypoints, wp = None, 0
+    seg, wp = ([], 0)
     if tier == 1:
-        waypoints = plan_waypoints(model, graph, featurize, buf, goal_xy, seed, gr,
-                                   complex_mode, bool(obs.get("has_key", 0)), device)
+        seg = plan_path(model, graph, buf, goal_lat, device)
 
     m1s, m2s, m3s, alarms, tiers_used = [], [], [], [], {0}
     consec, since_esc = 0, grace
-    zp_prev = None
-    pos_hist = [obs["position"].copy()]
-    fb_would, fb_active, fb_wp, fb_idx = None, False, None, 0
+    lat_hist = [model.pool(buf.cur_z).squeeze(0)]
+    fb_would, fb_active, fb_seg, fb_wp = None, False, None, 0
+
+    def near_node(za):
+        return int((cents - za).norm(dim=1).argmin())
 
     for s in range(max_steps):
-        # ---- choose sub-goal by current tier ----
         if fb_active and fallback == "on":
-            sub = fb_wp[min(fb_idx, len(fb_wp) - 1)]
+            sub_lat = cents[fb_seg[min(fb_wp, len(fb_seg) - 1)]] if fb_seg else cents[safe]
         elif tier == 0:
-            sub = goal_xy
-        else:  # tier 1/2 follow the (re)planned waypoints
-            sub = waypoints[min(wp, len(waypoints) - 1)]
+            sub_lat = goal_lat
+        else:
+            sub_lat = cents[seg[min(wp, len(seg) - 1)]] if wp < len(seg) else goal_lat
         if fb_active and fallback == "random":
             a = int(np.random.RandomState(seed * 7919 + s).randint(0, 4))
         else:
-            a = hist_greedy_action(buf, decode_op, sub, device)
+            a = hist_greedy_action_latent(buf, sub_lat, device)
 
-        # ---- monitor m1 needs the prediction made BEFORE stepping ----
         zp = predicted_pooled(model, buf, a, device)
         obs, _, done, info = env.step(a); buf.push(obs_to_frame(obs, device), a)
-        za = model.pool(buf.cur_z).squeeze(0)
-        m1 = float((zp - za).norm()) if zp_prev is not None or True else 0.0
+        za = model.pool(buf.cur_z).squeeze(0); lat_hist.append(za)
+        m1 = float((zp - za).norm())
         m2 = float(torch.cdist(za.unsqueeze(0), ZC).min())
-        pos_hist.append(obs["position"].copy())
-        m3 = float(np.linalg.norm(pos_hist[-1] - pos_hist[-stall_w])) if len(pos_hist) > stall_w else float("inf")
+        m3 = float((lat_hist[-1] - lat_hist[-stall_w]).norm()) if len(lat_hist) > stall_w else float("inf")
         m1s.append(m1); m2s.append(m2); m3s.append(m3)
-        zp_prev = zp
 
         alarmed = False
         if thr is not None:
@@ -165,47 +163,40 @@ def run_episode_fb(model, W, seed, sr, gr, device, decode_op, graph, featurize, 
         alarms.append(bool(alarmed))
         consec = consec + 1 if alarmed else 0
         since_esc += 1
+        cur = near_node(za)
+        d_safe = float((za - cents[safe]).norm())
 
-        # ---- waypoint advance ----
         if fb_active and fallback == "on":
-            if fb_idx < len(fb_wp) - 1 and np.linalg.norm(obs["position"] - fb_wp[fb_idx]) < REACH:
-                fb_idx += 1
-            if np.linalg.norm(obs["position"] - safe_xy) < 1.0:
+            if fb_seg and fb_wp < len(fb_seg) - 1 and cur == fb_seg[fb_wp]:
+                fb_wp += 1
+            if cur == safe:
                 return _result(False, s + 1, sr, gr, complex_mode, m1s, m2s, m3s, alarms,
-                               fb_would, True, True, float(np.linalg.norm(obs["position"] - safe_xy)),
-                               tiers_used)
-        elif waypoints is not None and wp < len(waypoints) - 1 and \
-                np.linalg.norm(obs["position"] - waypoints[wp]) < REACH:
+                               fb_would, True, True, d_safe, tiers_used)
+        elif seg and wp < len(seg) and cur == seg[wp]:
             wp += 1
 
-        # ---- escalation ----
         if policy == "escalation" and thr is not None and consec >= patience and since_esc >= grace \
                 and not fb_active:
             consec, since_esc = 0, 0
             if tier < 2:
                 tier += 1; tiers_used.add(tier)
-                waypoints = plan_waypoints(model, graph, featurize, buf, goal_xy, seed, gr,
-                                           complex_mode, bool(obs.get("has_key", 0)), device)
-                wp = 0
+                seg = plan_path(model, graph, buf, goal_lat, device); wp = 0
             else:
                 if fb_would is None:
                     fb_would = s
                 if fallback in ("on", "random"):
                     fb_active = True; tiers_used.add(3)
                     if fallback == "on":
-                        zs = model.pool(buf.cur_z).squeeze(0).cpu().numpy()
-                        pth = graph.shortest_path(graph.node_of_latent(featurize(zs)), safe) or [safe]
-                        seg = pth[1:] if len(pth) > 1 else pth
-                        fb_wp, fb_idx = [graph.decoded_xy[n] for n in seg], 0
+                        pth = graph.shortest_path(cur, safe) or [safe]
+                        fb_seg, fb_wp = (pth[1:] if len(pth) > 1 else pth), 0
 
         reached = done if complex_mode else (done or info["distance"] < REACH)
         if reached and not fb_active:
             return _result(True, s + 1, sr, gr, complex_mode, m1s, m2s, m3s, alarms,
-                           fb_would, False, False, float(np.linalg.norm(obs["position"] - safe_xy)),
-                           tiers_used)
+                           fb_would, False, False, d_safe, tiers_used)
     return _result(False, max_steps, sr, gr, complex_mode, m1s, m2s, m3s, alarms,
-                   fb_would, fb_active, bool(np.linalg.norm(obs["position"] - safe_xy) < 1.0),
-                   float(np.linalg.norm(obs["position"] - safe_xy)), tiers_used)
+                   fb_would, fb_active, bool(near_node(za) == safe),
+                   float((za - cents[safe]).norm()), tiers_used)
 
 
 def _result(success, steps, sr, gr, cx, m1s, m2s, m3s, alarms, fb_would, fb_active,
@@ -285,6 +276,52 @@ def gate_rag_selflearning(model, W, device, decode_op, graph, featurize, m1_thr,
             "passed": bool(rec - exp >= 0.05 and (ctrl_baseline - ctrl_after) <= 0.02)}
 
 
+def gate_rag_lifelong_batches(model, W, device, decode_op, graph, featurize, m1_thr,
+                               n_episodes, n_batches=5, complex_mode=False):
+    """H7 LIFELONG variant: iterate episode batches; after each batch's experience pass,
+    recall improves on perturbed layouts; nominal layouts stay flat (no interference).
+
+    Seeds: perturbed batches use ranges 7000+i*200 .. 7000+(i+1)*200  (i=0..n_batches-1)
+           nominal control uses range 8000..8000+n_episodes (fixed, evaluated every batch)
+    No weight updates at any point — purely episodic memory accumulation.
+    Gate: perturbed recall rises ≥+0.10 from batch 1→3; nominal drop ≤ 0.02.
+    """
+    def cfgs(base, n):
+        if complex_mode:
+            return [(0, 3, base + i) for i in range(n)]
+        return [(i % 2, 1 - (i % 2), base + i) for i in range(n)]
+    rag = lambda seed, sr, gr, mode: run_episode_rag(
+        model, W, seed, sr, gr, device, decode_op, graph, featurize, m1_thr, mode, complex_mode)
+
+    model.rag.current_size.zero_()   # clear episodic memory before the lifelong run
+
+    # Nominal (undisturbed) baseline — evaluate BEFORE any writes
+    nom_cfgs = cfgs(8000, n_episodes)
+    nominal_pre = float(np.mean([rag(s, a, b, "recall") for a, b, s in nom_cfgs]))
+
+    batch_results = []
+    for bi in range(n_batches):
+        b_cfgs = cfgs(7000 + bi * n_episodes, n_episodes)
+        before = float(np.mean([rag(s, a, b, "recall") for a, b, s in b_cfgs]))  # recall before writing
+        float(np.mean([rag(s, a, b, "experience") for a, b, s in b_cfgs]))        # write on surprise
+        after  = float(np.mean([rag(s, a, b, "recall") for a, b, s in b_cfgs]))  # recall after writing
+        nom    = float(np.mean([rag(s, a, b, "recall") for a, b, s in nom_cfgs]))
+        mem    = int(model.rag.current_size.item())
+        batch_results.append({"batch": bi, "before": before, "after": after,
+                               "gain": after - before, "nominal": nom, "memory": mem})
+        print(f"  [H7 batch {bi}] perturbed before {before:.2f} -> after {after:.2f} "
+              f"(gain {after-before:+.2f}) | nominal {nom:.2f} | memory {mem}")
+
+    recalls = [r["after"] for r in batch_results]
+    noms    = [r["nominal"] for r in batch_results]
+    long_gain = recalls[-1] - recalls[0] if len(recalls) >= 2 else 0.0
+    worst_interference = max((nominal_pre - n) for n in noms) if noms else 0.0
+    passed = long_gain >= 0.10 and worst_interference <= 0.02
+    return {"batches": batch_results, "nominal_pre": nominal_pre,
+            "long_gain_first_to_last": long_gain,
+            "worst_nominal_interference": worst_interference, "passed": passed}
+
+
 def first_persistent_alarm(alarms, patience):
     run = 0
     for i, a in enumerate(alarms):
@@ -308,7 +345,21 @@ def run(args):
 
     key_w, key_scale, hk = None, 6.0, None
     if args.complex:
-        hk = load_has_keys(args.data_path)
+        # H4: prefer label-free key detection (--label-free-key flag, or when no labels exist)
+        hk_raw = load_has_keys(args.data_path)  # None if absent (unlabeled dataset)
+        if getattr(args, "label_free_key", False) or hk_raw is None:
+            print("[H4] using label-free key detector (surprise + VQ-flip) — no has_key labels used in planner")
+            hk, surp_arr, vq_fl_arr = detect_key_pickups_unsup(
+                model, frames, actions, starts, total, device,
+                S=max(1, args.stride // 2))
+            if hk_raw is not None:
+                # Report H4 gate (precision/recall vs ground truth — measurement only)
+                g_h4 = gate_h4_key_detector(hk, hk_raw, starts, total, S=max(1, args.stride // 2))
+                print(f"[H4] label-free detector: prec {g_h4['precision']:.2f}  "
+                      f"rec {g_h4['recall']:.2f}  f1 {g_h4['f1']:.2f}  "
+                      f"-> {'PASS' if g_h4['passed'] else 'FAIL'}")
+        else:
+            hk = hk_raw
         if hk is not None:
             key_w = fit_key_probe(Ztr, hk[torch.from_numpy(tr)].float(), device)
         graph = build_graph_semantic(model, decode_op, key_w, key_scale, frames, positions,
@@ -346,7 +397,26 @@ def run(args):
           "m3": _q([v for r in good for v in r["m3"]], 0.10, 0.0)}
     out["thresholds"] = {**th, "cal_success_rate": float(np.mean([r["success"] for r in cal]))}
 
-    # ── RAG-in-the-loop self-learning (surprise-gated memory + monitoring) ──
+    # ── H7 RAG lifelong (--h7-lifelong): learning curve across batches ──
+    if getattr(args, "h7_lifelong", False):
+        print("--- [H7 LIFELONG] RAG self-learning across episode batches ---")
+        n_batches = getattr(args, "n_batches", 5)
+        rg = gate_rag_lifelong_batches(model, W, device, decode_op, graph, featurize,
+                                        th["m1"], args.n_eval, n_batches=n_batches,
+                                        complex_mode=args.complex)
+        out["H7_lifelong"] = rg
+        os.makedirs(args.save_dir, exist_ok=True)
+        p = os.path.join(args.save_dir, "rag_lifelong_complex.json" if args.complex
+                         else "rag_lifelong.json")
+        with open(p, "w") as f:
+            json.dump(out, f, indent=2, default=float)
+        print(f"H7 lifelong: gain {rg['long_gain_first_to_last']:+.2f} "
+              f"interference {rg['worst_nominal_interference']:+.2f} "
+              f"-> {'PASS' if rg['passed'] else 'FAIL'}")
+        print(f"[report] {p}")
+        return out
+
+    # ── H7 RAG single-pass (--rag): original experience/recall/control ──
     if getattr(args, "rag", False):
         rg = gate_rag_selflearning(model, W, device, decode_op, graph, featurize,
                                    th["m1"], args.n_eval, complex_mode=args.complex)
@@ -453,9 +523,18 @@ def main():
     ap.add_argument("--grace", type=int, default=6)
     ap.add_argument("--stall-w", type=int, default=8)
     ap.add_argument("--complex", action="store_true")
+    ap.add_argument("--label-free-key", action="store_true",
+                    help="H4: use the label-free key detector (surprise + VQ-flip) instead "
+                         "of dataset has_key labels to build the key landmark in the graph. "
+                         "Closes the planner-side supervision leak for the unsupervised claim.")
     ap.add_argument("--rag", action="store_true",
-                    help="run the RAG-in-the-loop self-learning gate (H7): surprise-gated "
-                         "memory write/retrieve in the control loop, instead of H8-H10")
+                    help="H7 single-pass: run the RAG-in-the-loop self-learning gate "
+                         "(surprise-gated memory write/retrieve) instead of H8-H10")
+    ap.add_argument("--h7-lifelong", action="store_true",
+                    help="H7 LIFELONG: run RAG across multiple episode batches and report "
+                         "the learning curve (gain by batch) and nominal interference")
+    ap.add_argument("--n-batches", type=int, default=5,
+                    help="number of batches for --h7-lifelong (default 5)")
     run(ap.parse_args())
 
 

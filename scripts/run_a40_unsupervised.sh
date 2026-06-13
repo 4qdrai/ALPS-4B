@@ -88,7 +88,7 @@ echo "--- [3/8] abstraction-layer gates (unsupervised) ---"
 python -m alps.evaluation.validate_abstraction \
     --model-path "$MODEL" --data-path "$DATA" --save-dir "$OUT"
 
-# ---- 4. COMPLEX (key->door->goal), unsupervised ------------------------------
+# ---- 4. COMPLEX (key->door->goal), unsupervised — H4 label-free key ---------
 if [ ! -f "$CX_DATA" ]; then
   echo "--- [4/8] generating COMPLEX dataset (BFS-optimal + random) ---"
   python -m alps.benchmarks.two_rooms.generate_complex \
@@ -98,16 +98,22 @@ if [ ! -f "$CX_MODEL" ] || [ -n "${RETRAIN:-}" ]; then
   echo "--- [4/8] training COMPLEX hierarchy, PURE SSL (--lewm-ssl) ---"
   python -m alps.training.train_temporal --data-path "$CX_DATA" --out "$CX_MODEL" $TRAIN_ARGS
 fi
-echo "--- [4/8] COMPLEX four-brain (unsupervised, key-gated) ---"
+echo "--- [4/8] COMPLEX four-brain, H3 VQ-graph, H4 label-free key, H2 emitter ---"
 python -m alps.evaluation.validate_temporal --complex \
     --model-path "$CX_MODEL" --data-path "$CX_DATA" --n-episodes "$N_EVAL" \
-    --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT"
+    --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" \
+    --h4-unsup-key --vq-graph --h2-emitter
+# Simple mode: H3 + H2 gates (no key)
+python -m alps.evaluation.validate_temporal \
+    --model-path "$MODEL" --data-path "$DATA" --n-episodes "$N_EVAL" \
+    --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" \
+    --vq-graph --h2-emitter
 
 # ---- 5. Fourth Brain: monitors -> escalation -> fallback (unsupervised) ------
-echo "--- [5/8] Fourth Brain, simple + complex ---"
+echo "--- [5/8] Fourth Brain, simple + complex (H4 label-free key in complex) ---"
 python -m alps.evaluation.fourth_brain \
     --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT"
-python -m alps.evaluation.fourth_brain --complex \
+python -m alps.evaluation.fourth_brain --complex --label-free-key \
     --model-path "$CX_MODEL" --data-path "$CX_DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT"
 
 # ---- 6. MoE expert specialization (unsupervised) -----------------------------
@@ -115,10 +121,13 @@ echo "--- [6/8] MoE expert specialization, simple + complex ---"
 python -m alps.evaluation.moe_specialization --model-path "$MODEL" --data-path "$DATA" --save-dir "$OUT"
 python -m alps.evaluation.moe_specialization --complex --model-path "$CX_MODEL" --data-path "$CX_DATA" --save-dir "$OUT"
 
-# ---- 7. Latent-RAG in the loop, surprise-gated (unsupervised) ----------------
-echo "--- [7/8] RAG-in-the-loop self-learning (H7) ---"
+# ---- 7a. Latent-RAG: single-pass (H7 original) + lifelong batches (H7 extended) --
+echo "--- [7/8] RAG-in-the-loop H7 (single-pass + lifelong batches) ---"
 python -m alps.evaluation.fourth_brain --rag \
     --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT"
+python -m alps.evaluation.fourth_brain --h7-lifelong \
+    --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" \
+    --n-batches 5 --save-dir "$OUT"
 
 # ---- 8. PROOF VIDEOS: Four-Brain solving SIMPLE + COMPLEX (unsupervised model) -
 # Side-by-side operative(stalls) vs Four-Brain(solves), env's own frames, GIF + MP4.

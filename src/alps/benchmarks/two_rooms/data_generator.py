@@ -210,7 +210,21 @@ class TrajectoryGenerator:
 
         print(f"[TrajectoryGenerator] Packing {global_step:,} transitions into tensors …")
 
-        observations = torch.from_numpy(np.stack(all_obs, axis=0))       # uint8 [N, 3, 128, 128]
+        # Memory-safe packing: np.stack(all_obs) would allocate a SECOND full-size
+        # copy while the source list is still alive (~2x peak RAM -> OOM on large
+        # datasets, e.g. 675k frames ≈ 33 GB each copy). Instead preallocate the
+        # output once and move each frame in, dropping the source reference as we go
+        # so peak physical RAM stays ~1x the dataset size.
+        N = len(all_obs)
+        if N:
+            obs_buf = np.empty((N, *all_obs[0].shape), dtype=np.uint8)   # uint8 [N, 3, 128, 128]
+            for i in range(N):
+                obs_buf[i] = all_obs[i]
+                all_obs[i] = None                                        # free source frame
+            all_obs.clear()
+            observations = torch.from_numpy(obs_buf)
+        else:
+            observations = torch.empty((0, 3, 128, 128), dtype=torch.uint8)
         actions = torch.tensor(all_actions, dtype=torch.long)            # [N]
         positions = torch.from_numpy(np.stack(all_positions, axis=0))    # float32 [N, 2]
         room_ids = torch.tensor(all_room_ids, dtype=torch.long)          # [N]

@@ -38,8 +38,7 @@ from alps.benchmarks.two_rooms.world_model_planning import obs_to_frame
 from alps.training.train_hier import load_raw
 from alps.evaluation.validate_hierarchy import fit_probe
 from alps.evaluation.validate_temporal import (
-    load_model, gather, HistoryBuffer, hist_greedy_action, build_graph_raw,
-    build_graph_semantic, fit_key_probe, make_featurize, load_has_keys, REACH)
+    load_model, gather, HistoryBuffer, hist_greedy_action_latent, build_graph_raw, REACH)
 
 
 def _px(xy, size):
@@ -100,72 +99,58 @@ def _save(frames, path, fps=12):
 @torch.no_grad()
 def record(model, W, seed, sr, gr, device, decode_op, graph, featurize, strategy,
            complex_mode=False, size=288, max_steps=160):
-    """Mirror run_episode_4b's control, but capture env frames + overlays per step."""
+    """LABEL-FREE control (latent-space), capturing env frames per step. `decode_op` is
+    used ONLY for the on-screen position overlay (visualization), never for control."""
     env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
     obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
     buf = HistoryBuffer(model, W, device); buf.reset(obs_to_frame(obs, device))
-    waypoints, wp = None, 0
+    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
+    eg.agent_pos = goal_xy.copy()
+    if complex_mode:
+        eg.has_key = True
+    goal_lat = model.pool(model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))).squeeze(0)
+    cents = torch.tensor(graph.centroids, device=device, dtype=torch.float32)
+    seg_nodes, lat_waypoints, wp = [], None, 0
     if strategy == "fourbrain":
-        eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
-        eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
-        eg.agent_pos = goal_xy.copy()
-        if complex_mode:
-            eg.has_key = True
-        zg = model.pool(model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))).squeeze(0).cpu().numpy()
-        zs = model.pool(buf.cur_z).squeeze(0).cpu().numpy()
-        sn, gn = graph.node_of_latent(featurize(zs)), graph.node_of_latent(featurize(zg))
-        if complex_mode and graph.key_node is not None:
-            path = (graph.shortest_path(sn, graph.key_node) or [graph.key_node]) + \
-                   (graph.shortest_path(graph.key_node, gn) or [gn])[1:]
-        else:
-            path = graph.shortest_path(sn, gn) or [gn]
-        seg = path[1:] if len(path) > 1 else path[:]
-        waypoints = [graph.decoded_xy[n] for n in seg] + [goal_xy.copy()]
+        sn = graph.node_of_latent(model.pool(buf.cur_z).squeeze(0).cpu().numpy())
+        gn = graph.node_of_latent(goal_lat.cpu().numpy())
+        path = graph.shortest_path(sn, gn) or [gn]
+        seg_nodes = path[1:] if len(path) > 1 else path[:]
+        lat_waypoints = [cents[n] for n in seg_nodes] + [goal_lat]
+    # waypoint POSITIONS are decoded only for the overlay (measurement, not control)
+    wp_overlay = [decode_op(cents[n].unsqueeze(0))[0].cpu().numpy() for n in seg_nodes] if seg_nodes else None
     label = "Operative (System 1)" if strategy == "operative" else "Four-Brain (System 2)"
     frames, solved = [], False
     for s in range(max_steps):
-        sub = goal_xy if strategy == "operative" else waypoints[min(wp, len(waypoints) - 1)]
-        dec = decode_op(buf.cur_z.mean(1) if buf.cur_z.dim() == 3 else buf.cur_z)[0].cpu().numpy()
-        frames.append(_frame(obs["image"], size, label,
-                             waypoints=(waypoints if strategy == "fourbrain" else None),
-                             dot=dec))
-        a = hist_greedy_action(buf, decode_op, sub, device)
+        sub_lat = goal_lat if strategy == "operative" else lat_waypoints[min(wp, len(lat_waypoints) - 1)]
+        dec = decode_op(model.pool(buf.cur_z))[0].cpu().numpy()        # overlay only
+        frames.append(_frame(obs["image"], size, label, waypoints=wp_overlay, dot=dec))
+        a = hist_greedy_action_latent(buf, sub_lat, device)
         obs, _, done, info = env.step(a); buf.push(obs_to_frame(obs, device), a)
-        if waypoints is not None and wp < len(waypoints) - 1 and \
-                np.linalg.norm(obs["position"] - waypoints[wp]) < REACH:
-            wp += 1
+        if seg_nodes and wp < len(seg_nodes):
+            cur = model.pool(buf.cur_z).squeeze(0)
+            if int((cents - cur).norm(dim=1).argmin()) == seg_nodes[wp]:
+                wp += 1
         if done if complex_mode else (done or info["distance"] < REACH):
             solved = True
-            frames.append(_frame(obs["image"], size, label,
-                                 waypoints=(waypoints if strategy == "fourbrain" else None),
+            frames.append(_frame(obs["image"], size, label, waypoints=wp_overlay,
                                  dot=obs["position"], solved=True))
             break
     if not solved:
-        frames[-1] = _frame(obs["image"], size, label,
-                            waypoints=(waypoints if strategy == "fourbrain" else None),
+        frames[-1] = _frame(obs["image"], size, label, waypoints=wp_overlay,
                             dot=obs["position"], solved=False)
     return frames, solved
 
 
 def build_for_mode(model, decode_op, frames_t, actions, positions, room_ids, starts, total,
                    device, complex_mode, hk, coarse_k, fine_k, stride):
-    if complex_mode:
-        key_w = None
-        if hk is not None:
-            rng = np.random.RandomState(0); idx = rng.permutation(total)[:4000]
-            Z, _, _, _, _ = gather(model, frames_t, positions, room_ids, idx, device)
-            torch.set_grad_enabled(True)
-            key_w = fit_key_probe(Z, hk[torch.from_numpy(idx)].float(), device)
-            torch.set_grad_enabled(False)
-        graph = build_graph_semantic(model, decode_op, key_w, 6.0, frames_t, positions,
-                                     room_ids, starts, total, device, k=fine_k,
-                                     S=max(1, stride // 2), has_keys=hk)
-        featurize = make_featurize(decode_op, key_w, 6.0, device)
-    else:
-        graph = build_graph_raw(model, decode_op, frames_t, positions, room_ids, starts,
-                                total, device, k=fine_k, S=stride)
-        featurize = lambda z: z
+    # LABEL-FREE: pure latent transition graph for both simple and complex. decode_op is
+    # passed only so node centroids carry a decoded-xy for the overlay (not for control).
+    graph = build_graph_raw(model, decode_op, frames_t, positions, room_ids, starts,
+                            total, device, k=fine_k, S=max(1, stride // 2))
+    featurize = lambda z: z
     return graph, featurize
 
 
@@ -173,7 +158,7 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
     model, W = load_model(model_path, device)
     frames_t, actions, positions, room_ids, starts = load_raw(data_path)
     total = frames_t.shape[0]
-    hk = load_has_keys(data_path) if complex_mode else None
+    hk = None
     rng = np.random.RandomState(0); idx = rng.permutation(total)[: args.probe_samples]
     Z, _, _, _, P = gather(model, frames_t, positions, room_ids, idx, device)
     torch.set_grad_enabled(True); decode_op = fit_probe(Z, P, device); torch.set_grad_enabled(False)

@@ -54,10 +54,23 @@ def generate(save_path, n_episodes=2500, bfs_fraction=0.5, max_steps=120, seed=4
         if (ep + 1) % 500 == 0:
             print(f"  ep {ep+1}/{n_episodes} | frames {gstep:,} | solved {solved} "
                   f"| {time.time()-t0:.0f}s")
+    # Memory-safe packing: preallocate the uint8 output and move frames in (dropping
+    # each source reference) instead of np.stack(...).astype(...), which holds the
+    # list + stacked copy + astype copy simultaneously (~3x peak RAM -> OOM at scale).
+    N = len(obs_l)
+    if N:
+        obs_buf = np.empty((N, *obs_l[0].shape), dtype=np.uint8)
+        for i in range(N):
+            obs_buf[i] = obs_l[i]
+            obs_l[i] = None
+        obs_l.clear()
+        observations = torch.from_numpy(obs_buf)
+    else:
+        observations = torch.empty((0, 3, 128, 128), dtype=torch.uint8)
     res = {
-        "observations": torch.from_numpy(np.stack(obs_l).astype("uint8")),
+        "observations": observations,
         "actions": torch.tensor(act_l, dtype=torch.long),
-        "positions": torch.from_numpy(np.stack(pos_l).astype("float32")),
+        "positions": torch.from_numpy(np.stack(pos_l).astype("float32")) if N else torch.empty((0, 2)),
         "room_ids": torch.tensor(room_l, dtype=torch.long),
         "has_keys": torch.tensor(key_l, dtype=torch.float32),
         "episode_starts": starts,

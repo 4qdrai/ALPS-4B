@@ -420,3 +420,158 @@ class TwoRoomsEnv:
             obs["has_key"] = float(self.has_key)
             obs["key_pos"] = self.key_pos.copy()
         return obs
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# H6 — N-room environment (WS-F)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class NRoomsEnv:
+    """N-room maze for H6 (edge-grows-with-horizon).
+
+    Geometry: N rooms in a horizontal chain.  Room k occupies x ∈ [k·W, (k+1)·W].
+    Between adjacent rooms k and k+1 there is a vertical wall with a door gap at
+    y ∈ [4.5, 5.5]. There are no hazards (pure routing challenge: the agent must
+    pass through N-1 doors in sequence to reach the goal room N-1).
+
+    Why H6 is interesting: for N=2 a greedy policy sometimes gets lucky; for N≥4
+    the probability of accidentally threading all doors drops to near-zero and
+    the hierarchical graph planner is the only reliable strategy.
+
+    API mirrors TwoRoomsEnv (reset / step / render / get_room_id).
+    """
+
+    WORLD_SIZE = 10.0
+    RENDER_SIZE = 128
+    AGENT_RADIUS = 0.3
+    STEP_SIZE = 0.3
+    BOUNDARY_MIN = 0.3
+    BOUNDARY_MAX = 9.7
+    WALL_THICKNESS = 0.15
+    DOOR_Y_MIN = 4.5
+    DOOR_Y_MAX = 5.5
+    NUM_ACTIONS = 4
+
+    ACTION_DELTAS = np.array([[0.0, 0.3], [0.0, -0.3], [-0.3, 0.0], [0.3, 0.0]],
+                              dtype=np.float32)
+
+    # Room colour palette — unique colour per room (makes the task visually readable)
+    ROOM_COLORS = [
+        np.array([200, 200, 200], dtype=np.uint8),   # room 0 — light grey
+        np.array([200, 220, 255], dtype=np.uint8),   # room 1 — blue tint
+        np.array([220, 255, 200], dtype=np.uint8),   # room 2 — green tint
+        np.array([255, 220, 200], dtype=np.uint8),   # room 3 — orange tint
+        np.array([255, 200, 220], dtype=np.uint8),   # room 4 — pink tint
+        np.array([220, 200, 255], dtype=np.uint8),   # room 5 — purple tint
+        np.array([255, 255, 180], dtype=np.uint8),   # room 6 — yellow tint
+        np.array([180, 255, 255], dtype=np.uint8),   # room 7 — cyan tint
+    ]
+    COLOR_BACKGROUND = np.array([40, 40, 40], dtype=np.uint8)
+    COLOR_WALL = np.array([101, 67, 33], dtype=np.uint8)
+    COLOR_AGENT = np.array([220, 50, 50], dtype=np.uint8)
+    COLOR_TARGET = np.array([50, 200, 50], dtype=np.uint8)
+
+    def __init__(self, n_rooms: int = 4, seed: Optional[int] = None):
+        assert 2 <= n_rooms <= 8, "n_rooms must be 2–8"
+        self.n_rooms = n_rooms
+        self.room_width = self.WORLD_SIZE / n_rooms          # width of each room
+        self.wall_xs = [self.room_width * k for k in range(1, n_rooms)]  # wall x positions
+        self.rng = np.random.RandomState(seed)
+
+        self.agent_pos = np.array([self.room_width * 0.5, 5.0], dtype=np.float32)
+        self.target_pos = np.array([self.WORLD_SIZE - self.room_width * 0.5, 5.0], dtype=np.float32)
+        self.done = False; self.steps = 0
+
+        px = np.linspace(0, self.WORLD_SIZE, self.RENDER_SIZE, endpoint=False)
+        px += (self.WORLD_SIZE / self.RENDER_SIZE) / 2.0
+        self._grid_x, self._grid_y = np.meshgrid(px, px[::-1])
+
+    def get_room_id(self, pos: np.ndarray, *args) -> int:
+        return int(min(self.n_rooms - 1, max(0, int(pos[0] / self.room_width))))
+
+    def reset(self, start_room: int = 0, goal_room: Optional[int] = None) -> Dict[str, Any]:
+        self.done = False; self.steps = 0
+        if goal_room is None:
+            goal_room = self.n_rooms - 1
+        lo = start_room * self.room_width + self.AGENT_RADIUS + 0.2
+        hi = (start_room + 1) * self.room_width - self.AGENT_RADIUS - 0.2
+        self.agent_pos = np.array([
+            self.rng.uniform(lo, hi),
+            self.rng.uniform(self.BOUNDARY_MIN, self.BOUNDARY_MAX)
+        ], dtype=np.float32)
+        glo = goal_room * self.room_width + self.AGENT_RADIUS + 0.2
+        ghi = (goal_room + 1) * self.room_width - self.AGENT_RADIUS - 0.2
+        self.target_pos = np.array([
+            self.rng.uniform(glo, ghi),
+            self.rng.uniform(self.BOUNDARY_MIN, self.BOUNDARY_MAX)
+        ], dtype=np.float32)
+        return self._get_obs()
+
+    def step(self, action: int) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
+        delta = self.ACTION_DELTAS[action].copy()
+        new_pos = np.clip(self.agent_pos + delta, self.BOUNDARY_MIN, self.BOUNDARY_MAX)
+        new_pos = self._apply_all_walls(self.agent_pos, new_pos)
+        self.agent_pos = new_pos; self.steps += 1
+        dist = float(np.linalg.norm(self.agent_pos - self.target_pos))
+        if dist < 0.5:
+            self.done = True
+        return self._get_obs(), -dist, self.done, {
+            "distance": dist, "steps": self.steps,
+            "room_id": self.get_room_id(self.agent_pos)}
+
+    def _apply_all_walls(self, old_pos: np.ndarray, new_pos: np.ndarray) -> np.ndarray:
+        """Apply collision for every vertical wall in the chain."""
+        p = new_pos.copy()
+        for wx in self.wall_xs:
+            crosses = (old_pos[0] < wx and p[0] >= wx) or (old_pos[0] > wx and p[0] <= wx)
+            in_door = self.DOOR_Y_MIN <= p[1] <= self.DOOR_Y_MAX
+            if not crosses:
+                if not in_door:
+                    if p[0] > wx - self.AGENT_RADIUS and old_pos[0] < wx:
+                        p = p.copy(); p[0] = wx - self.AGENT_RADIUS
+                    elif p[0] < wx + self.AGENT_RADIUS and old_pos[0] > wx:
+                        p = p.copy(); p[0] = wx + self.AGENT_RADIUS
+            else:
+                if not in_door:
+                    p = p.copy()
+                    p[0] = wx - self.AGENT_RADIUS if old_pos[0] < wx else wx + self.AGENT_RADIUS
+        return p
+
+    def render(self) -> np.ndarray:
+        img = np.full((self.RENDER_SIZE, self.RENDER_SIZE, 3), self.COLOR_BACKGROUND, dtype=np.uint8)
+        gx, gy = self._grid_x, self._grid_y
+        # Draw room floors (distinct colours)
+        for k in range(self.n_rooms):
+            lo, hi = k * self.room_width, (k + 1) * self.room_width
+            col = self.ROOM_COLORS[k % len(self.ROOM_COLORS)]
+            img[(gx >= lo) & (gx < hi)] = col
+        # Draw walls (with door gaps)
+        for wx in self.wall_xs:
+            wall = (np.abs(gx - wx) <= self.WALL_THICKNESS) & \
+                   ~((gy >= self.DOOR_Y_MIN) & (gy <= self.DOOR_Y_MAX))
+            img[wall] = self.COLOR_WALL
+            door = (np.abs(gx - wx) <= self.WALL_THICKNESS) & \
+                   (gy >= self.DOOR_Y_MIN) & (gy <= self.DOOR_Y_MAX)
+            # colour the door gap with the left room's colour
+            room_k = int(wx / self.room_width) - 1
+            img[door] = self.ROOM_COLORS[max(0, room_k) % len(self.ROOM_COLORS)]
+        # Agent and target
+        img = self._draw_circle(img, self.target_pos, self.AGENT_RADIUS, self.COLOR_TARGET)
+        img = self._draw_circle(img, self.agent_pos, self.AGENT_RADIUS, self.COLOR_AGENT)
+        return img
+
+    def _draw_circle(self, img, center, radius, color):
+        cx, cy = float(center[0]), float(center[1])
+        dist = np.sqrt((self._grid_x - cx) ** 2 + (self._grid_y - cy) ** 2)
+        ps = self.WORLD_SIZE / self.RENDER_SIZE
+        alpha = np.clip((radius - dist) / ps + 0.5, 0.0, 1.0)
+        m = alpha > 0.0
+        img[m] = np.clip(
+            alpha[m, None] * color.astype(np.float32) + (1 - alpha[m, None]) * img[m].astype(np.float32),
+            0, 255).astype(np.uint8)
+        return img
+
+    def _get_obs(self) -> Dict[str, Any]:
+        return {"image": self.render(), "position": self.agent_pos.copy(),
+                "target": self.target_pos.copy(),
+                "room_id": self.get_room_id(self.agent_pos)}
