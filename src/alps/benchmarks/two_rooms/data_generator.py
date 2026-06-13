@@ -154,27 +154,25 @@ class TrajectoryGenerator:
         self.seed = seed
         self.complex_mode = complex_mode
 
-    def generate(self) -> Dict[str, Any]:
-        """Run all episodes and collect transitions."""
+    def _rollout(self, obs_buf: Optional[np.ndarray] = None):
+        """One deterministic pass over all episodes (fixed seed → identical
+        trajectories every call). Always collects the small per-step arrays. If
+        `obs_buf` is given, frames are written straight into it at row `global_step`
+        (no intermediate Python list). Returns the small arrays + total frame count.
+        """
         rng = np.random.RandomState(self.seed)
         env = TwoRoomsEnv(seed=self.seed, complex_mode=self.complex_mode)
-
         random_policy = RandomMomentumPolicy(rng)
         heuristic_policy = HeuristicPolicy(rng, complex_mode=self.complex_mode)
 
-        # Pre-allocate lists
-        all_obs: List[np.ndarray] = []
         all_actions: List[int] = []
         all_positions: List[np.ndarray] = []
         all_room_ids: List[int] = []
-        episode_starts: List[int] = []
-
-        # Complex state lists
         all_has_keys: List[float] = []
+        episode_starts: List[int] = []
 
         t_start = time.time()
         global_step = 0
-
         for ep in range(self.num_episodes):
             use_heuristic = rng.rand() < self.heuristic_fraction
             policy = heuristic_policy if use_heuristic else random_policy
@@ -184,8 +182,8 @@ class TrajectoryGenerator:
             episode_starts.append(global_step)
 
             for step_i in range(self.max_steps):
-                img_chw = np.transpose(obs["image"], (2, 0, 1))  # (3, 128, 128) uint8
-                all_obs.append(img_chw)
+                if obs_buf is not None:
+                    obs_buf[global_step] = np.transpose(obs["image"], (2, 0, 1))  # write in place
                 all_positions.append(obs["position"].copy())
                 all_room_ids.append(obs["room_id"])
                 if self.complex_mode:
@@ -196,58 +194,51 @@ class TrajectoryGenerator:
 
                 obs, reward, done, info = env.step(action)
                 global_step += 1
-
                 if done:
                     break
 
             if (ep + 1) % 500 == 0:
-                elapsed = time.time() - t_start
-                print(
-                    f"[TrajectoryGenerator] Episode {ep + 1}/{self.num_episodes}  "
-                    f"| steps so far: {global_step:,}  "
-                    f"| elapsed: {elapsed:.1f}s"
-                )
+                phase = "fill" if obs_buf is not None else "count"
+                print(f"[TrajectoryGenerator] ({phase}) episode {ep + 1}/{self.num_episodes} "
+                      f"| steps so far: {global_step:,} | elapsed: {time.time() - t_start:.1f}s")
 
-        print(f"[TrajectoryGenerator] Packing {global_step:,} transitions into tensors …")
+        return all_actions, all_positions, all_room_ids, all_has_keys, episode_starts, global_step
 
-        # Memory-safe packing: np.stack(all_obs) would allocate a SECOND full-size
-        # copy while the source list is still alive (~2x peak RAM -> OOM on large
-        # datasets, e.g. 675k frames ≈ 33 GB each copy). Instead preallocate the
-        # output once and move each frame in, dropping the source reference as we go
-        # so peak physical RAM stays ~1x the dataset size.
-        N = len(all_obs)
-        if N:
-            obs_buf = np.empty((N, *all_obs[0].shape), dtype=np.uint8)   # uint8 [N, 3, 128, 128]
-            for i in range(N):
-                obs_buf[i] = all_obs[i]
-                all_obs[i] = None                                        # free source frame
-            all_obs.clear()
-            observations = torch.from_numpy(obs_buf)
-        else:
-            observations = torch.empty((0, 3, 128, 128), dtype=torch.uint8)
-        actions = torch.tensor(all_actions, dtype=torch.long)            # [N]
-        positions = torch.from_numpy(np.stack(all_positions, axis=0))    # float32 [N, 2]
-        room_ids = torch.tensor(all_room_ids, dtype=torch.long)          # [N]
+    def generate(self) -> Dict[str, Any]:
+        """Run all episodes and collect transitions.
+
+        TWO-PASS, memory-bounded: the frame buffer is the only large allocation that
+        ever exists (~N·48 KB; e.g. 675k frames ≈ 33 GB). Holding a Python list of
+        frames AND stacking it would need ~2× that simultaneously — and because each
+        48 KB frame is below glibc's mmap threshold, freeing list entries does NOT
+        return RSS to the OS, so the naive "free as you go" does not help. Instead:
+          pass 1 — counts frames + collects the (tiny) action/position/room arrays;
+          pass 2 — fills one preallocated uint8 buffer in place (no list).
+        The env is deterministic under the fixed seed, so both passes are identical.
+        Cost: 2× the (cheap) rollout; benefit: peak RAM stays at 1× the dataset.
+        """
+        t0 = time.time()
+        print(f"[TrajectoryGenerator] pass 1/2: counting frames over {self.num_episodes} episodes …")
+        _, _, _, _, _, N = self._rollout(obs_buf=None)
+
+        gb = N * 3 * 128 * 128 / 1e9
+        print(f"[TrajectoryGenerator] pass 2/2: allocating {N:,} × 3×128×128 uint8 (~{gb:.1f} GB) and filling …")
+        obs_buf = np.empty((N, 3, 128, 128), dtype=np.uint8) if N else np.empty((0, 3, 128, 128), np.uint8)
+        all_actions, all_positions, all_room_ids, all_has_keys, episode_starts, N2 = self._rollout(obs_buf=obs_buf)
+        assert N2 == N, f"non-deterministic rollout: {N2} != {N}"
 
         res = {
-            "observations": observations,
-            "actions": actions,
-            "positions": positions,
-            "room_ids": room_ids,
+            "observations": torch.from_numpy(obs_buf),                       # uint8 [N,3,128,128]
+            "actions": torch.tensor(all_actions, dtype=torch.long),
+            "positions": torch.from_numpy(np.stack(all_positions, axis=0)) if N else torch.empty((0, 2)),
+            "room_ids": torch.tensor(all_room_ids, dtype=torch.long),
             "episode_starts": episode_starts,
         }
-
         if self.complex_mode:
             res["has_keys"] = torch.tensor(all_has_keys, dtype=torch.float32)
 
-        total_time = time.time() - t_start
-        print(
-            f"[TrajectoryGenerator] Done.  "
-            f"N={observations.shape[0]:,}  "
-            f"obs={observations.shape}  "
-            f"total time: {total_time:.1f}s"
-        )
-
+        print(f"[TrajectoryGenerator] Done.  N={N:,}  obs={tuple(res['observations'].shape)}  "
+              f"total time: {time.time() - t0:.1f}s")
         return res
 
 

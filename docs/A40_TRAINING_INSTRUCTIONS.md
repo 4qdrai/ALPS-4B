@@ -159,7 +159,7 @@ EPISODES=10000 EPOCHS=80 DMODEL=192 \
 
 | Stage | What runs | Time estimate |
 |---|---|---|
-| 1 | Generate 10k-episode dataset (if not present) | 15–30 min |
+| 1 | Generate 10k-episode dataset (if not present) — **two-pass**, see note | 20–40 min |
 | 2 | Train simple model (`--lewm-ssl`, d192, 80 ep) + G1/collapse/four-brain gates | 2–3 h |
 | 3 | Abstraction gates (validate_abstraction) | 10 min |
 | 4 | Generate + train complex model + H3/H4/H2 gates | 2–3 h |
@@ -327,6 +327,32 @@ Artifact index (after Session 1):
 | `rag_selflearning.json` | H7 single-pass surprise-gated RAG |
 | `rag_lifelong.json` | H7 lifelong curve (added in stage 7b) |
 | `../videos_unsup/*.gif` | Proof clips (simple + complex) |
+
+---
+
+## 6b. Stage-1 data generation: memory model (read if generation gets `Killed`)
+
+10k episodes × ~67 steps × a 128×128×3 uint8 frame = **~33 GB of frames**. The
+generator is **two-pass** to keep peak RAM at exactly 1× that:
+
+- **Pass 1** replays all episodes and only *counts* frames + collects the tiny
+  action/position/room arrays (RAM ≈ nothing).
+- **Pass 2** allocates one `uint8[N,3,128,128]` buffer (~33 GB) and writes frames
+  straight into it — no intermediate Python list, so there is never a second copy.
+
+Why this matters: the old code did `np.stack(list_of_frames)`, holding the 33 GB
+list **and** the 33 GB stacked copy at once (~66 GB peak). It was OOM-**killed** by
+the container's cgroup memory limit even though `free -h` showed the *host* had
+plenty — the container cap is far below the host total. The two-pass generator
+removes that spike; you need **~35–40 GB of container RAM**, not 66 GB.
+
+If stage 1 is still `Killed`, your container RAM cap is below ~35 GB. Check it:
+```bash
+cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes
+```
+Then either resize the pod to ≥48 GB RAM, or shrink the dataset:
+`EPISODES=6000` (~20 GB) or `EPISODES=5000 MAXSTEPS=80` (~13 GB). Training also
+holds the frame tensor resident, so the same cap applies to stage 2.
 
 ---
 
