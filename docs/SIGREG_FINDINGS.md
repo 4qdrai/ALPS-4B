@@ -66,3 +66,26 @@ C. **λ as the single gate** (LeJEPA's one hyperparameter), swept on the A40 —
 Until A/B land, the hierarchy/edge results stand on the **position-anchored** encoder
 (still frozen-probe eval); the pure-SSL claim is explicitly *open* and tied to the
 projector + richer-task experiments above.
+
+## Update — projector / BatchNorm investigated (2026-06)
+LeWM §4 explicitly: the encoder appends a **1-layer MLP + BatchNorm** because "the
+final ViT layer applies LayerNorm, which prevents our anti-collapse objective from
+being optimized effectively," and "the predictor is also followed by a projector."
+Our `encoders.py` already had a BN projection head — but with a **trailing GELU**,
+which rectifies the embedding (non-negative) so it can never be a zero-mean isotropic
+Gaussian. **Removed the GELU** (BN output is now the embedding, faithful to LeWM).
+
+Result: removing the GELU did **not** resolve the collapse on Two-Rooms-simple
+(d128, eff-rank 1.1, cos 1.00, G1 3.1). The remaining LeWM structural gap is the
+**embedding granularity**: LeWM SIGRegs/decodes a **per-frame** BN embedding `z_t`,
+whereas we BN **per-token** then mean-pool — pooling after per-token BN re-introduces
+the cross-frame collapse the BN never constrained. Faithful next step is to pool the
+ViT tokens to one per-frame vector, then MLP+BN → `z_t`, and SIGReg/decode that.
+
+Combined with the trivial Two-Rooms dynamics (B), pure SSL is not the right vehicle
+on the simple task. **Decision (per project owner): keep the SIGReg-only/no-EMA fixes,
+treat pure-SSL identifiability as open (pursue per-frame embedding + richer task /
+real video), and proceed NOW on the position-anchored encoder to train & validate the
+strategic/tactical abstraction layers (latent prediction + goal emission), which is
+the priority.** Those layers train on detached encoder features, so a healthy
+(anchored) encoder is sufficient and necessary for them.

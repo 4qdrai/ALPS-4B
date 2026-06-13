@@ -42,8 +42,11 @@ class ProjectionHead(nn.Module):
         super().__init__()
         self.linear = nn.Linear(d_model, d_model)
         self.bn = nn.BatchNorm1d(d_model)
-        self.act = nn.GELU()
-    
+        # NOTE: NO trailing activation. LeWM's "1-layer MLP with BatchNorm" ends on
+        # the BN output -- that IS the embedding SIGReg regularizes. A trailing GELU
+        # rectifies the output (non-negative), so the embedding can never be a
+        # zero-mean isotropic Gaussian and SIGReg cannot prevent collapse.
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B, N, D]
         B, N, D = x.shape
@@ -51,7 +54,6 @@ class ProjectionHead(nn.Module):
         x = x.reshape(B * N, D)
         x = self.bn(x)
         x = x.reshape(B, N, D)
-        x = self.act(x)
         return x
 
 
