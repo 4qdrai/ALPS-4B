@@ -103,7 +103,11 @@ def train(args):
 
             # operative (trains encoder); pos decoded from per-frame pooled tokens
             op_pred = model.op_predict_window(z, a)                      # [B,W,N,D]
-            L_op = F.mse_loss(op_pred[:, :W-1], z[:, 1:W].detach())
+            # LeWM (2603.19312, Eq.3): NO stop-gradient on the target embedding --
+            # gradient flows through z_{t+1} too; SIGReg (below) is the SOLE thing
+            # preventing the trivial collapse. (Stop-grad/EMA are explicitly avoided.)
+            _tgt = z[:, 1:W] if not getattr(args, "stopgrad_target", False) else z[:, 1:W].detach()
+            L_op = F.mse_loss(op_pred[:, :W-1], _tgt)
             L_pos = F.mse_loss(model.pos_head(z.mean(dim=2)), pos_n)             # decode z[:,k]->pos_k
             L_dyn = F.mse_loss(model.pos_head(op_pred[:, :W-1].mean(dim=2)), pos_n[:, 1:W])
 
@@ -141,35 +145,38 @@ def train(args):
             subgoal = model.emit_subgoal(h_win, h_goal.unsqueeze(1).expand(-1, W, -1))   # [B,W,D]
             L_sub = F.mse_loss(subgoal[:, :W-Kt], h_win[:, Kt:].detach()) if W > Kt else torch.zeros((), device=device)
 
-            n_rows = B * W * N
-            L_sig = model.lambda_sigreg * model.sigreg(z.reshape(B * W, N, D)) / n_rows
-            # Operative VICReg variance/covariance floor (trains the encoder). In the
-            # pure self-supervised (LeWM) mode with no position labels, THIS is what
-            # forces the operative latent to stay high-variance & decorrelated so that
-            # feature prediction can't be solved by collapse — the only anti-collapse
-            # signal on the encoder.
-            L_col_op = var_cov_reg(z.mean(dim=2).reshape(B * W, D))
-            L_col = (L_col_op + var_cov_reg(h_win.reshape(B * W, D))
-                     + var_cov_reg(model.str_pre(zd.reshape(B * W, N, D))))
+            # ── SIGReg: the SOLE anti-collapse mechanism (LeWM Eq.3) ─────────────
+            # Isotropic-Gaussian regularizer on the PER-FRAME embedding (LeWM's z_t),
+            # the vector decoded for G1. The Epps-Pulley statistic already carries its
+            # *N factor, so the paper's lambda=0.1 is applied DIRECTLY (the previous
+            # /n_rows cancelled *N and shrank SIGReg ~1000x -> it collapsed). No EMA,
+            # no stop-grad, no VICReg. The same single regularizer keeps the tactical
+            # and strategic projections full-rank (computed on detached z -> does not
+            # touch the encoder), so collapse prevention is ONE mechanism everywhere.
+            z_pool = z.mean(dim=2).reshape(B * W, D)
+            L_sig = model.lambda_sigreg * (
+                model.sigreg(z_pool)
+                + model.sigreg(h_win.reshape(B * W, D))
+                + model.sigreg(model.str_pre(zd.reshape(B * W, N, D))))
 
-            # Pure self-supervised (LeWM): pos_weight=dyn_weight=0 -> NO position/dynamics
-            # supervision on the encoder; latent is read out by a frozen probe at eval.
+            # In SSL mode (pos_weight=dyn_weight=0) the encoder sees EXACTLY the LeWM
+            # objective: feature-prediction L_op + lambda*SIGReg. The abstraction
+            # losses (L_tac/L_str/vq/L_sub) train the heads on detached z only.
             loss = (L_op + args.dyn_weight * L_dyn + args.pos_weight * (L_pos + L_tacpos)
-                    + L_tac + L_str + vq_tot + L_sub + L_sig
-                    + 0.01 * moe_tot + args.collapse_weight * L_col)
+                    + L_tac + L_str + vq_tot + L_sub + L_sig + 0.01 * moe_tot)
             opt.zero_grad(set_to_none=True); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step()
 
             agg["loss"] += loss.item(); agg["op"] += L_op.item(); agg["dyn"] += L_dyn.item()
             agg["pos"] += L_pos.item(); agg["tac"] += float(L_tac); agg["str"] += float(L_str)
             agg["vq"] += float(vq_tot); agg["sub"] += float(L_sub)
-            agg["sig"] += float(L_sig); agg["col"] += float(L_col); nb += 1
+            agg["sig"] += float(L_sig); nb += 1
 
         nb = max(1, nb)
         print(f"  ep {epoch:03d}/{args.epochs:03d} | loss {agg['loss']/nb:.3f} | op {agg['op']/nb:.3f} "
               f"dyn {agg['dyn']/nb:.3f} pos {agg['pos']/nb:.3f} tac {agg['tac']/nb:.3f} "
               f"str {agg['str']/nb:.3f} vq {agg['vq']/nb:.3f} sub {agg['sub']/nb:.3f} "
-              f"sig {agg['sig']/nb:.4f} col {agg['col']/nb:.3f} | {time.perf_counter()-t0:.1f}s")
+              f"sig {agg['sig']/nb:.3f} | {time.perf_counter()-t0:.1f}s")
 
     if args.save_model:
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
@@ -207,6 +214,9 @@ def build_parser():
     ap.add_argument("--sample-stride", type=int, default=2)
     ap.add_argument("--pos-weight", type=float, default=1.0)
     ap.add_argument("--dyn-weight", type=float, default=1.0)
+    ap.add_argument("--stopgrad-target", action="store_true",
+                    help="diagnostic: stop-gradient the operative prediction target "
+                         "(LeWM-faithful is OFF; SIGReg alone should prevent collapse)")
     ap.add_argument("--self-supervised", action="store_true",
                     help="LeWM-faithful: zero position/dynamics supervision; encoder learns "
                          "only from feature prediction + collapse prevention (probe at eval)")

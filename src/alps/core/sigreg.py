@@ -76,9 +76,18 @@ class SIGReg(nn.Module):
             return loss
 
         # Standard SIGReg (from the LeWorldModel paper)
-        # 1. Project latents onto random unit-norm directions
-        # z: [N, D], projection_matrix: [D, S] -> y: [N, S]
-        y = torch.matmul(z, self.projection_matrix)
+        # 1. Project latents onto random unit-norm directions.
+        # FRESH directions every training step (LeJEPA/LeWM): with a FIXED projection
+        # set the encoder can collapse in a way that fools those specific directions
+        # (anisotropic rank-deficient distribution that looks Gaussian along the few
+        # sampled axes). Resampling forces the *whole* distribution toward isotropy.
+        if self.training:
+            W = torch.randn(self.d_model, self.num_slices, device=z.device, dtype=z.dtype)
+            proj = W / (W.norm(dim=0, keepdim=True) + 1e-8)
+        else:
+            proj = self.projection_matrix
+        # z: [N, D], proj: [D, S] -> y: [N, S]
+        y = torch.matmul(z, proj)
         
         # 2. Compute Epps-Pulley characteristic function difference linearly (O(N) memory)
         # x_t: [N, S, K] where K = knots
