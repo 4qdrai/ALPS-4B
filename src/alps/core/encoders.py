@@ -41,7 +41,12 @@ class ProjectionHead(nn.Module):
     def __init__(self, d_model: int):
         super().__init__()
         self.linear = nn.Linear(d_model, d_model)
-        self.bn = nn.BatchNorm1d(d_model)
+        # track_running_stats=False -> BN uses BATCH statistics at BOTH train and eval.
+        # This removes the train/eval gap that otherwise shifts the embedding scale and
+        # breaks the abstraction predictors (tactical/strategic) at inference time. We
+        # always encode in large batches, so batch stats are stable. (Running-stat BN
+        # gave eval-time tactical prediction rel-err 6.3 vs 0.72 in train mode.)
+        self.bn = nn.BatchNorm1d(d_model, track_running_stats=False)
         # NOTE: NO trailing activation. LeWM's "1-layer MLP with BatchNorm" ends on
         # the BN output -- that IS the embedding SIGReg regularizes. A trailing GELU
         # rectifies the output (non-negative), so the embedding can never be a
@@ -68,11 +73,17 @@ class VisionEncoder(nn.Module):
     the encoder ALWAYS returns shape [B, N, D] regardless of masking. This follows the
     MAE / I-JEPA design pattern for asymmetric encoder-predictor architectures.
     """
-    def __init__(self, in_channels: int = 3, d_model: int = 384, depth: int = 8, 
+    def __init__(self, in_channels: int = 3, d_model: int = 384, depth: int = 8,
                  num_heads: int = 6, mlp_ratio: float = 4.0, dropout: float = 0.1,
-                 patch_size: tuple = (2, 16, 16), max_patches: int = 2048):
+                 patch_size: tuple = (2, 16, 16), max_patches: int = 2048,
+                 use_projection_head: bool = True):
         super().__init__()
         self.d_model = d_model
+        # BatchNorm projection head is REQUIRED for SIGReg-only (LeWM) but couples the
+        # embedding to the batch -> breaks frozen-eval prediction. The anchored
+        # hierarchy doesn't need it (position anchor + VICReg prevent collapse), so it
+        # is disabled there for consistent, batch-independent eval embeddings.
+        self.use_projection_head = use_projection_head
         
         # 1. Spatiotemporal Tube Patch Embedding
         self.patch_embed = TubePatchEmbedding(
@@ -142,7 +153,8 @@ class VisionEncoder(nn.Module):
             # Step 2: Transformer forward on sparse active tokens only (O(N_active^2) not O(N^2))
             active_tokens = self.transformer(active_tokens)
             active_tokens = self.norm(active_tokens)
-            active_tokens = self.projection_head(active_tokens)
+            if self.use_projection_head:
+                active_tokens = self.projection_head(active_tokens)
             
             # Step 3: Scatter back into full-length sequence using learnable [MASK] tokens
             # Fill with mask_token + positional embeddings for masked positions
@@ -155,4 +167,4 @@ class VisionEncoder(nn.Module):
             # Dense forward pass (no masking)
             tokens = self.transformer(tokens)
             tokens = self.norm(tokens)
-            return self.projection_head(tokens)
+            return self.projection_head(tokens) if self.use_projection_head else tokens

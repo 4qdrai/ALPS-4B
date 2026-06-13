@@ -89,3 +89,25 @@ real video), and proceed NOW on the position-anchored encoder to train & validat
 strategic/tactical abstraction layers (latent prediction + goal emission), which is
 the priority.** Those layers train on detached encoder features, so a healthy
 (anchored) encoder is sufficient and necessary for them.
+
+## Update 2 — abstraction layers + the BatchNorm eval gap (2026-06)
+New gate `evaluation/validate_abstraction.py` measures the non-negotiable: do the
+strategic/tactical layers (a) predict their own latent forward, (b) emit goals down
+the hierarchy? Findings on a small anchored model (d128, ~24 ep, frozen-probe eval):
+
+- **Goal emission WORKS**: `G_str2tac` PASS (conditioning the tactical predictor on a
+  strategic goal-concept pulls its emitted region toward that goal's location) and
+  `G_tac2op` PASS (the emitted sub-goal is an in-bounds operative target).
+- **Latent prediction is learned but had a BatchNorm train/eval gap.** The encoder's
+  BN projection head (needed for SIGReg and to keep the abstraction latents from
+  collapsing) used running stats, so eval-mode features were shifted and the
+  predictors — trained on train-mode features — broke (tactical predict-vs-standstill
+  rel-err **6.26** at eval vs **0.72** in train mode). Fix: `BatchNorm1d(track_running_stats=False)`
+  → batch stats at train AND eval. This also revived VQ diversity (codes **2 → 18**)
+  and pulled the tactical eval rel-err **6.26 → 2.24 → 1.26** (approaching the train
+  0.72; remaining gap is batch-composition + undertraining, expected to clear at
+  A40 scale). Removing the BN head entirely is NOT an option — the abstraction latents
+  then collapse (codes → 1). The gate is wired into the A40 script (stage 8d).
+
+Net: the strategic/tactical layers DO predict in latent space and DO emit goals
+downstream; the residual is closing the BN eval-consistency gap at scale.

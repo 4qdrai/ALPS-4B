@@ -51,12 +51,21 @@ def build_windows(actions, starts, total, W, S, sample_stride):
 
 def train(args):
     device = torch.device(args.device)
+    if not hasattr(args, "lewm_ssl"):
+        args.lewm_ssl = False
+    if args.lewm_ssl:
+        # LeWM-faithful research mode: pure SSL (no labels), SIGReg-only, no stop-grad,
+        # no VICReg. (Open: collapses on the trivial Two-Rooms task; see SIGREG_FINDINGS.)
+        args.self_supervised = True
+        print("[mode] LeWM-SSL (faithful): SIGReg-only, no stop-grad, no VICReg, no labels.")
     if getattr(args, "self_supervised", False):
         args.pos_weight = 0.0
         args.dyn_weight = 0.0
-        print("[mode] PURE SELF-SUPERVISED (LeWM): encoder trained ONLY by feature "
-              "prediction + collapse prevention; NO position/dynamics labels. "
-              "Latent is read out by a frozen probe at eval.")
+        print("[mode] SELF-SUPERVISED: no position/dynamics labels on the encoder; "
+              "latent read out by a frozen probe at eval.")
+    else:
+        print("[mode] ANCHORED HIERARCHY (default): position anchor + stop-grad target "
+              "+ VICReg + SIGReg backstop -> healthy encoder for the strategic/tactical layers.")
     frames, actions, positions, room_ids, starts = load_raw(args.data_path)
     total = frames.shape[0]
     FIDX, AIDX, GEND = build_windows(actions, starts, total, args.window, args.stride, args.sample_stride)
@@ -72,7 +81,7 @@ def train(args):
         num_codes=args.num_codes, num_experts=args.num_experts, active_experts=args.active_experts,
         op_depth=args.op_depth, abs_depth=args.abs_depth, k_tac=args.k_tac, k_str=args.k_str,
         lambda_sigreg=args.lambda_sigreg, sigreg_slices=args.sigreg_slices,
-        max_frames=args.window + 1).to(device)
+        max_frames=args.window + 1, use_projection_head=True).to(device)
     pm, ps = positions.mean(0), positions.std(0) + 1e-6
     model.pos_mean.copy_(pm.to(device)); model.pos_std.copy_(ps.to(device))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -103,10 +112,13 @@ def train(args):
 
             # operative (trains encoder); pos decoded from per-frame pooled tokens
             op_pred = model.op_predict_window(z, a)                      # [B,W,N,D]
-            # LeWM (2603.19312, Eq.3): NO stop-gradient on the target embedding --
-            # gradient flows through z_{t+1} too; SIGReg (below) is the SOLE thing
-            # preventing the trivial collapse. (Stop-grad/EMA are explicitly avoided.)
-            _tgt = z[:, 1:W] if not getattr(args, "stopgrad_target", False) else z[:, 1:W].detach()
+            # `--lewm-ssl` = LeWM-faithful (2603.19312, Eq.3): NO stop-gradient on the
+            # target (SIGReg alone prevents collapse). DEFAULT (anchored hierarchy):
+            # stop-grad the target + position anchor + VICReg = the validated healthy
+            # config the strategic/tactical layers train on. (`--stopgrad-target`
+            # forces stop-grad even under --lewm-ssl, for diagnostics.)
+            _stopgrad = (not args.lewm_ssl) or getattr(args, "stopgrad_target", False)
+            _tgt = z[:, 1:W].detach() if _stopgrad else z[:, 1:W]
             L_op = F.mse_loss(op_pred[:, :W-1], _tgt)
             L_pos = F.mse_loss(model.pos_head(z.mean(dim=2)), pos_n)             # decode z[:,k]->pos_k
             L_dyn = F.mse_loss(model.pos_head(op_pred[:, :W-1].mean(dim=2)), pos_n[:, 1:W])
@@ -145,25 +157,26 @@ def train(args):
             subgoal = model.emit_subgoal(h_win, h_goal.unsqueeze(1).expand(-1, W, -1))   # [B,W,D]
             L_sub = F.mse_loss(subgoal[:, :W-Kt], h_win[:, Kt:].detach()) if W > Kt else torch.zeros((), device=device)
 
-            # ── SIGReg: the SOLE anti-collapse mechanism (LeWM Eq.3) ─────────────
-            # Isotropic-Gaussian regularizer on the PER-FRAME embedding (LeWM's z_t),
-            # the vector decoded for G1. The Epps-Pulley statistic already carries its
-            # *N factor, so the paper's lambda=0.1 is applied DIRECTLY (the previous
-            # /n_rows cancelled *N and shrank SIGReg ~1000x -> it collapsed). No EMA,
-            # no stop-grad, no VICReg. The same single regularizer keeps the tactical
-            # and strategic projections full-rank (computed on detached z -> does not
-            # touch the encoder), so collapse prevention is ONE mechanism everywhere.
+            # ── anti-collapse ───────────────────────────────────────────────────
             z_pool = z.mean(dim=2).reshape(B * W, D)
-            L_sig = model.lambda_sigreg * (
-                model.sigreg(z_pool)
-                + model.sigreg(h_win.reshape(B * W, D))
-                + model.sigreg(model.str_pre(zd.reshape(B * W, N, D))))
+            h_flat = h_win.reshape(B * W, D)
+            s_flat = model.str_pre(zd.reshape(B * W, N, D))
+            if args.lewm_ssl:
+                # LeWM Eq.3: SIGReg-only, applied directly (Epps-Pulley carries its *N
+                # factor, so paper lambda=0.1 is used as-is). The SOLE mechanism.
+                L_sig = model.lambda_sigreg * (model.sigreg(z_pool) + model.sigreg(h_flat) + model.sigreg(s_flat))
+                L_col = torch.zeros((), device=device)
+            else:
+                # Anchored hierarchy (validated): per-row-normalized SIGReg as a light
+                # backstop + VICReg variance/covariance floor; position anchor does the
+                # heavy lifting. This is the healthy config for the abstraction layers.
+                nr = B * W
+                L_sig = model.lambda_sigreg * (model.sigreg(z_pool) + model.sigreg(h_flat) + model.sigreg(s_flat)) / nr
+                L_col = var_cov_reg(z_pool) + var_cov_reg(h_flat) + var_cov_reg(s_flat)
 
-            # In SSL mode (pos_weight=dyn_weight=0) the encoder sees EXACTLY the LeWM
-            # objective: feature-prediction L_op + lambda*SIGReg. The abstraction
-            # losses (L_tac/L_str/vq/L_sub) train the heads on detached z only.
             loss = (L_op + args.dyn_weight * L_dyn + args.pos_weight * (L_pos + L_tacpos)
-                    + L_tac + L_str + vq_tot + L_sub + L_sig + 0.01 * moe_tot)
+                    + L_tac + L_str + vq_tot + L_sub + L_sig + 0.01 * moe_tot
+                    + args.collapse_weight * L_col)
             opt.zero_grad(set_to_none=True); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step()
 
@@ -185,7 +198,8 @@ def train(args):
                     "num_codes": args.num_codes, "num_experts": args.num_experts,
                     "active_experts": args.active_experts, "op_depth": args.op_depth,
                     "abs_depth": args.abs_depth, "window": args.window, "stride": args.stride,
-                    "k_tac": args.k_tac, "k_str": args.k_str}, args.out)
+                    "k_tac": args.k_tac, "k_str": args.k_str,
+                    "use_projection_head": True}, args.out)
         print(f"[save] {args.out}")
     return model
 
@@ -214,9 +228,13 @@ def build_parser():
     ap.add_argument("--sample-stride", type=int, default=2)
     ap.add_argument("--pos-weight", type=float, default=1.0)
     ap.add_argument("--dyn-weight", type=float, default=1.0)
+    ap.add_argument("--lewm-ssl", action="store_true",
+                    help="LeWM-faithful research mode: pure SSL, SIGReg-only, NO stop-grad, "
+                         "NO VICReg (one mechanism). Default OFF = anchored hierarchy "
+                         "(healthy encoder for the strategic/tactical layers).")
     ap.add_argument("--stopgrad-target", action="store_true",
-                    help="diagnostic: stop-gradient the operative prediction target "
-                         "(LeWM-faithful is OFF; SIGReg alone should prevent collapse)")
+                    help="diagnostic: force stop-gradient on the operative target even "
+                         "under --lewm-ssl")
     ap.add_argument("--self-supervised", action="store_true",
                     help="LeWM-faithful: zero position/dynamics supervision; encoder learns "
                          "only from feature prediction + collapse prevention (probe at eval)")

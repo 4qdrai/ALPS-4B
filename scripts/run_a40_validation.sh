@@ -164,6 +164,9 @@ if [ "$FOURTH_BRAIN" = "1" ]; then
       --model-path "$TEMPORAL_MODEL" --data-path "$DATA"
   python -m alps.evaluation.moe_specialization --complex \
       --model-path "$CX_MODEL" --data-path "$CX_DATA"
+  echo "--- [8d] abstraction-layer gates: strategic/tactical predict latent + emit goals ---"
+  python -m alps.evaluation.validate_abstraction \
+      --model-path "$TEMPORAL_MODEL" --data-path "$DATA"
 fi
 
 echo "================ DONE ================"
@@ -176,3 +179,4 @@ echo "  results/two_rooms/validation/temporal_gates.json           (simple Four-
 echo "  results/two_rooms/validation/temporal_gates_complex.json    (COMPLEX Four-Brain: key->door->goal 3-tier ablation)"
 echo "  results/two_rooms/validation/fourth_brain{,_complex}.json   (H8 monitoring / H9 escalation / H10 fallback)"
 echo "  results/two_rooms/validation/moe_specialization{,_complex}.json (H11 expert routing + knockout matrix)"
+echo "  results/two_rooms/validation/abstraction_gates.json        (strategic/tactical latent prediction + goal emission)"

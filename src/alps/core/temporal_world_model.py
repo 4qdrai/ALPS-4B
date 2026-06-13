@@ -30,7 +30,8 @@ class TemporalHierWorldModel(nn.Module):
     def __init__(self, d_model=192, d_action=4, num_codes=64, num_experts=4, active_experts=2,
                  enc_depth=10, enc_heads=8, patch_size=(2, 16, 16), max_patches=512,
                  op_depth=6, abs_depth=4, lambda_sigreg=0.1, sigreg_slices=256,
-                 rag_sim_threshold=0.75, k_tac=2, k_str=4, max_frames=12):
+                 rag_sim_threshold=0.75, k_tac=2, k_str=4, max_frames=12,
+                 use_projection_head=True):
         super().__init__()
         self.d_model = d_model
         self.k_tac, self.k_str = k_tac, k_str
@@ -38,7 +39,8 @@ class TemporalHierWorldModel(nn.Module):
         self.lambda_sigreg = lambda_sigreg
 
         self.encoder = VisionEncoder(d_model=d_model, depth=enc_depth, num_heads=enc_heads,
-                                     patch_size=patch_size, max_patches=max_patches)
+                                     patch_size=patch_size, max_patches=max_patches,
+                                     use_projection_head=use_projection_head)
         # operative: causal history over spatial tokens, conditioned on action
         self.op_predictor = CausalTemporalPredictor(d_model, d_cond=d_action, depth=op_depth,
                                                     num_heads=enc_heads, max_frames=max_frames)
