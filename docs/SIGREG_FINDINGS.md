@@ -111,3 +111,27 @@ the hierarchy? Findings on a small anchored model (d128, ~24 ep, frozen-probe ev
 
 Net: the strategic/tactical layers DO predict in latent space and DO emit goals
 downstream; the residual is closing the BN eval-consistency gap at scale.
+
+## Update 3 — CORRECTION: LeWM uses THIS exact Two-Rooms task; collapse is a config gap, not triviality (2026-06)
+Earlier hypothesis "B" (Two-Rooms too trivial for pure SSL) is **WRONG**. The LeWM
+paper (§Environments) evaluates on **Two-Room** (Sobal et al.): "two rooms separated
+by a wall with a single door... agent (red dot) navigates from a random start in one
+room to a random target in the other, requiring passing through the door. We collect
+**10,000 episodes**." That is *our* task. LeWM trains **pure SIGReg-only SSL (no
+EMA/stop-grad)** on it and it does NOT collapse — and they probe physical quantities
+(position) from the frozen latent. So pure-SSL identifiability is ACHIEVABLE here; our
+collapse is an implementation/config gap vs LeWM, to close by matching their setup:
+
+1. **SIGReg on the PREDICTOR outputs too**, not only encoder embeddings. LeWM applies
+   SIGReg to z_t, z_{t+1}, AND the prediction ẑ_{t+1}, and "the predictor is also
+   followed by a projector network with the same implementation as the encoder"
+   (i.e., its own Linear+BatchNorm). We currently SIGReg only the encoder embedding.
+2. **Data scale**: LeWM uses 10,000 episodes; our local tests used 1-3k. Match 10k.
+3. **Inter-frame motion**: prediction must be non-trivial — ensure the sub-trajectory
+   frame spacing produces meaningful agent displacement (so next-embedding prediction
+   requires encoding position). Tune `stride`/`frame-skip` to LeWM's regime.
+4. Architecture parity: ViT-Tiny, patch 14, BatchNorm projector on BOTH encoder and
+   predictor (we have the encoder one; ADD the predictor projector).
+
+This is the SSL path (no EMA). Until it lands, the anchored hierarchy (default) gives
+the healthy encoder the strategic/tactical layers need.

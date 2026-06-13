@@ -78,10 +78,15 @@ python -m alps.evaluation.self_learning_validation \
 HIER_EPOCHS="${HIER_EPOCHS:-40}"
 HIER_SAMPLES="${HIER_SAMPLES:-0}"          # 0 = use all windows
 TEMPORAL_WINDOW="${TEMPORAL_WINDOW:-6}"    # K-frame causal history window
-# LeWM-FAITHFUL: encoder trained ONLY by feature prediction + collapse prevention,
-# NO position/dynamics labels (the latent is read out by a FROZEN probe at eval).
-# Default ON; set SELF_SUP=0 for the position-grounded (weakly-supervised) variant.
-SELF_SUP="${SELF_SUP:-1}"
+# SELF_SUP=0 (DEFAULT): ANCHORED hierarchy -- position anchor + stop-grad + VICReg +
+#   SIGReg backstop -> HEALTHY encoder; this is what the strategic/tactical layers and
+#   the four-brain need, so the default A40 run is productive (G1/edge/abstraction).
+# SELF_SUP=1: pure self-supervised (no labels). NOTE: pure SSL currently collapses on
+#   our Two-Rooms setup (eff-rank ~2, G1 ~2.5) -- a config gap vs LeWM, NOT the task
+#   (LeWM trains pure-SSL on this exact Two-Room env). Use only once the LeWM-matching
+#   SSL fixes land (SIGReg on predictor outputs + predictor BN projector + 10k episodes
+#   + frame spacing; see docs/SIGREG_FINDINGS.md). --lewm-ssl is the fully-faithful mode.
+SELF_SUP="${SELF_SUP:-0}"
 SELFSUP_FLAG=""
 if [ "$SELF_SUP" = "1" ]; then SELFSUP_FLAG="--self-supervised"; fi
 TEMPORAL_MODEL="results/two_rooms/validation/temporal_world_model.pt"

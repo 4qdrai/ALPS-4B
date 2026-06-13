@@ -268,9 +268,14 @@ def run(args):
     # PASS A — calibration (fixed tactical policy, monitors only)
     cal = [ep(seed, sr, gr, "tactical", None, "record") for sr, gr, seed in cfgs(3000, args.n_cal)]
     good = [r for r in cal if r["success"]] or cal
-    th = {"m1": float(np.quantile(np.concatenate([r["m1"] for r in good]), 0.90)),
-          "m2": float(np.quantile(np.concatenate([r["m2"] for r in good]), 0.90)),
-          "m3": float(np.quantile([v for r in good for v in r["m3"] if np.isfinite(v)], 0.10))}
+
+    def _q(vals, q, default):
+        v = np.asarray([x for x in vals if np.isfinite(x)], dtype=float)
+        return float(np.quantile(v, q)) if v.size else float(default)
+
+    th = {"m1": _q(np.concatenate([r["m1"] for r in good]) if good else [], 0.90, 1e9),
+          "m2": _q(np.concatenate([r["m2"] for r in good]) if good else [], 0.90, 1e9),
+          "m3": _q([v for r in good for v in r["m3"]], 0.10, 0.0)}
     out["thresholds"] = {**th, "cal_success_rate": float(np.mean([r["success"] for r in cal]))}
 
     # PASS B — H8 on held-out: do monitors predict failure?
