@@ -23,7 +23,7 @@ next-frame prediction is even being asked to track the agent.
 
 USAGE
   PYTHONPATH=src python -m alps.evaluation.diagnose_g1 \
-      --model-path results/two_rooms/validation/unsupervised/unsup_temporal.pt \
+      --model-path results/two_rooms/validation/unsup_temporal.pt \
       --data-path  data/two_rooms/trajectories_unsup.pt
 """
 from __future__ import annotations
@@ -97,7 +97,7 @@ def motion_stats(positions, starts, total, strides=(1, 4, 8, 12)):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model-path", default="results/two_rooms/validation/unsupervised/unsup_temporal.pt")
+    ap.add_argument("--model-path", default="results/two_rooms/validation/unsup_temporal.pt")
     ap.add_argument("--data-path", default="data/two_rooms/trajectories_unsup.pt")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--n-samples", type=int, default=8000)
