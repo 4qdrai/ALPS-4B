@@ -69,9 +69,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+# NB: matplotlib is imported lazily inside make_figures() only. This module is
+# imported by the validation path (validate_temporal -> validate_hierarchy.fit_probe)
+# purely for the small PositionProbe class, which needs no plotting. A top-level
+# matplotlib import made the numeric gates hard-fail on pods without matplotlib.
 
 from alps.core.encoders import VisionEncoder
 from alps.core.predictor import MultiScalePredictor
@@ -522,6 +523,9 @@ def gate_g2(model, dataset, val_idx, device, decode_fn, max_samples=3000, ratio_
 # ════════════════════════════════════════════════════════════════════════════
 
 def make_figures(g1: Dict, g2: Dict, save_dir: str, tag: str):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
     os.makedirs(save_dir, exist_ok=True)
 
     # G1 scatter: true vs decoded (x and y).
