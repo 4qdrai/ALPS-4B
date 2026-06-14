@@ -31,16 +31,22 @@ class TemporalHierWorldModel(nn.Module):
                  enc_depth=10, enc_heads=8, patch_size=(2, 16, 16), max_patches=512,
                  op_depth=6, abs_depth=4, lambda_sigreg=0.1, sigreg_slices=256,
                  rag_sim_threshold=0.75, k_tac=2, k_str=4, max_frames=12,
-                 use_projection_head=True):
+                 use_projection_head=True, use_cls_pool=False):
         super().__init__()
         self.d_model = d_model
         self.k_tac, self.k_str = k_tac, k_str
         self.SINGLE_FRAME_T = 2
         self.lambda_sigreg = lambda_sigreg
+        # CLS-token pooling (LeWM-exact): read the encoder's [CLS] token (index 0) as the
+        # pooled latent instead of mean-pooling all tokens. Mean-pool dilutes the spatially
+        # localized agent signal -> pure-SSL pooled latent loses position (G1 fails) even
+        # though the token grid keeps it; [CLS] attends and selects it. See encoders.py.
+        self.use_cls_pool = use_cls_pool
 
         self.encoder = VisionEncoder(d_model=d_model, depth=enc_depth, num_heads=enc_heads,
                                      patch_size=patch_size, max_patches=max_patches,
-                                     use_projection_head=use_projection_head)
+                                     use_projection_head=use_projection_head,
+                                     use_cls_token=use_cls_pool)
         # operative: causal history over spatial tokens, conditioned on action
         self.op_predictor = CausalTemporalPredictor(d_model, d_cond=d_action, depth=op_depth,
                                                     num_heads=enc_heads, max_frames=max_frames)
@@ -78,8 +84,13 @@ class TemporalHierWorldModel(nn.Module):
         clip = frame.unsqueeze(2).expand(-1, -1, self.SINGLE_FRAME_T, -1, -1)
         return self.encoder(clip)                       # [B,N,D]
 
-    @staticmethod
-    def pool(z): return z.mean(dim=1)
+    def pool(self, z):
+        """[B,N,D] -> [B,D]. CLS token (index 0) when use_cls_pool, else mean over tokens."""
+        return z[:, 0] if self.use_cls_pool else z.mean(dim=1)
+
+    def tok_pool(self, t):
+        """[B,W,N,D] -> [B,W,D] (token-dim pool). CLS index 0 or mean, matching pool()."""
+        return t[:, :, 0] if self.use_cls_pool else t.mean(dim=2)
 
     def decode_pos_norm(self, z): return self.pos_head(self.pool(z) if z.dim() == 3 else z)
     def decode_pos(self, z): return self.decode_pos_norm(z) * self.pos_std + self.pos_mean

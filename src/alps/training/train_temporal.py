@@ -53,6 +53,8 @@ def train(args):
     device = torch.device(args.device)
     if not hasattr(args, "lewm_ssl"):
         args.lewm_ssl = False
+    if not hasattr(args, "cls_pool"):
+        args.cls_pool = False
     if args.lewm_ssl:
         # LeWM-faithful research mode: pure SSL (no labels), SIGReg-only, no stop-grad,
         # no VICReg. (Open: collapses on the trivial Two-Rooms task; see SIGREG_FINDINGS.)
@@ -81,7 +83,8 @@ def train(args):
         num_codes=args.num_codes, num_experts=args.num_experts, active_experts=args.active_experts,
         op_depth=args.op_depth, abs_depth=args.abs_depth, k_tac=args.k_tac, k_str=args.k_str,
         lambda_sigreg=args.lambda_sigreg, sigreg_slices=args.sigreg_slices,
-        max_frames=args.window + 1, use_projection_head=True).to(device)
+        max_frames=args.window + 1, use_projection_head=True,
+        use_cls_pool=args.cls_pool).to(device)
     pm, ps = positions.mean(0), positions.std(0) + 1e-6
     model.pos_mean.copy_(pm.to(device)); model.pos_std.copy_(ps.to(device))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -120,8 +123,8 @@ def train(args):
             _stopgrad = (not args.lewm_ssl) or getattr(args, "stopgrad_target", False)
             _tgt = z[:, 1:W].detach() if _stopgrad else z[:, 1:W]
             L_op = F.mse_loss(op_pred[:, :W-1], _tgt)
-            L_pos = F.mse_loss(model.pos_head(z.mean(dim=2)), pos_n)             # decode z[:,k]->pos_k
-            L_dyn = F.mse_loss(model.pos_head(op_pred[:, :W-1].mean(dim=2)), pos_n[:, 1:W])
+            L_pos = F.mse_loss(model.pos_head(model.tok_pool(z)), pos_n)         # decode z[:,k]->pos_k
+            L_dyn = F.mse_loss(model.pos_head(model.tok_pool(op_pred[:, :W-1])), pos_n[:, 1:W])
 
             # stop-grad isolation for abstraction layers
             zd = z.detach()
@@ -158,7 +161,7 @@ def train(args):
             L_sub = F.mse_loss(subgoal[:, :W-Kt], h_win[:, Kt:].detach()) if W > Kt else torch.zeros((), device=device)
 
             # ── anti-collapse ───────────────────────────────────────────────────
-            z_pool = z.mean(dim=2).reshape(B * W, D)
+            z_pool = model.tok_pool(z).reshape(B * W, D)
             h_flat = h_win.reshape(B * W, D)
             s_flat = model.str_pre(zd.reshape(B * W, N, D))
             if args.lewm_ssl:
@@ -168,7 +171,7 @@ def train(args):
                 # (LeWM "the predictor is also followed by a projector"). SIGReg-only, no
                 # EMA, no stop-grad. This keeps operative + tactical + strategic all
                 # collapse-free and predicting in latent space.
-                op_pred_pool = model.op_pred_proj(op_pred.mean(dim=2).reshape(B * W, D))
+                op_pred_pool = model.op_pred_proj(model.tok_pool(op_pred).reshape(B * W, D))
                 tac_pred_p = model.tac_pred_proj(tac_pred.reshape(B * W, D))
                 str_pred_p = model.str_pred_proj(str_pred.reshape(B * W, D))
                 L_sig = model.lambda_sigreg * (
@@ -208,7 +211,7 @@ def train(args):
                     "active_experts": args.active_experts, "op_depth": args.op_depth,
                     "abs_depth": args.abs_depth, "window": args.window, "stride": args.stride,
                     "k_tac": args.k_tac, "k_str": args.k_str,
-                    "use_projection_head": True}, args.out)
+                    "use_projection_head": True, "use_cls_pool": args.cls_pool}, args.out)
         print(f"[save] {args.out}")
     return model
 
@@ -244,6 +247,10 @@ def build_parser():
     ap.add_argument("--stopgrad-target", action="store_true",
                     help="diagnostic: force stop-gradient on the operative target even "
                          "under --lewm-ssl")
+    ap.add_argument("--cls-pool", action="store_true",
+                    help="LeWM-exact [CLS]-token readout instead of mean-pooling tokens. "
+                         "Mean-pool dilutes the spatially-localized agent -> pure-SSL G1 "
+                         "fails; the [CLS] token attends and selects it.")
     ap.add_argument("--self-supervised", action="store_true",
                     help="LeWM-faithful: zero position/dynamics supervision; encoder learns "
                          "only from feature prediction + collapse prevention (probe at eval)")

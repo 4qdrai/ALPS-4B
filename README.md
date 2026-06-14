@@ -11,8 +11,6 @@
 ## Architectural Capabilities
 ALPS-4B is built around **42 design goals** (listed below) spanning hierarchical prediction, reflexive safety, lifelong memory, and multi-modal efficiency. These are *design hypotheses*, not all yet empirically demonstrated. For what has actually been **measured end-to-end on the Two Rooms benchmark**, see **[Validated Results](#-validated-results-measured)** below, the full **[Validation Plan & Gates](docs/VALIDATION_PLAN.md)**, and the reproduced metrics in [`results/two_rooms/validation/RESULTS_SUMMARY.md`](results/two_rooms/validation/RESULTS_SUMMARY.md). For the mathematical formulations, read the [Mathematical Foundations](docs/mathematical_foundations.md) and the [Scientific Paper](docs/scientific_paper.md).
 
-> **Status note (honesty first):** an earlier version of this README reported a "0.002 units" decoding accuracy and chaotic-surprise MSE spikes as validation. Those were, respectively, a *mislabeled latent MSE* and *unnormalized encoder blow-up* — not evidence. They have been replaced by the falsifiable gate-based results below.
-
 <details>
 <summary><b>Click to expand all 42 Capabilities</b></summary>
 

@@ -76,9 +76,19 @@ class VisionEncoder(nn.Module):
     def __init__(self, in_channels: int = 3, d_model: int = 384, depth: int = 8,
                  num_heads: int = 6, mlp_ratio: float = 4.0, dropout: float = 0.1,
                  patch_size: tuple = (2, 16, 16), max_patches: int = 2048,
-                 use_projection_head: bool = True):
+                 use_projection_head: bool = True, use_cls_token: bool = False):
         super().__init__()
         self.d_model = d_model
+        # [CLS] token readout (LeWM-exact). A ViT encodes the agent SPATIALLY (the dot at
+        # (x,y) lights up ~1-2 of N tokens), so mean-pooling N tokens dilutes that signal
+        # to ~1/N and the background swamps it -> the pooled latent loses position even
+        # though the token grid keeps it. LeWM reads the [CLS] token instead, which
+        # attends over the tokens and can SELECT the agent's. When enabled, forward()
+        # prepends a learnable [CLS] and returns it at index 0; the model pools z[:,0].
+        self.use_cls_token = use_cls_token
+        if use_cls_token:
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+            nn.init.trunc_normal_(self.cls_token, std=0.02)
         # BatchNorm projection head is REQUIRED for SIGReg-only (LeWM) but couples the
         # embedding to the batch -> breaks frozen-eval prediction. The anchored
         # hierarchy doesn't need it (position anchor + VICReg prevent collapse), so it
@@ -149,22 +159,34 @@ class VisionEncoder(nn.Module):
                 unmasked_tokens.append(active_t)
                 
             active_tokens = torch.stack(unmasked_tokens, dim=0) # [B, N_active, D]
-            
+
+            # [CLS] is always kept (never masked): prepend before the transformer.
+            if self.use_cls_token:
+                active_tokens = torch.cat([self.cls_token.expand(B, -1, -1), active_tokens], dim=1)
+
             # Step 2: Transformer forward on sparse active tokens only (O(N_active^2) not O(N^2))
             active_tokens = self.transformer(active_tokens)
             active_tokens = self.norm(active_tokens)
             if self.use_projection_head:
                 active_tokens = self.projection_head(active_tokens)
-            
+
+            cls_out = None
+            if self.use_cls_token:
+                cls_out, active_tokens = active_tokens[:, :1], active_tokens[:, 1:]
+
             # Step 3: Scatter back into full-length sequence using learnable [MASK] tokens
             # Fill with mask_token + positional embeddings for masked positions
             full_tokens = self.mask_token.expand(B, N, -1).clone() + self.pos_embed[:, :N, :]
             for b in range(B):
                 full_tokens[b, mask_indices[b]] = active_tokens[b]
-                
+
+            if cls_out is not None:
+                full_tokens = torch.cat([cls_out, full_tokens], dim=1)   # [B, N+1, D], CLS at 0
             return full_tokens
         else:
             # Dense forward pass (no masking)
+            if self.use_cls_token:
+                tokens = torch.cat([self.cls_token.expand(B, -1, -1), tokens], dim=1)  # [B, N+1, D]
             tokens = self.transformer(tokens)
             tokens = self.norm(tokens)
             return self.projection_head(tokens) if self.use_projection_head else tokens
