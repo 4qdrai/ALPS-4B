@@ -162,18 +162,26 @@ def fit_ridge_decode(X, Y, device, lam=10.0):
 
 @torch.no_grad()
 def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
-                        strategy, max_steps=140):
+                        strategy, complex_mode=False, max_steps=140):
     """4B edge under PURE SSL via predictor-based DECODED control on the spatial readout.
     The TRAINED op predictor predicts the next latent grid; decode_state (spatial_readout
     + frozen ridge) reads the predicted agent POSITION (action-sensitive, unlike the coarse
     latent nearest-neighbour); the agent steers toward the graph waypoint position.
-      operative : greedy to the decoded GOAL position (System 1) -> stalls behind the wall.
-      graph     : follow the position-faithful latent-graph waypoints through the door."""
-    env = TwoRoomsEnv(seed=seed); obs = env.reset(start_room=sr, goal_room=gr)
+      operative : greedy to the decoded GOAL position (System 1) -> stalls at wall/locked door.
+      graph     : follow the position-faithful latent-graph waypoints (complex: through the
+                  KEY, since keyed/unkeyed frames are distinct latent nodes connected only by
+                  the pickup transition -- label-free key routing)."""
+    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
-    is_cross = (sr != gr); opt = _oracle_path_len(sr, gr, seed)
+    is_cross = True if complex_mode else (sr != gr)
+    opt = max_steps if complex_mode else _oracle_path_len(sr, gr, seed)
     buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
-    eg = TwoRoomsEnv(seed=seed); eg.reset(start_room=gr, goal_room=gr); eg.agent_pos = goal_xy.copy()
+    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
+    eg.agent_pos = goal_xy.copy()
+    if complex_mode:
+        eg.has_key = True
     goal_grid = model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))
     goal_pos = decode_state(goal_grid)[0].cpu().numpy()
     waypoints, wp = [goal_pos], 0
@@ -196,25 +204,30 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
             cur_pos = decode_state(buf.cur_z)[0].cpu().numpy()                 # decoded, not true
             if np.linalg.norm(cur_pos - waypoints[wp]) < REACH:
                 wp += 1
-        if done or info["distance"] < REACH:
+        reached = done if complex_mode else (done or info["distance"] < REACH)  # env oracle = task metric
+        if reached:
             return EpisodeResult(True, s + 1, opt, s + 1, is_cross)
     return EpisodeResult(False, max_steps, opt, max_steps, is_cross)
 
 
 @torch.no_grad()
 def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, readout,
-                            device, n_episodes):
+                            device, n_episodes, complex_mode=False):
     """3-tier ablation under pure SSL with predictor-based decoded control on the spatial
-    readout: operative (greedy) vs strategic (coarse graph) vs tactical (fine graph)."""
-    cfgs = [(i % 2, (i % 2) if (i // 2) % 2 == 0 else 1 - (i % 2), 1000 + i) for i in range(n_episodes)]
+    readout: operative (greedy) vs strategic (coarse graph) vs tactical (fine graph).
+    Complex mode = key->door->goal (the graph routes through the key landmark)."""
+    if complex_mode:
+        cfgs = [(0, 3, 2000 + i) for i in range(n_episodes)]
+    else:
+        cfgs = [(i % 2, (i % 2) if (i // 2) % 2 == 0 else 1 - (i % 2), 1000 + i) for i in range(n_episodes)]
     plan = {"operative": (None, "operative"), "strategic": (coarse_graph, "graph"),
             "tactical": (fine_graph, "graph")}
     out = {}
     for name, (gph, strat) in plan.items():
         res = [run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout,
-                                   gph, strat) for sr, gr, seed in cfgs]
+                                   gph, strat, complex_mode=complex_mode) for sr, gr, seed in cfgs]
         out[name] = summarize(res)
-    out["oracle"] = float(np.mean([_bfs_oracle_cfg(sr, gr, seed, False) for sr, gr, seed in cfgs]))
+    out["oracle"] = float(np.mean([_bfs_oracle_cfg(sr, gr, seed, complex_mode) for sr, gr, seed in cfgs]))
     return out
 
 
@@ -627,12 +640,7 @@ def run(args):
     # collapse and routing fails; the spatial readout keeps the agent -> position-faithful
     # nodes -> the hierarchy routes WITHOUT supervision. decode_op/probe refit on that space.
     featurize = lambda z: z
-    # gate_four_brain_spatial is simple cross-room only; complex (key->door->goal) decoded
-    # control is a follow-up, so --spatial is ignored under --complex (pooled gate runs).
-    spatial_on = getattr(args, "spatial", False) and not args.complex
-    if getattr(args, "spatial", False) and args.complex:
-        print("[note] --spatial is simple-mode only for now; complex four-brain uses the pooled gate.")
-    if spatial_on:
+    if getattr(args, "spatial", False):
         g = args.spatial_grid
         readout4b = lambda z: model.spatial_readout(z, grid=g)
 
@@ -657,8 +665,8 @@ def run(args):
             gph.decoded_xy = ridge_decode(torch.tensor(gph.centroids, device=device)).cpu().numpy()
             return gph
         coarse_graph, fine_graph = build_sp(args.coarse_k), build_sp(args.fine_k)
-        fb = gate_four_brain_spatial(model, W, coarse_graph, fine_graph,
-                                     decode_state, readout4b, device, args.n_episodes)
+        fb = gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state,
+                                     readout4b, device, args.n_episodes, complex_mode=args.complex)
     else:
         def build(k):
             return build_graph_raw(model, decode_op, frames, positions, room_ids, starts,

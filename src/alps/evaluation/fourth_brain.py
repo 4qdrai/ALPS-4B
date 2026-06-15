@@ -379,7 +379,7 @@ def run(args):
         return [(i % 2, (i % 2) if (i // 2) % 2 == 0 else 1 - (i % 2), base + i) for i in range(n)]
 
     ep = lambda seed, sr, gr, policy, thr, fb: run_episode_fb(
-        model, W, seed, sr, gr, device, decode_op, graph, featurize, ZC, policy,
+        model, W, seed, sr, gr, device, graph, ZC, policy,
         thr=thr, complex_mode=args.complex, alarm_k=args.alarm_k,
         patience=args.patience, grace=args.grace, stall_w=args.stall_w, fallback=fb)
 

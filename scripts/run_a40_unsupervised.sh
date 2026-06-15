@@ -109,7 +109,7 @@ echo "--- [4/8] COMPLEX four-brain, H3 VQ-graph, H4 label-free key, H2 emitter -
 python -m alps.evaluation.validate_temporal --complex \
     --model-path "$CX_MODEL" --data-path "$CX_DATA" --n-episodes "$N_EVAL" \
     --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" \
-    --h4-unsup-key --vq-graph --h2-emitter
+    --h4-unsup-key --vq-graph --h2-emitter $SPATIAL_ARGS
 # Simple mode: H3 + H2 gates (no key) + spatial-readout four-brain edge
 python -m alps.evaluation.validate_temporal \
     --model-path "$MODEL" --data-path "$DATA" --n-episodes "$N_EVAL" \
