@@ -66,17 +66,31 @@ def ridge_probe(Xtr, Ytr, Xte, Yte, lams=(0.1, 1.0, 10.0, 100.0, 1000.0)):
     return best
 
 
+def _coarse(spatial, g):
+    """[b, 64, D] spatial tokens (8x8) -> [b, g*g*D] coarse g×g average-pooled grid."""
+    b, N, D = spatial.shape
+    s = int(round(N ** 0.5))                                    # 8
+    x = spatial.reshape(b, s, s, D).permute(0, 3, 1, 2)         # [b,D,8,8]
+    x = torch.nn.functional.adaptive_avg_pool2d(x, (g, g))      # [b,D,g,g]
+    return x.reshape(b, -1)                                     # [b, g*g*D]
+
+
 @torch.no_grad()
 def encode_all(model, frames, idx, device, chunk=128):
-    """Return pooled [n,D] and full-grid [n,N*D] latents for the sampled frames."""
-    pooled, grid = [], []
+    """Return pooled [n,D], full-grid [n,N*D], and coarse 2x2 / 4x4 spatial readouts.
+    The coarse grids test whether a SMALL spatial readout (vs a single global vector)
+    preserves position -- the option-2 'spatial/object readout' fix, measured directly."""
+    pooled, grid, g2, g4 = [], [], [], []
     for c0 in range(0, len(idx), chunk):
         b = idx[c0:c0 + chunk]
         fr = frames[b].to(device).float() / 255.0
-        z = model.encode_frame(fr)                 # [b,N,D]
-        pooled.append(z.mean(dim=1).cpu())
+        z = model.encode_frame(fr)                 # [b,N,D]  (N=64, or 65 with CLS at 0)
+        spatial = z[:, -64:]                       # drop a possible CLS token -> 64 spatial
+        pooled.append(model.pool(z).cpu())         # the model's actual readout (CLS or mean)
         grid.append(z.reshape(z.shape[0], -1).cpu())
-    return torch.cat(pooled), torch.cat(grid)
+        g2.append(_coarse(spatial, 2).cpu())
+        g4.append(_coarse(spatial, 4).cpu())
+    return torch.cat(pooled), torch.cat(grid), torch.cat(g2), torch.cat(g4)
 
 
 def motion_stats(positions, starts, total, strides=(1, 4, 8, 12)):
@@ -117,11 +131,11 @@ def main():
     Y = positions.float()
     Ytr, Yte = Y[tr].to(device), Y[te].to(device)
 
-    # --- feature set 1+2: pooled + full-grid latent ---
-    pooled_tr, grid_tr = encode_all(model, frames, tr, device)
-    pooled_te, grid_te = encode_all(model, frames, te, device)
+    # --- model readouts: pooled (G1), full grid, coarse 2x2 / 4x4 spatial ---
+    pooled_tr, grid_tr, g2_tr, g4_tr = encode_all(model, frames, tr, device)
+    pooled_te, grid_te, g2_te, g4_te = encode_all(model, frames, te, device)
 
-    # --- feature set 3: raw downsampled pixels (control) ---
+    # --- control: raw downsampled pixels ---
     P = a.pixel_size
     def pixels(ix):
         fr = frames[ix].float() / 255.0                       # [n,3,128,128]
@@ -129,18 +143,21 @@ def main():
         return fr.reshape(fr.shape[0], -1)
     pix_tr, pix_te = pixels(tr).to(device), pixels(te).to(device)
 
-    print(f"[diag] features: pooled D={pooled_tr.shape[1]} | grid D={grid_tr.shape[1]} | "
-          f"pixels D={pix_tr.shape[1]} | n_train={len(tr)} n_test={len(te)}")
+    print(f"[diag] dims: pooled={pooled_tr.shape[1]} grid={grid_tr.shape[1]} "
+          f"2x2={g2_tr.shape[1]} 4x4={g4_tr.shape[1]} pixels={pix_tr.shape[1]} | "
+          f"n_train={len(tr)} n_test={len(te)}")
 
     print("\n=== LINEAR POSITION PROBE (ridge, world units, held-out) ===")
-    print(f"{'features':<22}{'train_err':>10}{'test_err':>10}{'best_lam':>10}{'R2_test':>9}")
+    print(f"{'features':<26}{'train_err':>10}{'test_err':>10}{'best_lam':>10}{'R2_test':>9}")
     for name, Xtr, Xte in [
-        ("POOLED latent (G1)", pooled_tr.to(device), pooled_te.to(device)),
-        ("FULL token grid",    grid_tr.to(device),   grid_te.to(device)),
-        ("RAW pixels (control)", pix_tr,             pix_te),
+        ("POOLED latent (G1)",      pooled_tr.to(device), pooled_te.to(device)),
+        ("SPATIAL 2x2 (option-2)",  g2_tr.to(device),     g2_te.to(device)),
+        ("SPATIAL 4x4 (option-2)",  g4_tr.to(device),     g4_te.to(device)),
+        ("FULL token grid",         grid_tr.to(device),   grid_te.to(device)),
+        ("RAW pixels (control)",    pix_tr,               pix_te),
     ]:
         etr, ete, lam, r2 = ridge_probe(Xtr, Ytr, Xte, Yte)
-        print(f"{name:<22}{etr:>10.3f}{ete:>10.3f}{lam:>10.1f}{r2:>9.3f}")
+        print(f"{name:<26}{etr:>10.3f}{ete:>10.3f}{lam:>10.1f}{r2:>9.3f}")
 
     print("\n=== INTER-FRAME MOTION (mean |dpos| world units, within episodes) ===")
     ms = motion_stats(positions, starts, total)

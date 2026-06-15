@@ -76,6 +76,15 @@ class TemporalHierWorldModel(nn.Module):
         self.op_pred_proj = _pred_proj()
         self.tac_pred_proj = _pred_proj()
         self.str_pred_proj = _pred_proj()
+        # Inverse-dynamics head: predict the action between two pooled latents. Trained on
+        # the NON-detached pooled latent, it FORCES the compact readout (CLS or mean) to
+        # encode the controllable agent state -- the pressure that pure next-latent pred +
+        # SIGReg lack, which left the SSL pooled latent position-blind (G1 fail). Actions
+        # here are the agent's own experience (proprioception), not external supervision,
+        # so it stays label-free in the JEPA sense; for passive video this becomes a LATENT
+        # action inferred from adjacent frames (AdaWorld/LAM/CLAW). Used in --inv-dyn.
+        self.d_action = d_action
+        self.inv_head = mlp(2 * d_model, d_model, d_action)
         self.register_buffer("pos_mean", torch.tensor([5.0, 5.0]))
         self.register_buffer("pos_std", torch.tensor([3.0, 3.0]))
 
@@ -91,6 +100,11 @@ class TemporalHierWorldModel(nn.Module):
     def tok_pool(self, t):
         """[B,W,N,D] -> [B,W,D] (token-dim pool). CLS index 0 or mean, matching pool()."""
         return t[:, :, 0] if self.use_cls_pool else t.mean(dim=2)
+
+    def inverse_action(self, zp_t, zp_next):
+        """Inverse dynamics: predict the action from a pair of pooled latents.
+        zp_t, zp_next: [...,D] -> action logits [...,d_action]."""
+        return self.inv_head(torch.cat([zp_t, zp_next], dim=-1))
 
     def decode_pos_norm(self, z): return self.pos_head(self.pool(z) if z.dim() == 3 else z)
     def decode_pos(self, z): return self.decode_pos_norm(z) * self.pos_std + self.pos_mean

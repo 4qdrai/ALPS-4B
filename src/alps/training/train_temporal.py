@@ -55,6 +55,10 @@ def train(args):
         args.lewm_ssl = False
     if not hasattr(args, "cls_pool"):
         args.cls_pool = False
+    if not hasattr(args, "inv_dyn"):
+        args.inv_dyn = False
+    if not hasattr(args, "inv_weight"):
+        args.inv_weight = 1.0
     if args.lewm_ssl:
         # LeWM-faithful research mode: pure SSL (no labels), SIGReg-only, no stop-grad,
         # no VICReg. (Open: collapses on the trivial Two-Rooms task; see SIGREG_FINDINGS.)
@@ -97,7 +101,7 @@ def train(args):
     for epoch in range(1, args.epochs + 1):
         t0 = time.perf_counter()
         order = rng.permutation(n)
-        agg = {k: 0.0 for k in ["loss", "op", "dyn", "pos", "tac", "str", "vq", "sub", "sig", "col"]}
+        agg = {k: 0.0 for k in ["loss", "op", "dyn", "pos", "tac", "str", "vq", "sub", "sig", "col", "inv"]}
         nb = 0
         for b0 in range(0, n - args.batch_size + 1, args.batch_size):
             bw = FIDX[order[b0:b0 + args.batch_size]]      # [B,W]
@@ -111,7 +115,8 @@ def train(args):
             z = z.reshape(B, W, N, D)
             pos = positions[fl].to(device).reshape(B, W, 2)
             pos_n = (pos - model.pos_mean) / model.pos_std
-            a = F.one_hot(torch.from_numpy(ba).to(device), 4).float()   # [B,W,4]
+            a_idx = torch.from_numpy(ba).to(device)                     # [B,W] action indices
+            a = F.one_hot(a_idx, 4).float()                             # [B,W,4]
 
             # operative (trains encoder); pos decoded from per-frame pooled tokens
             op_pred = model.op_predict_window(z, a)                      # [B,W,N,D]
@@ -186,22 +191,34 @@ def train(args):
                 L_sig = model.lambda_sigreg * (model.sigreg(z_pool) + model.sigreg(h_flat) + model.sigreg(s_flat)) / nr
                 L_col = var_cov_reg(z_pool) + var_cov_reg(h_flat) + var_cov_reg(s_flat)
 
+            # ── inverse dynamics (forces the COMPACT pooled latent to encode the agent) ──
+            # On the NON-detached pooled latent so gradients reach the encoder. This is the
+            # missing pressure under pure SSL: predicting a_k from (pool(z_k), pool(z_{k+1}))
+            # is only possible if the pooled latent encodes the controllable agent state.
+            if args.inv_dyn:
+                zp_seq = model.tok_pool(z)                                          # [B,W,D]
+                inv_logits = model.inverse_action(zp_seq[:, :W-1], zp_seq[:, 1:])   # [B,W-1,A]
+                L_inv = F.cross_entropy(inv_logits.reshape(-1, inv_logits.shape[-1]),
+                                        a_idx[:, :W-1].reshape(-1))
+            else:
+                L_inv = torch.zeros((), device=device)
+
             loss = (L_op + args.dyn_weight * L_dyn + args.pos_weight * (L_pos + L_tacpos)
                     + L_tac + L_str + vq_tot + L_sub + L_sig + 0.01 * moe_tot
-                    + args.collapse_weight * L_col)
+                    + args.collapse_weight * L_col + args.inv_weight * L_inv)
             opt.zero_grad(set_to_none=True); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step()
 
             agg["loss"] += loss.item(); agg["op"] += L_op.item(); agg["dyn"] += L_dyn.item()
             agg["pos"] += L_pos.item(); agg["tac"] += float(L_tac); agg["str"] += float(L_str)
             agg["vq"] += float(vq_tot); agg["sub"] += float(L_sub)
-            agg["sig"] += float(L_sig); nb += 1
+            agg["sig"] += float(L_sig); agg["inv"] += float(L_inv); nb += 1
 
         nb = max(1, nb)
         print(f"  ep {epoch:03d}/{args.epochs:03d} | loss {agg['loss']/nb:.3f} | op {agg['op']/nb:.3f} "
               f"dyn {agg['dyn']/nb:.3f} pos {agg['pos']/nb:.3f} tac {agg['tac']/nb:.3f} "
               f"str {agg['str']/nb:.3f} vq {agg['vq']/nb:.3f} sub {agg['sub']/nb:.3f} "
-              f"sig {agg['sig']/nb:.3f} | {time.perf_counter()-t0:.1f}s")
+              f"sig {agg['sig']/nb:.3f} inv {agg['inv']/nb:.3f} | {time.perf_counter()-t0:.1f}s")
 
     if args.save_model:
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
@@ -251,6 +268,11 @@ def build_parser():
                     help="LeWM-exact [CLS]-token readout instead of mean-pooling tokens. "
                          "Mean-pool dilutes the spatially-localized agent -> pure-SSL G1 "
                          "fails; the [CLS] token attends and selects it.")
+    ap.add_argument("--inv-dyn", action="store_true",
+                    help="Inverse-dynamics auxiliary: predict action from (pool(z_t),pool(z_t+1)) "
+                         "on the non-detached pooled latent. Forces the compact readout to encode "
+                         "the controllable agent state -> fixes pure-SSL G1 position-blindness.")
+    ap.add_argument("--inv-weight", type=float, default=1.0, help="weight of the inverse-dynamics loss")
     ap.add_argument("--self-supervised", action="store_true",
                     help="LeWM-faithful: zero position/dynamics supervision; encoder learns "
                          "only from feature prediction + collapse prevention (probe at eval)")
