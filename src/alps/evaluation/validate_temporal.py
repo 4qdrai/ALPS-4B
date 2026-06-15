@@ -141,6 +141,84 @@ def hist_greedy_action_latent(buf, sub_latent, device):
 
 
 @torch.no_grad()
+def fit_ridge_decode(X, Y, device, lam=10.0):
+    """Closed-form ridge LINEAR decoder X->position. Linear is enough (the spatial readout
+    is linearly position-decodable, R^2 0.92) and far more reliable on high-dim readouts
+    than the small MLP probe. Returns fn([*,d]) -> [*,2] world units. This is the frozen
+    'trained decoder' the predictor-based control reads through (standard JEPA protocol)."""
+    X = X.to(device).float(); Y = Y.to(device).float()
+    mu, sd = X.mean(0, keepdim=True), X.std(0, keepdim=True) + 1e-6
+    Xs = torch.cat([(X - mu) / sd, torch.ones(len(X), 1, device=device)], 1)
+    A = Xs.t() @ Xs
+    eye = torch.eye(A.shape[0], device=device); eye[-1, -1] = 0.0
+    Wm = torch.linalg.solve(A + lam * eye, Xs.t() @ Y)
+    def fn(z):
+        z = z.to(device).float()
+        flat = z.reshape(-1, z.shape[-1])                                  # robust to [k,1,R] etc.
+        zs = torch.cat([(flat - mu) / sd, torch.ones(len(flat), 1, device=device)], 1)
+        return (zs @ Wm).reshape(*z.shape[:-1], 2)
+    return fn
+
+
+@torch.no_grad()
+def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
+                        strategy, max_steps=140):
+    """4B edge under PURE SSL via predictor-based DECODED control on the spatial readout.
+    The TRAINED op predictor predicts the next latent grid; decode_state (spatial_readout
+    + frozen ridge) reads the predicted agent POSITION (action-sensitive, unlike the coarse
+    latent nearest-neighbour); the agent steers toward the graph waypoint position.
+      operative : greedy to the decoded GOAL position (System 1) -> stalls behind the wall.
+      graph     : follow the position-faithful latent-graph waypoints through the door."""
+    env = TwoRoomsEnv(seed=seed); obs = env.reset(start_room=sr, goal_room=gr)
+    goal_xy = obs["target"].copy()
+    is_cross = (sr != gr); opt = _oracle_path_len(sr, gr, seed)
+    buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
+    eg = TwoRoomsEnv(seed=seed); eg.reset(start_room=gr, goal_room=gr); eg.agent_pos = goal_xy.copy()
+    goal_grid = model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))
+    goal_pos = decode_state(goal_grid)[0].cpu().numpy()
+    waypoints, wp = [goal_pos], 0
+    if strategy == "graph":
+        sn = graph.node_of_latent(readout(buf.cur_z).squeeze(0).cpu().numpy())
+        gn = graph.node_of_latent(readout(goal_grid).squeeze(0).cpu().numpy())
+        path = graph.shortest_path(sn, gn) or [gn]
+        seg = path[1:] if len(path) > 1 else path[:]
+        waypoints = [graph.decoded_xy[n] for n in seg] + [goal_pos]
+    for s in range(max_steps):
+        sub = waypoints[min(wp, len(waypoints) - 1)]
+        best_a, best_d = 0, 1e30
+        for a in range(4):
+            pos_a = buf.decode_next_for_action(decode_state, a).cpu().numpy()  # PREDICTED decoded pos
+            d = float(np.linalg.norm(pos_a - sub))
+            if d < best_d:
+                best_d, best_a = d, a
+        obs, _, done, info = env.step(best_a); buf.push(obs_to_frame(obs, device), best_a)
+        if strategy == "graph" and wp < len(waypoints) - 1:
+            cur_pos = decode_state(buf.cur_z)[0].cpu().numpy()                 # decoded, not true
+            if np.linalg.norm(cur_pos - waypoints[wp]) < REACH:
+                wp += 1
+        if done or info["distance"] < REACH:
+            return EpisodeResult(True, s + 1, opt, s + 1, is_cross)
+    return EpisodeResult(False, max_steps, opt, max_steps, is_cross)
+
+
+@torch.no_grad()
+def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, readout,
+                            device, n_episodes):
+    """3-tier ablation under pure SSL with predictor-based decoded control on the spatial
+    readout: operative (greedy) vs strategic (coarse graph) vs tactical (fine graph)."""
+    cfgs = [(i % 2, (i % 2) if (i // 2) % 2 == 0 else 1 - (i % 2), 1000 + i) for i in range(n_episodes)]
+    plan = {"operative": (None, "operative"), "strategic": (coarse_graph, "graph"),
+            "tactical": (fine_graph, "graph")}
+    out = {}
+    for name, (gph, strat) in plan.items():
+        res = [run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout,
+                                   gph, strat) for sr, gr, seed in cfgs]
+        out[name] = summarize(res)
+    out["oracle"] = float(np.mean([_bfs_oracle_cfg(sr, gr, seed, False) for sr, gr, seed in cfgs]))
+    return out
+
+
+@torch.no_grad()
 def build_graph_raw(model, decode_op, frames, positions, room_ids, starts, total, device,
                     k=24, S=4, max_eps=500, readout=None):
     """Build a latent transition graph (concept landmarks + observed edges) directly
@@ -548,6 +626,7 @@ def run(args):
     # pool. The pool discards the small agent under pure SSL (G1 random) so graph nodes
     # collapse and routing fails; the spatial readout keeps the agent -> position-faithful
     # nodes -> the hierarchy routes WITHOUT supervision. decode_op/probe refit on that space.
+    featurize = lambda z: z
     if getattr(args, "spatial", False):
         g = args.spatial_grid
         readout4b = lambda z: model.spatial_readout(z, grid=g)
@@ -560,20 +639,28 @@ def run(args):
                 out_f.append(readout4b(model.encode_frame(frames[b].to(device).float() / 255.0)).cpu())
             return torch.cat(out_f)
 
-        decode_op4b = fit_probe(_gather_readout(tr), Ptr, device)        # frozen probe on spatial readout
-        sg1 = (decode_op4b(_gather_readout(va).to(device)) - Pva.to(device)).norm(dim=1).mean().item()
-        out["G1_spatial"] = {"decode_err_world_units": sg1, "grid": g, "pooled_G1": g1}
+        ridge_decode = fit_ridge_decode(_gather_readout(tr), Ptr, device)   # frozen ridge on spatial readout
+        sg1 = (ridge_decode(_gather_readout(va)) - Pva.to(device)).norm(dim=1).mean().item()
+        out["G1_spatial"] = {"decode_err_world_units": sg1, "grid": g, "pooled_G1": g1, "passed": sg1 < 0.3}
         print(f"--- [SPATIAL {g}x{g}] G1_spatial {sg1:.3f}wu  (global-pool G1 {g1:.3f}wu) ---")
-    else:
-        readout4b, decode_op4b = None, decode_op
+        # predictor-based decoded control: predicted grid -> spatial readout -> decoded pos
+        decode_state = lambda grid: ridge_decode(model.spatial_readout(grid, grid=g))
 
-    def build(k):
-        return build_graph_raw(model, decode_op4b, frames, positions, room_ids, starts,
-                               total, device, k=k, S=max(1, args.stride // 2), readout=readout4b)
-    featurize = lambda z: z
-    coarse_graph, fine_graph = build(args.coarse_k), build(args.fine_k)
-    fb = gate_four_brain(model, W, coarse_graph, fine_graph, featurize, decode_op4b, device,
-                         args.n_episodes, complex_mode=args.complex, readout=readout4b)
+        def build_sp(k):
+            gph = build_graph_raw(model, ridge_decode, frames, positions, room_ids, starts,
+                                  total, device, k=k, S=max(1, args.stride // 2), readout=readout4b)
+            gph.decoded_xy = ridge_decode(torch.tensor(gph.centroids, device=device)).cpu().numpy()
+            return gph
+        coarse_graph, fine_graph = build_sp(args.coarse_k), build_sp(args.fine_k)
+        fb = gate_four_brain_spatial(model, W, coarse_graph, fine_graph,
+                                     decode_state, readout4b, device, args.n_episodes)
+    else:
+        def build(k):
+            return build_graph_raw(model, decode_op, frames, positions, room_ids, starts,
+                                   total, device, k=k, S=max(1, args.stride // 2))
+        coarse_graph, fine_graph = build(args.coarse_k), build(args.fine_k)
+        fb = gate_four_brain(model, W, coarse_graph, fine_graph, featurize, decode_op,
+                             device, args.n_episodes, complex_mode=args.complex)
     out["G_4brain"] = fb
 
     # H3 — VQ concept-graph ablation (--vq-graph)
