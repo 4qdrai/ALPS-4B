@@ -45,6 +45,13 @@ ACTIVE_EXPERTS="${ACTIVE_EXPERTS:-2}"
 N_EVAL="${N_EVAL:-200}"
 COARSE_K="${COARSE_K:-8}"
 FINE_K="${FINE_K:-24}"
+# SPATIAL readout for the four-brain control. The global pool discards the small agent
+# under pure SSL (pooled G1 stays random even at scale -- it's the READOUT, not model
+# size), so the hierarchy plans/controls on a coarse gxg SPATIAL readout where position
+# is recoverable (validated locally: ridge R^2 0.92). g=8 = full token grid (sharpest
+# decode); set SPATIAL_GRID=0 to disable and fall back to the global pool.
+SPATIAL_GRID="${SPATIAL_GRID:-8}"
+SPATIAL_ARGS=""; [ "$SPATIAL_GRID" != "0" ] && SPATIAL_ARGS="--spatial --spatial-grid $SPATIAL_GRID"
 FB_CAL="${FB_CAL:-60}"; FB_EVAL="${FB_EVAL:-100}"
 CX_EPISODES="${CX_EPISODES:-3000}"
 CX_BFS_FRACTION="${CX_BFS_FRACTION:-0.5}"
@@ -78,10 +85,10 @@ if [ ! -f "$MODEL" ] || [ -n "${RETRAIN:-}" ]; then
   echo "--- [2/8] training FULL hierarchy, PURE SSL (--lewm-ssl) ---"
   python -m alps.training.train_temporal --data-path "$DATA" --out "$MODEL" $TRAIN_ARGS
 fi
-echo "--- [2/8] GO/NO-GO: G1 + collapse + four-brain on the UNSUPERVISED encoder ---"
+echo "--- [2/8] GO/NO-GO: G1_spatial + collapse + four-brain (spatial readout) ---"
 python -m alps.evaluation.validate_temporal \
     --model-path "$MODEL" --data-path "$DATA" --n-episodes "$N_EVAL" \
-    --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT"
+    --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" $SPATIAL_ARGS
 
 # ---- 3. Abstraction gates: strategic/tactical predict latent + emit goals ----
 echo "--- [3/8] abstraction-layer gates (unsupervised) ---"
@@ -103,11 +110,11 @@ python -m alps.evaluation.validate_temporal --complex \
     --model-path "$CX_MODEL" --data-path "$CX_DATA" --n-episodes "$N_EVAL" \
     --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" \
     --h4-unsup-key --vq-graph --h2-emitter
-# Simple mode: H3 + H2 gates (no key)
+# Simple mode: H3 + H2 gates (no key) + spatial-readout four-brain edge
 python -m alps.evaluation.validate_temporal \
     --model-path "$MODEL" --data-path "$DATA" --n-episodes "$N_EVAL" \
     --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" \
-    --vq-graph --h2-emitter
+    --vq-graph --h2-emitter $SPATIAL_ARGS
 
 # ---- 5. Fourth Brain: monitors -> escalation -> fallback (unsupervised) ------
 echo "--- [5/8] Fourth Brain, simple + complex (H4 label-free key in complex) ---"
@@ -152,5 +159,11 @@ echo "  moe_specialization{,_complex}.json (H11 expert routing + knockout)"
 echo "  rag_selflearning.json        (H7 surprise-gated RAG-in-the-loop)"
 echo "  ../videos_unsup/fourbrain_simple_*.{gif,mp4}, fourbrain_complex_*.{gif,mp4}  (proof clips)"
 echo ""
-echo "READ FIRST: $OUT/temporal_gates.json -> G1. If G1<0.30 the architecture is"
-echo "validated end-to-end WITHOUT labels. If high, raise EPOCHS/EPISODES/STRIDE."
+echo "READ FIRST: $OUT/temporal_gates.json"
+echo "  * G1_spatial  -> the unsupervised position readout (spatial gxg). If <0.30 the"
+echo "    pure-SSL latent is identifiable WITHOUT labels (pooled G1 stays random -- that"
+echo "    is the readout, not a failure)."
+echo "  * G_4brain    -> cross-room edge: operative(System-1) ~0 << strategic/tactical"
+echo "    (graph) = the hierarchy edge, unsupervised + SIGReg + predictor-decoded."
+echo "  If G1_spatial is high, raise EPOCHS/EPISODES/STRIDE (sharper predictor) or"
+echo "  SPATIAL_GRID (finer readout)."

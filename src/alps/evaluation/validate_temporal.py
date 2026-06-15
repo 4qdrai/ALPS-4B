@@ -627,7 +627,12 @@ def run(args):
     # collapse and routing fails; the spatial readout keeps the agent -> position-faithful
     # nodes -> the hierarchy routes WITHOUT supervision. decode_op/probe refit on that space.
     featurize = lambda z: z
-    if getattr(args, "spatial", False):
+    # gate_four_brain_spatial is simple cross-room only; complex (key->door->goal) decoded
+    # control is a follow-up, so --spatial is ignored under --complex (pooled gate runs).
+    spatial_on = getattr(args, "spatial", False) and not args.complex
+    if getattr(args, "spatial", False) and args.complex:
+        print("[note] --spatial is simple-mode only for now; complex four-brain uses the pooled gate.")
+    if spatial_on:
         g = args.spatial_grid
         readout4b = lambda z: model.spatial_readout(z, grid=g)
 
