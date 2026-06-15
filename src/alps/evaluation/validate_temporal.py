@@ -78,9 +78,13 @@ def gather(model, frames, positions, room_ids, idx, device, chunk=128):
 # ---------------- history-aware control ----------------
 class HistoryBuffer:
     """Rolling buffer of the last W frame latents + actions for the causal predictor."""
-    def __init__(self, model, W, device):
+    def __init__(self, model, W, device, readout=None):
         self.m, self.W, self.dev = model, W, device
         self.z, self.a = [], []
+        # `readout(z[1,N,D]) -> [1,R]` maps tokens to the COMPACT control state. Default =
+        # model.pool (one global vector). Pass model.spatial_readout for position-faithful
+        # control under pure SSL (the global pool discards the small agent; the grid keeps it).
+        self.readout = readout if readout is not None else model.pool
 
     def reset(self, frame):
         z0 = self.m.encode_frame(frame.unsqueeze(0))     # [1,N,D]
@@ -102,11 +106,12 @@ class HistoryBuffer:
 
     @torch.no_grad()
     def pooled_next_for_action(self, candidate_a):
-        """Pooled PREDICTED next latent for an action (LABEL-FREE control: no decoder)."""
+        """PREDICTED next control state for an action (LABEL-FREE: no decoder). Uses the
+        configured readout (pool by default, spatial_readout in --spatial mode)."""
         z_hist = torch.stack(self.z, dim=1)
         a_idx = self.a[1:] + [candidate_a]
         a_hist = F.one_hot(torch.tensor(a_idx, device=self.dev), 4).float().unsqueeze(0)
-        return self.m.pool(self.m.op_predict_next(z_hist, a_hist)).squeeze(0)   # [D]
+        return self.readout(self.m.op_predict_next(z_hist, a_hist)).squeeze(0)   # [R]
 
     @property
     def cur_z(self): return self.z[-1]
@@ -137,12 +142,15 @@ def hist_greedy_action_latent(buf, sub_latent, device):
 
 @torch.no_grad()
 def build_graph_raw(model, decode_op, frames, positions, room_ids, starts, total, device,
-                    k=24, S=4, max_eps=500):
+                    k=24, S=4, max_eps=500, readout=None):
     """Build a latent transition graph (concept landmarks + observed edges) directly
     from raw episode frames using the temporal model's pooled latents. Strategic
     routing = Dijkstra shortest path over this graph (goal-conditioned by
-    construction), which avoids the raw sub-goal head's hindsight OOD failure."""
+    construction), which avoids the raw sub-goal head's hindsight OOD failure.
+    `readout` (default model.pool) sets the node space; pass model.spatial_readout for
+    POSITION-FAITHFUL nodes under pure SSL (decode_op must match the readout's dim)."""
     from alps.core.latent_graph import LatentGraph, _kmeans
+    readout = readout if readout is not None else model.pool
     per_z, per_xy, per_rm = [], [], []
     E = starts.shape[0]
     for e in range(min(E, max_eps)):
@@ -151,7 +159,7 @@ def build_graph_raw(model, decode_op, frames, positions, room_ids, starts, total
         if len(seq) < 2:
             continue
         f = frames[torch.tensor(seq)].to(device).float() / 255.0
-        per_z.append(model.pool(model.encode_frame(f)).cpu().numpy())
+        per_z.append(readout(model.encode_frame(f)).cpu().numpy())
         per_xy.append(positions[torch.tensor(seq)].numpy())
         per_rm.append(room_ids[torch.tensor(seq)].numpy())
     Z = np.concatenate(per_z); XY = np.concatenate(per_xy); RM = np.concatenate(per_rm)
@@ -329,7 +337,7 @@ def build_graph_semantic(model, decode_op, key_w, key_scale, frames, positions, 
 
 @torch.no_grad()
 def run_episode_4b(model, W, seed, sr, gr, device, decode_op, graph, featurize,
-                   strategy, complex_mode=False, max_steps=140):
+                   strategy, complex_mode=False, max_steps=140, readout=None):
     """LABEL-FREE control (Option B): planning + acting entirely in LATENT space, no
     position decoder in the loop. strategy in {operative, graph}:
       operative : 1-step greedy toward the GOAL LATENT (System 1). Stalls at the wall /
@@ -345,7 +353,8 @@ def run_episode_4b(model, W, seed, sr, gr, device, decode_op, graph, featurize,
     goal_xy = obs["target"].copy()
     is_cross = True if complex_mode else (sr != gr)
     opt = max_steps if complex_mode else _oracle_path_len(sr, gr, seed)
-    buf = HistoryBuffer(model, W, device); buf.reset(obs_to_frame(obs, device))
+    readout = readout if readout is not None else model.pool
+    buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
 
     # GOAL is specified as a goal IMAGE -> goal LATENT (no labels).
     eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
@@ -353,12 +362,12 @@ def run_episode_4b(model, W, seed, sr, gr, device, decode_op, graph, featurize,
     eg.agent_pos = goal_xy.copy()
     if complex_mode:
         eg.has_key = True
-    goal_lat = model.pool(model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))).squeeze(0)
+    goal_lat = readout(model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))).squeeze(0)
 
     seg_nodes, lat_waypoints, wp, cents = [], None, 0, None
     if strategy == "graph":
-        cents = torch.tensor(graph.centroids, device=device, dtype=torch.float32)  # [k,D] latent
-        zs = model.pool(buf.cur_z).squeeze(0).cpu().numpy()
+        cents = torch.tensor(graph.centroids, device=device, dtype=torch.float32)  # [k,R] readout
+        zs = readout(buf.cur_z).squeeze(0).cpu().numpy()
         sn = graph.node_of_latent(zs); gn = graph.node_of_latent(goal_lat.cpu().numpy())
         path = graph.shortest_path(sn, gn) or [gn]
         seg_nodes = path[1:] if len(path) > 1 else path[:]
@@ -370,7 +379,7 @@ def run_episode_4b(model, W, seed, sr, gr, device, decode_op, graph, featurize,
         obs, _, done, info = env.step(a); buf.push(obs_to_frame(obs, device), a)
         # advance on Voronoi-cell entry in LATENT space (nearest centroid == target node)
         if seg_nodes and wp < len(seg_nodes):
-            cur = model.pool(buf.cur_z).squeeze(0)
+            cur = readout(buf.cur_z).squeeze(0)
             if int((cents - cur).norm(dim=1).argmin()) == seg_nodes[wp]:
                 wp += 1
         reached = done if complex_mode else (done or info["distance"] < REACH)  # ENV oracle = task metric
@@ -397,7 +406,7 @@ def _bfs_oracle_cfg(sr, gr, seed, complex_mode, max_steps=250):
 
 
 def gate_four_brain(model, W, coarse_graph, fine_graph, featurize, decode_op, device,
-                    n_episodes, complex_mode=False):
+                    n_episodes, complex_mode=False, readout=None):
     """3-tier ablation + BFS oracle (success rates). The tiers are control at three
     abstraction scales on the FROZEN latent space:
       operative : 1-step greedy to goal (no plan).
@@ -412,7 +421,7 @@ def gate_four_brain(model, W, coarse_graph, fine_graph, featurize, decode_op, de
     out = {}
     for name, (gph, strat) in plan.items():
         res = [run_episode_4b(model, W, seed, sr, gr, device, decode_op, gph, featurize,
-                              strat, complex_mode) for sr, gr, seed in cfgs]
+                              strat, complex_mode, readout=readout) for sr, gr, seed in cfgs]
         out[name] = summarize(res)
     out["oracle"] = float(np.mean([_bfs_oracle_cfg(sr, gr, seed, complex_mode) for sr, gr, seed in cfgs]))
     return out
@@ -535,13 +544,36 @@ def run(args):
     # (few latent landmarks, stalls), tactical = FINE graph (reachable latent sub-regions,
     # threads). Small graph stride so the key-pickup transition is captured -> the latent
     # graph routes through key-acquisition on its own. Same in simple and complex.
+    # --spatial: control on a coarse SPATIAL readout (grid×grid) instead of the global
+    # pool. The pool discards the small agent under pure SSL (G1 random) so graph nodes
+    # collapse and routing fails; the spatial readout keeps the agent -> position-faithful
+    # nodes -> the hierarchy routes WITHOUT supervision. decode_op/probe refit on that space.
+    if getattr(args, "spatial", False):
+        g = args.spatial_grid
+        readout4b = lambda z: model.spatial_readout(z, grid=g)
+
+        @torch.no_grad()
+        def _gather_readout(idx):
+            out_f = []
+            for c0 in range(0, len(idx), 128):
+                b = torch.as_tensor(np.asarray(idx[c0:c0 + 128]))
+                out_f.append(readout4b(model.encode_frame(frames[b].to(device).float() / 255.0)).cpu())
+            return torch.cat(out_f)
+
+        decode_op4b = fit_probe(_gather_readout(tr), Ptr, device)        # frozen probe on spatial readout
+        sg1 = (decode_op4b(_gather_readout(va).to(device)) - Pva.to(device)).norm(dim=1).mean().item()
+        out["G1_spatial"] = {"decode_err_world_units": sg1, "grid": g, "pooled_G1": g1}
+        print(f"--- [SPATIAL {g}x{g}] G1_spatial {sg1:.3f}wu  (global-pool G1 {g1:.3f}wu) ---")
+    else:
+        readout4b, decode_op4b = None, decode_op
+
     def build(k):
-        return build_graph_raw(model, decode_op, frames, positions, room_ids, starts,
-                               total, device, k=k, S=max(1, args.stride // 2))
+        return build_graph_raw(model, decode_op4b, frames, positions, room_ids, starts,
+                               total, device, k=k, S=max(1, args.stride // 2), readout=readout4b)
     featurize = lambda z: z
     coarse_graph, fine_graph = build(args.coarse_k), build(args.fine_k)
-    fb = gate_four_brain(model, W, coarse_graph, fine_graph, featurize, decode_op, device,
-                         args.n_episodes, complex_mode=args.complex)
+    fb = gate_four_brain(model, W, coarse_graph, fine_graph, featurize, decode_op4b, device,
+                         args.n_episodes, complex_mode=args.complex, readout=readout4b)
     out["G_4brain"] = fb
 
     # H3 — VQ concept-graph ablation (--vq-graph)
@@ -977,6 +1009,11 @@ def main():
     ap.add_argument("--fine-k", type=int, default=24,
                     help="TACTICAL (fine) landmarks: reachable sub-regions that thread doors.")
     ap.add_argument("--complex", action="store_true", help="4-room key-gated complex mode")
+    ap.add_argument("--spatial", action="store_true",
+                    help="Four-brain control on a coarse SPATIAL readout (grid x grid) "
+                         "instead of the global pool, so graph nodes are position-faithful "
+                         "under pure SSL (the pool discards the small agent). Reports G1_spatial.")
+    ap.add_argument("--spatial-grid", type=int, default=4, help="spatial readout grid size (g x g)")
     ap.add_argument("--h4-unsup-key", action="store_true",
                     help="H4: run label-free key detector and report G_H4 gate "
                          "(precision/recall vs ground-truth labels, measurement only).")
