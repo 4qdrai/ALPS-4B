@@ -49,40 +49,61 @@ from alps.evaluation.validate_hierarchy import fit_probe
 from alps.evaluation.validate_temporal import (
     load_model, load_has_keys, gather, HistoryBuffer, hist_greedy_action_latent,
     build_graph_raw, build_graph_semantic, make_featurize, fit_key_probe, REACH,
-    detect_key_pickups_unsup, gate_h4_key_detector)
+    detect_key_pickups_unsup, gate_h4_key_detector, fit_ridge_decode)
 
 TIERS = ("operative", "tactical", "strategic", "fallback")
 
 
 # ---------------- helpers ----------------
 @torch.no_grad()
-def predicted_pooled(model, buf, a, device):
-    """Pooled latent the operative predictor expects after action `a`."""
+def predicted_pooled(model, buf, a, device, readout=None):
+    """The readout latent the operative predictor expects after action `a` (pool by
+    default; spatial readout in --spatial mode)."""
+    readout = readout if readout is not None else model.pool
     z_hist = torch.stack(buf.z, dim=1)                                   # [1,W,N,D]
     a_idx = buf.a[1:] + [a]
     a_hist = F.one_hot(torch.tensor(a_idx, device=device), 4).float().unsqueeze(0)
-    return model.pool(model.op_predict_next(z_hist, a_hist)).squeeze(0)  # [D]
+    return readout(model.op_predict_next(z_hist, a_hist)).squeeze(0)     # [R]
 
 
 @torch.no_grad()
-def goal_latent(model, seed, gr, goal_xy, complex_mode, device):
-    """Goal specified as a goal IMAGE -> goal LATENT (no labels)."""
+def _goal_grid(model, seed, gr, goal_xy, complex_mode, device):
+    """Render the goal IMAGE (agent at goal, key held in complex) -> encoded grid."""
     eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
     eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
     eg.agent_pos = goal_xy.copy()
     if complex_mode:
         eg.has_key = True
-    return model.pool(model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))).squeeze(0)
+    return model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))
 
 
 @torch.no_grad()
-def plan_path(model, graph, buf, goal_lat, device):
+def goal_latent(model, seed, gr, goal_xy, complex_mode, device, readout=None):
+    """Goal IMAGE -> goal readout latent (no labels)."""
+    readout = readout if readout is not None else model.pool
+    return readout(_goal_grid(model, seed, gr, goal_xy, complex_mode, device)).squeeze(0)
+
+
+@torch.no_grad()
+def plan_path(model, graph, buf, goal_lat, device, readout=None):
     """LABEL-FREE latent-graph plan: node indices from current node -> goal node (start
     skipped). The latent transition graph routes through key-acquisition on its own."""
-    sn = graph.node_of_latent(model.pool(buf.cur_z).squeeze(0).cpu().numpy())
+    readout = readout if readout is not None else model.pool
+    sn = graph.node_of_latent(readout(buf.cur_z).squeeze(0).cpu().numpy())
     gn = graph.node_of_latent(goal_lat.cpu().numpy())
     path = graph.shortest_path(sn, gn) or [gn]
     return path[1:] if len(path) > 1 else path[:]
+
+
+@torch.no_grad()
+def plan_waypoints(model, graph, featurize, buf, goal_xy, seed, gr, complex_mode, has_key,
+                   device, readout=None):
+    """LABEL-FREE decoded waypoint POSITIONS along the start->goal latent-graph path
+    (+ the goal). Used by the RAG control loop."""
+    readout = readout if readout is not None else model.pool
+    zg = readout(_goal_grid(model, seed, gr, goal_xy, complex_mode, device)).squeeze(0).cpu().numpy()
+    zs = readout(buf.cur_z).squeeze(0).cpu().numpy()
+    return list(graph.waypoints(zs, zg)) + [goal_xy.copy()]
 
 
 def safe_node_of(graph):
@@ -110,47 +131,62 @@ def auroc(scores, labels):
 @torch.no_grad()
 def run_episode_fb(model, W, seed, sr, gr, device, graph, ZC, policy, thr=None,
                    complex_mode=False, max_steps=140, alarm_k=2, patience=4, grace=6,
-                   stall_w=8, fallback="record"):
-    """LABEL-FREE control (latent-space). policy in {operative, tactical, escalation}.
-    Monitors are all latent: m1 surprise (pred vs actual pooled latent), m2 off-manifold
-    (latent dist to nearest landmark), m3 stall (pooled-latent displacement over a window).
-    fallback: 'record' note would-trigger; 'on' route to the safe node; 'random' baseline."""
+                   stall_w=8, fallback="record", readout=None, decode_state=None):
+    """LABEL-FREE control. policy in {operative, tactical, escalation}. Monitors are all
+    on the readout latent: m1 surprise (pred vs actual), m2 off-manifold (dist to nearest
+    landmark), m3 stall (readout displacement over a window). fallback: 'record' note
+    would-trigger; 'on' route to the safe node; 'random' baseline. When decode_state is
+    given (--spatial), control is PREDICTOR-DECODED on the spatial readout (action chosen
+    by the predicted decoded POSITION) instead of latent nearest-neighbour."""
+    readout = readout if readout is not None else model.pool
     env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
     obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
-    buf = HistoryBuffer(model, W, device); buf.reset(obs_to_frame(obs, device))
-    goal_lat = goal_latent(model, seed, gr, goal_xy, complex_mode, device)
+    buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
+    goal_grid = _goal_grid(model, seed, gr, goal_xy, complex_mode, device)
+    goal_lat = readout(goal_grid).squeeze(0)
+    goal_pos = decode_state(goal_grid)[0].cpu().numpy() if decode_state is not None else None
     cents = torch.tensor(graph.centroids, device=device, dtype=torch.float32)
     safe = safe_node_of(graph)
 
     tier = 0 if policy in ("operative", "escalation") else 1
     seg, wp = ([], 0)
     if tier == 1:
-        seg = plan_path(model, graph, buf, goal_lat, device)
+        seg = plan_path(model, graph, buf, goal_lat, device, readout)
 
     m1s, m2s, m3s, alarms, tiers_used = [], [], [], [], {0}
     consec, since_esc = 0, grace
-    lat_hist = [model.pool(buf.cur_z).squeeze(0)]
+    lat_hist = [readout(buf.cur_z).squeeze(0)]
     fb_would, fb_active, fb_seg, fb_wp = None, False, None, 0
 
     def near_node(za):
         return int((cents - za).norm(dim=1).argmin())
 
     for s in range(max_steps):
+        # target NODE for this tier/fallback (None == steer to the goal)
         if fb_active and fallback == "on":
-            sub_lat = cents[fb_seg[min(fb_wp, len(fb_seg) - 1)]] if fb_seg else cents[safe]
+            tgt = fb_seg[min(fb_wp, len(fb_seg) - 1)] if fb_seg else safe
         elif tier == 0:
-            sub_lat = goal_lat
+            tgt = None
         else:
-            sub_lat = cents[seg[min(wp, len(seg) - 1)]] if wp < len(seg) else goal_lat
+            tgt = seg[min(wp, len(seg) - 1)] if wp < len(seg) else None
+        # act: random-walk fallback baseline / predictor-decoded (spatial) / latent nearest
         if fb_active and fallback == "random":
             a = int(np.random.RandomState(seed * 7919 + s).randint(0, 4))
+        elif decode_state is not None:
+            sub_pos = goal_pos if tgt is None else graph.decoded_xy[tgt]
+            a, best_d = 0, 1e30
+            for cand in range(4):
+                d = float(np.linalg.norm(buf.decode_next_for_action(decode_state, cand).cpu().numpy() - sub_pos))
+                if d < best_d:
+                    best_d, a = d, cand
         else:
+            sub_lat = goal_lat if tgt is None else cents[tgt]
             a = hist_greedy_action_latent(buf, sub_lat, device)
 
-        zp = predicted_pooled(model, buf, a, device)
+        zp = predicted_pooled(model, buf, a, device, readout)
         obs, _, done, info = env.step(a); buf.push(obs_to_frame(obs, device), a)
-        za = model.pool(buf.cur_z).squeeze(0); lat_hist.append(za)
+        za = readout(buf.cur_z).squeeze(0); lat_hist.append(za)
         m1 = float((zp - za).norm())
         m2 = float(torch.cdist(za.unsqueeze(0), ZC).min())
         m3 = float((lat_hist[-1] - lat_hist[-stall_w]).norm()) if len(lat_hist) > stall_w else float("inf")
@@ -210,7 +246,7 @@ def _result(success, steps, sr, gr, cx, m1s, m2s, m3s, alarms, fb_would, fb_acti
 
 @torch.no_grad()
 def run_episode_rag(model, W, seed, sr, gr, device, decode_op, graph, featurize, m1_thr,
-                    mode, complex_mode=False, max_steps=140):
+                    mode, complex_mode=False, max_steps=140, readout=None):
     """Latent-RAG in the control loop, gated by the SELF-MONITOR surprise signal m1.
       mode 'experience' : act; when surprise m1 > thr (the monitor fires), WRITE memory
                           key=context-latent, value=correction (actual_next - predicted).
@@ -221,29 +257,34 @@ def run_episode_rag(model, W, seed, sr, gr, device, decode_op, graph, featurize,
     env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
     obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
-    buf = HistoryBuffer(model, W, device); buf.reset(obs_to_frame(obs, device))
+    readout = readout if readout is not None else model.pool
+    buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
     waypoints = plan_waypoints(model, graph, featurize, buf, goal_xy, seed, gr,
-                               complex_mode, bool(obs.get("has_key", 0)), device)
+                               complex_mode, bool(obs.get("has_key", 0)), device, readout)
     wp = 0
     for s in range(max_steps):
         sub = torch.tensor(waypoints[min(wp, len(waypoints) - 1)], device=device, dtype=torch.float32)
         ctx = buf.cur_z                                         # context BEFORE the step
         z_hist = torch.stack(buf.z, dim=1)
-        best_a, best_d, best_pred = 0, 1e30, None
+        best_a, best_d, best_zn = 0, 1e30, None
         for a in range(4):
             a_idx = buf.a[1:] + [a]
             a_hist = F.one_hot(torch.tensor(a_idx, device=device), 4).float().unsqueeze(0)
             z_next = model.op_predict_next(z_hist, a_hist)
             if mode == "recall":
-                z_next = model.rag_correct(z_next, ctx)         # surprise-gated by RAG sim
+                z_next = model.rag_correct(z_next, ctx)         # d_model correction
             d = float((decode_op(z_next)[0] - sub).norm())
             if d < best_d:
-                best_d, best_a, best_pred = d, a, model.pool(z_next).squeeze(0)
+                best_d, best_a, best_zn = d, a, z_next
+        # surprise m1 on the READOUT (matches the calibrated threshold); the LatentRAG
+        # corrects the operative latent, so its key/value live in d_model -> use pool().
+        best_pred = readout(best_zn).squeeze(0)
         obs, _, done, info = env.step(best_a); buf.push(obs_to_frame(obs, device), best_a)
-        za = model.pool(buf.cur_z).squeeze(0)
+        za = readout(buf.cur_z).squeeze(0)
         m1 = float((best_pred - za).norm())
         if mode == "experience" and m1 > m1_thr:               # monitor fires -> memorize
-            model.rag.write_memory(model.pool(ctx).squeeze(0), za - best_pred)
+            model.rag.write_memory(model.pool(ctx).squeeze(0),
+                                   model.pool(buf.cur_z).squeeze(0) - model.pool(best_zn).squeeze(0))
         if wp < len(waypoints) - 1 and np.linalg.norm(obs["position"] - waypoints[wp]) < REACH:
             wp += 1
         if (done if complex_mode else (done or info["distance"] < REACH)):
@@ -252,7 +293,7 @@ def run_episode_rag(model, W, seed, sr, gr, device, decode_op, graph, featurize,
 
 
 def gate_rag_selflearning(model, W, device, decode_op, graph, featurize, m1_thr,
-                          n_episodes, complex_mode=False):
+                          n_episodes, complex_mode=False, readout=None):
     """H7 lifelong learning: surprise-gated WRITE (experience) then RETRIEVE (recall) on
     the SAME layouts must improve success with NO weight update; a disjoint nominal set
     checks for interference."""
@@ -263,7 +304,8 @@ def gate_rag_selflearning(model, W, device, decode_op, graph, featurize, m1_thr,
     model.rag.current_size.zero_()                             # clear episodic memory
     learn = cfgs(5000, n_episodes); ctrl = cfgs(6000, n_episodes)
     rag = lambda seed, sr, gr, mode: run_episode_rag(
-        model, W, seed, sr, gr, device, decode_op, graph, featurize, m1_thr, mode, complex_mode)
+        model, W, seed, sr, gr, device, decode_op, graph, featurize, m1_thr, mode,
+        complex_mode, readout=readout)
     ctrl_baseline = float(np.mean([rag(s, a, b, "recall") for a, b, s in ctrl]))  # empty memory
     exp = float(np.mean([rag(s, a, b, "experience") for a, b, s in learn]))       # writes on surprise
     mem = int(model.rag.current_size.item())
@@ -277,7 +319,7 @@ def gate_rag_selflearning(model, W, device, decode_op, graph, featurize, m1_thr,
 
 
 def gate_rag_lifelong_batches(model, W, device, decode_op, graph, featurize, m1_thr,
-                               n_episodes, n_batches=5, complex_mode=False):
+                               n_episodes, n_batches=5, complex_mode=False, readout=None):
     """H7 LIFELONG variant: iterate episode batches; after each batch's experience pass,
     recall improves on perturbed layouts; nominal layouts stay flat (no interference).
 
@@ -291,7 +333,8 @@ def gate_rag_lifelong_batches(model, W, device, decode_op, graph, featurize, m1_
             return [(0, 3, base + i) for i in range(n)]
         return [(i % 2, 1 - (i % 2), base + i) for i in range(n)]
     rag = lambda seed, sr, gr, mode: run_episode_rag(
-        model, W, seed, sr, gr, device, decode_op, graph, featurize, m1_thr, mode, complex_mode)
+        model, W, seed, sr, gr, device, decode_op, graph, featurize, m1_thr, mode,
+        complex_mode, readout=readout)
 
     model.rag.current_size.zero_()   # clear episodic memory before the lifelong run
 
@@ -373,6 +416,31 @@ def run(args):
     cz = graph.z_centroids if graph.z_centroids is not None else graph.centroids
     ZC = torch.tensor(cz, device=device)
 
+    # SPATIAL: rebuild graph/decode/ZC on the position-faithful spatial readout. Under pure
+    # SSL the global pool is position-blind (it discards the small agent), so monitors and
+    # predictor-decoded control run on the coarse gxg spatial readout instead.
+    readout, decode_state = None, None
+    if getattr(args, "spatial", False):
+        g = args.spatial_grid
+        readout = lambda z: model.spatial_readout(z, grid=g)
+
+        @torch.no_grad()
+        def _gr(ix):
+            o = []
+            for c0 in range(0, len(ix), 128):
+                b = torch.as_tensor(np.asarray(ix[c0:c0 + 128]))
+                o.append(readout(model.encode_frame(frames[b].to(device).float() / 255.0)).cpu())
+            return torch.cat(o)
+
+        ridge = fit_ridge_decode(_gr(tr), Ptr, device)
+        decode_state = lambda grid: ridge(model.spatial_readout(grid, grid=g))
+        graph = build_graph_raw(model, ridge, frames, positions, room_ids, starts, total,
+                                device, k=args.fine_k, S=max(1, args.stride // 2), readout=readout)
+        graph.decoded_xy = ridge(torch.tensor(graph.centroids, device=device)).cpu().numpy()
+        ZC = torch.tensor(graph.centroids, device=device)
+        decode_op = decode_state    # RAG control reads decode_op on the spatial readout
+        print(f"--- [SPATIAL {g}x{g}] fourth-brain monitors + control on the spatial readout ---")
+
     def cfgs(base, n):
         if args.complex:
             return [(0, 3, base + i) for i in range(n)]
@@ -381,7 +449,8 @@ def run(args):
     ep = lambda seed, sr, gr, policy, thr, fb: run_episode_fb(
         model, W, seed, sr, gr, device, graph, ZC, policy,
         thr=thr, complex_mode=args.complex, alarm_k=args.alarm_k,
-        patience=args.patience, grace=args.grace, stall_w=args.stall_w, fallback=fb)
+        patience=args.patience, grace=args.grace, stall_w=args.stall_w, fallback=fb,
+        readout=readout, decode_state=decode_state)
 
     out = {}
     # PASS A — calibration (fixed tactical policy, monitors only)
@@ -403,7 +472,7 @@ def run(args):
         n_batches = getattr(args, "n_batches", 5)
         rg = gate_rag_lifelong_batches(model, W, device, decode_op, graph, featurize,
                                         th["m1"], args.n_eval, n_batches=n_batches,
-                                        complex_mode=args.complex)
+                                        complex_mode=args.complex, readout=readout)
         out["H7_lifelong"] = rg
         os.makedirs(args.save_dir, exist_ok=True)
         p = os.path.join(args.save_dir, "rag_lifelong_complex.json" if args.complex
@@ -419,7 +488,7 @@ def run(args):
     # ── H7 RAG single-pass (--rag): original experience/recall/control ──
     if getattr(args, "rag", False):
         rg = gate_rag_selflearning(model, W, device, decode_op, graph, featurize,
-                                   th["m1"], args.n_eval, complex_mode=args.complex)
+                                   th["m1"], args.n_eval, complex_mode=args.complex, readout=readout)
         out["H7_rag_selflearning"] = rg
         os.makedirs(args.save_dir, exist_ok=True)
         p = os.path.join(args.save_dir, "rag_selflearning_complex.json" if args.complex
@@ -523,6 +592,10 @@ def main():
     ap.add_argument("--grace", type=int, default=6)
     ap.add_argument("--stall-w", type=int, default=8)
     ap.add_argument("--complex", action="store_true")
+    ap.add_argument("--spatial", action="store_true",
+                    help="Run monitors + control on the coarse gxg SPATIAL readout (the "
+                         "global pool is position-blind under pure SSL).")
+    ap.add_argument("--spatial-grid", type=int, default=8, help="spatial readout grid size (g x g)")
     ap.add_argument("--label-free-key", action="store_true",
                     help="H4: use the label-free key detector (surprise + VQ-flip) instead "
                          "of dataset has_key labels to build the key landmark in the graph. "

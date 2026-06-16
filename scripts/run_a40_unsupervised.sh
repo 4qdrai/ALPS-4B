@@ -119,9 +119,9 @@ python -m alps.evaluation.validate_temporal \
 # ---- 5. Fourth Brain: monitors -> escalation -> fallback (unsupervised) ------
 echo "--- [5/8] Fourth Brain, simple + complex (H4 label-free key in complex) ---"
 python -m alps.evaluation.fourth_brain \
-    --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT"
+    --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT" $SPATIAL_ARGS
 python -m alps.evaluation.fourth_brain --complex --label-free-key \
-    --model-path "$CX_MODEL" --data-path "$CX_DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT"
+    --model-path "$CX_MODEL" --data-path "$CX_DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT" $SPATIAL_ARGS
 
 # ---- 6. MoE expert specialization (unsupervised) -----------------------------
 echo "--- [6/8] MoE expert specialization, simple + complex ---"
@@ -131,10 +131,10 @@ python -m alps.evaluation.moe_specialization --complex --model-path "$CX_MODEL" 
 # ---- 7a. Latent-RAG: single-pass (H7 original) + lifelong batches (H7 extended) --
 echo "--- [7/8] RAG-in-the-loop H7 (single-pass + lifelong batches) ---"
 python -m alps.evaluation.fourth_brain --rag \
-    --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT"
+    --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT" $SPATIAL_ARGS
 python -m alps.evaluation.fourth_brain --h7-lifelong \
     --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" \
-    --n-batches 5 --save-dir "$OUT"
+    --n-batches 5 --save-dir "$OUT" $SPATIAL_ARGS
 
 # ---- 8. PROOF VIDEOS: Four-Brain solving SIMPLE + COMPLEX (unsupervised model) -
 # Side-by-side operative(stalls) vs Four-Brain(solves), env's own frames, GIF + MP4.
