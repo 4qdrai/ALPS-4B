@@ -652,8 +652,12 @@ def run(args):
                 out_f.append(readout4b(model.encode_frame(frames[b].to(device).float() / 255.0)).cpu())
             return torch.cat(out_f)
 
-        ridge_decode = fit_ridge_decode(_gather_readout(tr), Ptr, device)   # frozen ridge on spatial readout
-        sg1 = (ridge_decode(_gather_readout(va)) - Pva.to(device)).norm(dim=1).mean().item()
+        # cap the ridge-fit sample count: the spatial readout is high-dim (g^2 * D, =12288
+        # at grid 8), so gathering it for the FULL probe set OOMs RAM (26 GB at 540k frames).
+        # ~20k samples is plenty for a linear probe (local used 6.4k).
+        ct, cv = min(len(tr), 20000), min(len(va), 5000)
+        ridge_decode = fit_ridge_decode(_gather_readout(tr[:ct]), Ptr[:ct], device)
+        sg1 = (ridge_decode(_gather_readout(va[:cv])) - Pva[:cv].to(device)).norm(dim=1).mean().item()
         out["G1_spatial"] = {"decode_err_world_units": sg1, "grid": g, "pooled_G1": g1, "passed": sg1 < 0.3}
         print(f"--- [SPATIAL {g}x{g}] G1_spatial {sg1:.3f}wu  (global-pool G1 {g1:.3f}wu) ---")
         # predictor-based decoded control: predicted grid -> spatial readout -> decoded pos
