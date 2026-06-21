@@ -102,5 +102,10 @@ Toy testbed = **Two-Rooms** (128×128, an agent/dot navigates between rooms thro
 - A40 pods may show huge host RAM via `free -h` but be **cgroup-capped** lower — watch for `Killed` even when `free` looks fine.
 - Local Two-Rooms is **noise-limited**; no local model routes cross-room cleanly. Stable closed-loop numbers need the A40.
 
+## 9b. LATEST (both decode levers now in code; edge still unmeasured)
+- **Two committed levers for `decode(0.55) > motion(0.27)`:** `--ctrl-k K` (K-step rollout lookahead, **no retrain**, `99ec10a`/`64afe43`) raises displacement above the decode noise; `--patch-size 2 8 8` + `--spatial-grid 16` (**retrain**, `99ec10a`) sharpens the decode. Grid can't be finer than the token grid (at patch16, grid8 = full 64-token grid = finest; finer grid only with patch8 → 256 tokens → grid16).
+- **`--ctrl-k` is ~K× slower** (K predictor passes/action). A local test on the depth-6 pure-SSL model **timed out (400 s) + inconclusive** (operative/strategic 0.0 partial, but that's an undertrained model with a drifty rollout — NOT a verdict). `trajectories_large.pt` corrupted locally.
+- **`G_4brain` is STILL UNMEASURED.** The definitive test: on the A40, run `validate_temporal --spatial --spatial-grid 8 --ctrl-k 3 --n-episodes 30` on `unsup_temporal.pt` (better predictor → fair rollout). Try `--ctrl-k 2` first (lighter); bump to 5 if needed.
+
 ## 10. One-line status
 *Representation under pure SSL is solved via the spatial readout (position recoverable, G1_spatial 0.584 vs random 3.6). The closed-loop hierarchy edge is still open — decode precision (0.58) is resolution-capped above the per-step motion (0.27), so control likely won't route until we either (a) sharpen the decode with finer patches, and/or (b) use a larger-displacement control. The immediate next action is to read `G_4brain` on the saved A40 model (cheap, model already trained) to decide which.*
