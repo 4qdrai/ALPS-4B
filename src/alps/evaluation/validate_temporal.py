@@ -215,7 +215,13 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
         gn = graph.node_of_latent(readout(goal_grid).squeeze(0).cpu().numpy())
         path = graph.shortest_path(sn, gn) or [gn]
         seg = path[1:] if len(path) > 1 else path[:]
-        waypoints = [graph.decoded_xy[n] for n in seg] + [goal_pos]
+        # Track B (true_pos_exec) uses each node's TRUE mean position as its waypoint (oracle
+        # landmarks) so the test isolates the graph's ROUTING (which nodes, in which order)
+        # from decode noise in the landmark positions themselves. If the graph STILL loses to
+        # greedy here, the routing/topology is broken (not decode). Track A (decoded control)
+        # must steer to the decoded positions it actually has access to.
+        node_xy = graph.true_xy if true_pos_exec else graph.decoded_xy
+        waypoints = [node_xy[n] for n in seg] + [goal_pos]
     for s in range(max_steps):
         sub = waypoints[min(wp, len(waypoints) - 1)]
         best_a, best_d = 0, 1e30
