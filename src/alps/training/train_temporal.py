@@ -55,6 +55,8 @@ def train(args):
         args.lewm_ssl = False
     if not hasattr(args, "cls_pool"):
         args.cls_pool = False
+    if not hasattr(args, "patch_size"):
+        args.patch_size = [2, 16, 16]
     if not hasattr(args, "inv_dyn"):
         args.inv_dyn = False
     if not hasattr(args, "inv_weight"):
@@ -88,7 +90,7 @@ def train(args):
         op_depth=args.op_depth, abs_depth=args.abs_depth, k_tac=args.k_tac, k_str=args.k_str,
         lambda_sigreg=args.lambda_sigreg, sigreg_slices=args.sigreg_slices,
         max_frames=args.window + 1, use_projection_head=True,
-        use_cls_pool=args.cls_pool).to(device)
+        use_cls_pool=args.cls_pool, patch_size=tuple(args.patch_size)).to(device)
     pm, ps = positions.mean(0), positions.std(0) + 1e-6
     model.pos_mean.copy_(pm.to(device)); model.pos_std.copy_(ps.to(device))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -228,7 +230,8 @@ def train(args):
                     "active_experts": args.active_experts, "op_depth": args.op_depth,
                     "abs_depth": args.abs_depth, "window": args.window, "stride": args.stride,
                     "k_tac": args.k_tac, "k_str": args.k_str,
-                    "use_projection_head": True, "use_cls_pool": args.cls_pool}, args.out)
+                    "use_projection_head": True, "use_cls_pool": args.cls_pool,
+                    "patch_size": list(args.patch_size)}, args.out)
         print(f"[save] {args.out}")
     return model
 
@@ -268,6 +271,11 @@ def build_parser():
                     help="LeWM-exact [CLS]-token readout instead of mean-pooling tokens. "
                          "Mean-pool dilutes the spatially-localized agent -> pure-SSL G1 "
                          "fails; the [CLS] token attends and selects it.")
+    ap.add_argument("--patch-size", type=int, nargs=3, default=[2, 16, 16],
+                    metavar=("T", "H", "W"),
+                    help="encoder patch size. Default (2,16,16) -> 8x8=64 tokens. Use "
+                         "'2 8 8' -> 16x16=256 tokens for a ~2x sharper spatial decode "
+                         "(crosses the 0.30 G1_spatial bar + the 0.27wu motion bar).")
     ap.add_argument("--inv-dyn", action="store_true",
                     help="Inverse-dynamics auxiliary: predict action from (pool(z_t),pool(z_t+1)) "
                          "on the non-detached pooled latent. Forces the compact readout to encode "

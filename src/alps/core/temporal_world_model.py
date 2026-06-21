@@ -113,9 +113,9 @@ class TemporalHierWorldModel(nn.Module):
         (validated: 4x4 decodes position at R^2 0.92 on the pure-SSL model). The hierarchy's
         graph + control use this so planning is position-faithful WITHOUT supervision. The
         same readout carries to real video (coarse object/scene grid)."""
-        spatial = z[:, -64:] if z.shape[1] >= 64 else z       # drop a possible [CLS] at index 0
+        spatial = z[:, 1:] if self.use_cls_pool else z        # drop a [CLS] at index 0 if present
         b, N, D = spatial.shape
-        s = int(round(N ** 0.5))
+        s = int(round(N ** 0.5))                              # 8 at patch16, 16 at patch8
         x = spatial.reshape(b, s, s, D).permute(0, 3, 1, 2)   # [b,D,s,s]
         x = torch.nn.functional.adaptive_avg_pool2d(x, (grid, grid))
         return x.reshape(b, -1)                               # [b, grid*grid*D]

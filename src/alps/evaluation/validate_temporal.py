@@ -49,7 +49,8 @@ def load_model(path, device):
         k_tac=ck.get("k_tac", 2), k_str=ck.get("k_str", 4),
         max_frames=ck.get("window", 6) + 1,
         use_projection_head=ck.get("use_projection_head", True),
-        use_cls_pool=ck.get("use_cls_pool", False)).to(device)
+        use_cls_pool=ck.get("use_cls_pool", False),
+        patch_size=tuple(ck.get("patch_size", (2, 16, 16)))).to(device)
     msd = m.state_dict()
     sd = {k: v for k, v in ck["model_state_dict"].items() if k in msd and msd[k].shape == v.shape}
     m.load_state_dict(sd, strict=False); m.eval()
