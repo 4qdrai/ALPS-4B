@@ -176,9 +176,68 @@ def fit_ridge_decode(X, Y, device, lam=10.0):
 
 
 @torch.no_grad()
+def _gather_token_grids(model, frames, idx, device, bs=128):
+    """Encode `idx` frames to their full spatial token grids [M, N, D] (no pooling)."""
+    zs = []
+    for c0 in range(0, len(idx), bs):
+        b = torch.as_tensor(np.asarray(idx[c0:c0 + bs]))
+        zs.append(model.encode_frame(frames[b].to(device).float() / 255.0).cpu())
+    return torch.cat(zs)
+
+
+def _cell_centers(s, device):
+    """World (x,y) centre of each spatial-token cell for an s×s token grid. Token n = r*s + c
+    (row-major, matching spatial_readout's reshape). Image col c -> x (left=low), row r -> y
+    (top=high, y inverted); world box ~[0,10]. Only an init -- the fitted affine calibrates."""
+    cx = ((torch.arange(s, device=device).float() + 0.5) / s) * 10.0
+    cy = (1.0 - (torch.arange(s, device=device).float() + 0.5) / s) * 10.0
+    grid = torch.zeros(s * s, 2, device=device)
+    for r in range(s):
+        for c in range(s):
+            grid[r * s + c, 0] = cx[c]; grid[r * s + c, 1] = cy[r]
+    return grid
+
+
+def fit_softargmax_decode(model, frames, positions, idx, device, iters=400):
+    """Frozen SOFT-ARGMAX position read-out. A linear score per spatial token -> softmax over
+    the N position-indexed tokens -> weighted sum of cell centres = a sub-cell-INTERPOLATED
+    agent position. Sharper than the ridge on the same tokens: the ridge is capped by the s×s
+    cell quantisation, soft-argmax interpolates BETWEEN cells (the agent near a boundary lights
+    two cells and the weighted centre lands between them). Still a frozen, label-free measuring
+    instrument -- only the probe (≈D+6 params) sees positions; the encoder/predictors are never
+    touched. Returns fn(token_grid [*,N,D]) -> position [*,2]."""
+    Zt = _gather_token_grids(model, frames, idx, device).to(device).float()       # [M,N,D]
+    Y = positions[torch.as_tensor(np.asarray(idx))].to(device).float()            # [M,2]
+    M, N, D = Zt.shape
+    s = int(round(N ** 0.5))
+    cc = _cell_centers(s, device)                                                 # [N,2]
+    w = torch.zeros(D, device=device, requires_grad=True)
+    logtau = torch.zeros(1, device=device, requires_grad=True)
+    A = torch.eye(2, device=device, requires_grad=True)
+    b = torch.zeros(2, device=device, requires_grad=True)
+    opt = torch.optim.Adam([w, logtau, A, b], lr=0.05)
+    with torch.enable_grad():
+        for _ in range(iters):
+            alpha = torch.softmax((Zt @ w) / logtau.exp(), dim=1)                 # [M,N]
+            pred = (alpha @ cc) @ A.t() + b                                       # [M,2]
+            loss = ((pred - Y) ** 2).sum(1).mean()
+            opt.zero_grad(); loss.backward(); opt.step()
+    w_, tau_, A_, b_ = w.detach(), logtau.exp().detach(), A.detach(), b.detach()
+
+    @torch.no_grad()
+    def fn(zt):
+        zt = zt.to(device).float()
+        flat = zt.reshape(-1, N, D)
+        alpha = torch.softmax((flat @ w_) / tau_, dim=1)
+        pred = (alpha @ cc) @ A_.t() + b_
+        return pred.reshape(*zt.shape[:-2], 2)
+    return fn
+
+
+@torch.no_grad()
 def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
                         strategy, complex_mode=False, max_steps=140, ctrl_k=3,
-                        true_pos_exec=False):
+                        true_pos_exec=False, pos_noise=0.0):
     """4B edge under PURE SSL via predictor-based DECODED control on the spatial readout.
     The TRAINED op predictor predicts the next latent grid; decode_state (spatial_readout
     + frozen ridge) reads the predicted agent POSITION (action-sensitive, unlike the coarse
@@ -194,10 +253,20 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
     of the decoded rollout, and use the TRUE goal as the final waypoint. This removes decode
     precision as a confound, isolating the PLANNING edge (operative greedy stalls at the wall;
     the graph plan threads the door/key). The graph/landmarks stay unsupervised -- only the
-    low-level execution is made oracle, which is what we report alongside it."""
+    low-level execution is made oracle, which is what we report alongside it.
+
+    pos_noise σ (the DECODE-NOISE SWEEP, true_pos_exec only): inject Gaussian noise of std σ
+    (world units) wherever a DECODED position would be used -- landmark waypoints (fixed per
+    episode), the goal, the per-step execution lookahead, the advancement check -- while keeping
+    the graph topology/routing EXACT. Sweeping σ finds the decode precision at which the edge
+    (strategic >> operative) collapses = the target a real decoder must beat."""
     env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
     obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
+    _rng = np.random.RandomState((seed * 131 + 7) & 0x7fffffff)
+    def jit(p):  # simulate a decoder of precision pos_noise (fresh Gaussian draw, world units)
+        return np.asarray(p, np.float32) if pos_noise <= 0 else \
+            (np.asarray(p, np.float32) + _rng.normal(0, pos_noise, 2).astype(np.float32))
     is_cross = True if complex_mode else (sr != gr)
     opt = max_steps if complex_mode else _oracle_path_len(sr, gr, seed)
     buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
@@ -209,6 +278,8 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
     goal_grid = model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))
     # final waypoint: TRUE goal under oracle exec (no decode in the loop), else decoded goal
     goal_pos = goal_xy.copy() if true_pos_exec else decode_state(goal_grid)[0].cpu().numpy()
+    if true_pos_exec:
+        goal_pos = jit(goal_pos)                      # simulated goal decode error (fixed)
     waypoints, wp = [goal_pos], 0
     if strategy == "graph":
         sn = graph.node_of_latent(readout(buf.cur_z).squeeze(0).cpu().numpy())
@@ -221,14 +292,15 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
         # greedy here, the routing/topology is broken (not decode). Track A (decoded control)
         # must steer to the decoded positions it actually has access to.
         node_xy = graph.true_xy if true_pos_exec else graph.decoded_xy
-        waypoints = [node_xy[n] for n in seg] + [goal_pos]
+        wp_xy = [(jit(node_xy[n]) if true_pos_exec else node_xy[n]) for n in seg]
+        waypoints = wp_xy + [goal_pos]
     for s in range(max_steps):
         sub = waypoints[min(wp, len(waypoints) - 1)]
         best_a, best_d = 0, 1e30
         for a in range(4):
             if true_pos_exec:
                 e2 = copy.deepcopy(env); o2, _, _, _ = e2.step(a)              # oracle exec: true next pos
-                pos_a = o2["position"]
+                pos_a = jit(o2["position"])                                    # + simulated decode error
             else:
                 pos_a = buf.rollout_decode(decode_state, a, ctrl_k).cpu().numpy()   # K-step-ahead decoded pos
             d = float(np.linalg.norm(pos_a - sub))
@@ -236,7 +308,7 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
                 best_d, best_a = d, a
         obs, _, done, info = env.step(best_a); buf.push(obs_to_frame(obs, device), best_a)
         if strategy == "graph" and wp < len(waypoints) - 1:
-            cur_pos = obs["position"] if true_pos_exec else decode_state(buf.cur_z)[0].cpu().numpy()
+            cur_pos = jit(obs["position"]) if true_pos_exec else decode_state(buf.cur_z)[0].cpu().numpy()
             if np.linalg.norm(cur_pos - waypoints[wp]) < REACH:
                 wp += 1
         reached = done if complex_mode else (done or info["distance"] < REACH)  # env oracle = task metric
@@ -248,12 +320,13 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
 @torch.no_grad()
 def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, readout,
                             device, n_episodes, complex_mode=False, ctrl_k=3,
-                            true_pos_exec=False):
+                            true_pos_exec=False, pos_noise=0.0):
     """3-tier ablation under pure SSL with predictor-based decoded control on the spatial
     readout: operative (greedy) vs strategic (coarse graph) vs tactical (fine graph).
     Complex mode = key->door->goal (the graph routes through the key landmark).
     true_pos_exec=True => Track B: same unsupervised plans, oracle low-level execution =
-    the decode-independent PLANNING edge (see run_episode_spatial)."""
+    the decode-independent PLANNING edge (see run_episode_spatial).
+    pos_noise σ => simulate a decoder of precision σ on top of Track B (the decode-noise sweep)."""
     if complex_mode:
         cfgs = [(0, 3, 2000 + i) for i in range(n_episodes)]
     else:
@@ -262,11 +335,13 @@ def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, re
             "tactical": (fine_graph, "graph")}
     out = {}
     tag = "planning/oracle-exec" if true_pos_exec else "decoded-control"
+    if pos_noise > 0:
+        tag += f" | decode-noise sigma={pos_noise:.2f}"
     print(f"  [spatial-4B | {tag}] running {len(cfgs)} episodes x 3 tiers (silent control loop)...", flush=True)
     for name, (gph, strat) in plan.items():
         res = [run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout,
                                    gph, strat, complex_mode=complex_mode, ctrl_k=ctrl_k,
-                                   true_pos_exec=true_pos_exec)
+                                   true_pos_exec=true_pos_exec, pos_noise=pos_noise)
                for sr, gr, seed in cfgs]
         out[name] = summarize(res)
         sv = out[name].get("cross_room_success", out[name])
@@ -704,16 +779,59 @@ def run(args):
         sg1 = (ridge_decode(_gather_readout(va[:cv])) - Pva[:cv].to(device)).norm(dim=1).mean().item()
         out["G1_spatial"] = {"decode_err_world_units": sg1, "grid": g, "pooled_G1": g1, "passed": sg1 < 0.3}
         print(f"--- [SPATIAL {g}x{g}] G1_spatial {sg1:.3f}wu  (global-pool G1 {g1:.3f}wu) ---")
-        # predictor-based decoded control: predicted grid -> spatial readout -> decoded pos
-        decode_state = lambda grid: ridge_decode(model.spatial_readout(grid, grid=g))
+        # predictor-based decoded control: predicted grid -> readout -> decoded pos
+        if getattr(args, "readout", "ridge") == "softargmax":
+            # sub-cell SOFT-ARGMAX read-out: sharpens BOTH the landmark and execution decode on
+            # the SAME frozen model (no retrain). The graph then lives in soft-argmax 2D position
+            # space (position-faithful by construction), and control decodes positions the same way.
+            sa_decode = fit_softargmax_decode(model, frames, positions, tr[:min(len(tr), 6000)], device)
+            sa_err = (sa_decode(_gather_token_grids(model, frames, va[:cv], device))
+                      - Pva[:cv].to(device)).norm(dim=1).mean().item()
+            out["G1_softargmax"] = {"decode_err_world_units": sa_err, "passed": sa_err < 0.3}
+            print(f"--- [SOFT-ARGMAX] G1_softargmax {sa_err:.3f}wu  (ridge {sg1:.3f}wu) ---")
+            decode_state = sa_decode                      # token grid -> sub-cell position
+            readout4b = sa_decode                         # graph node space = soft-argmax 2D position
 
-        def build_sp(k):
-            gph = build_graph_raw(model, ridge_decode, frames, positions, room_ids, starts,
-                                  total, device, k=k, S=max(1, args.stride // 2), readout=readout4b)
-            gph.decoded_xy = ridge_decode(torch.tensor(gph.centroids, device=device)).cpu().numpy()
-            return gph
-        print(f"  [spatial] building graphs (k-means on {g*g*model.d_model}-d readout)...", flush=True)
+            def build_sp(k):
+                gph = build_graph_raw(model, (lambda c: c), frames, positions, room_ids, starts,
+                                      total, device, k=k, S=max(1, args.stride // 2), readout=readout4b)
+                gph.decoded_xy = np.asarray(gph.centroids, dtype=np.float32).reshape(len(gph.centroids), 2)
+                return gph
+            print("  [spatial] building graphs (k-means on soft-argmax 2D positions)...", flush=True)
+        else:
+            decode_state = lambda grid: ridge_decode(model.spatial_readout(grid, grid=g))
+
+            def build_sp(k):
+                gph = build_graph_raw(model, ridge_decode, frames, positions, room_ids, starts,
+                                      total, device, k=k, S=max(1, args.stride // 2), readout=readout4b)
+                gph.decoded_xy = ridge_decode(torch.tensor(gph.centroids, device=device)).cpu().numpy()
+                return gph
+            print(f"  [spatial] building graphs (k-means on {g*g*model.d_model}-d readout)...", flush=True)
         coarse_graph, fine_graph = build_sp(args.coarse_k), build_sp(args.fine_k)
+        if getattr(args, "noise_sweep", False):
+            # DECODE-NOISE SWEEP: on the proven Track B (oracle topology), inject decoder noise σ
+            # into landmarks+execution and find where the edge (strategic - operative) collapses
+            # = the decode precision a real read-out must beat. Forces true_pos_exec.
+            sigmas = [0.0, 0.15, 0.25, 0.35, 0.45, 0.55, 0.73]
+            print(f"--- [DECODE-NOISE SWEEP] sigma(wu) -> tier cross-room success (n={args.n_episodes}) ---")
+            print(f"   {'sigma':>6} {'operative':>10} {'strategic':>10} {'tactical':>10} {'str-op':>8}")
+            sweep = {}
+            m = "cross_room_success"
+            for sig in sigmas:
+                r = gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state,
+                                            readout4b, device, args.n_episodes, complex_mode=args.complex,
+                                            ctrl_k=getattr(args, "ctrl_k", 3), true_pos_exec=True,
+                                            pos_noise=sig)
+                o, st, ta = r["operative"][m], r["strategic"][m], r["tactical"][m]
+                sweep[f"{sig:.2f}"] = {"operative": o, "strategic": st, "tactical": ta}
+                print(f"   {sig:>6.2f} {o:>10.2f} {st:>10.2f} {ta:>10.2f} {st-o:>+8.2f}", flush=True)
+            out["G_4brain_noise_sweep"] = sweep
+            os.makedirs(args.save_dir, exist_ok=True)
+            p = os.path.join(args.save_dir, "temporal_gates_noise_sweep.json")
+            with open(p, "w") as f:
+                json.dump(out, f, indent=2, default=float)
+            print(f"[report] {p}")
+            return out
         fb = gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state,
                                      readout4b, device, args.n_episodes, complex_mode=args.complex,
                                      ctrl_k=getattr(args, "ctrl_k", 3),
@@ -1167,6 +1285,12 @@ def main():
                          "instead of the global pool, so graph nodes are position-faithful "
                          "under pure SSL (the pool discards the small agent). Reports G1_spatial.")
     ap.add_argument("--spatial-grid", type=int, default=4, help="spatial readout grid size (g x g)")
+    ap.add_argument("--readout", choices=["ridge", "softargmax"], default="ridge",
+                    help="position read-out for spatial control. 'ridge' = linear on the gxg "
+                         "readout (cell-quantisation-capped ~0.55-0.73wu). 'softargmax' = linear "
+                         "heatmap over the position-indexed tokens -> sub-cell interpolation "
+                         "(~0.3wu target), sharpening BOTH the landmark and execution decode with "
+                         "no retrain; the graph then clusters in soft-argmax 2D position space.")
     ap.add_argument("--ctrl-k", type=int, default=3,
                     help="spatial control lookahead: roll the predictor K steps per action so "
                          "each decision compares ~K*0.27wu apart (beats the ~0.55wu decode "
@@ -1177,6 +1301,12 @@ def main():
                          "next position (oracle exec). Isolates the PLANNING edge from decode "
                          "precision -> reports G_4brain_planning (operative << strategic <= "
                          "tactical). Requires --spatial.")
+    ap.add_argument("--noise-sweep", action="store_true",
+                    help="DECODE-NOISE SWEEP (requires --spatial): on the proven Track B (oracle "
+                         "topology), inject decoder noise σ∈{0,.15,.25,.35,.45,.55,.73}wu into "
+                         "landmarks+execution and print where the edge (strategic-operative) "
+                         "collapses = the decode precision a real read-out must beat. Writes "
+                         "temporal_gates_noise_sweep.json.")
     ap.add_argument("--h4-unsup-key", action="store_true",
                     help="H4: run label-free key detector and report G_H4 gate "
                          "(precision/recall vs ground-truth labels, measurement only).")
