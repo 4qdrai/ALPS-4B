@@ -38,7 +38,8 @@ from alps.benchmarks.two_rooms.world_model_planning import obs_to_frame
 from alps.training.train_hier import load_raw
 from alps.evaluation.validate_hierarchy import fit_probe
 from alps.evaluation.validate_temporal import (
-    load_model, gather, HistoryBuffer, hist_greedy_action_latent, build_graph_raw, REACH)
+    load_model, gather, HistoryBuffer, hist_greedy_action_latent, build_graph_raw, REACH,
+    fit_ridge_decode)
 
 
 def _px(xy, size):
@@ -144,6 +145,65 @@ def record(model, W, seed, sr, gr, device, decode_op, graph, featurize, strategy
     return frames, solved
 
 
+@torch.no_grad()
+def record_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
+                   strategy, complex_mode=False, size=288, ctrl_k=3, max_steps=160):
+    """SPATIAL-readout, predictor-DECODED control (mirrors validate_temporal.run_episode_spatial)
+    while capturing env frames -- the path that ACTUALLY routes under pure SSL. The global-pool
+    `record` above is position-blind (the small agent is diluted), so the Four-Brain panel would
+    stall there even on a good model; here the trained op predictor rolls K steps, the spatial
+    readout + frozen ridge (`decode_state`) reads the predicted agent POSITION, and the agent
+    steers toward the position-faithful graph waypoint.
+      operative : greedy to the decoded GOAL (System 1) -> stalls at the wall / locked door.
+      fourbrain : follow the latent-graph waypoints (complex: routes through the KEY)."""
+    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
+    goal_xy = obs["target"].copy()
+    buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
+    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
+    eg.agent_pos = goal_xy.copy()
+    if complex_mode:
+        eg.has_key = True
+    goal_grid = model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))
+    goal_pos = decode_state(goal_grid)[0].cpu().numpy()
+    waypoints, wp = [goal_pos], 0
+    if strategy == "fourbrain":
+        sn = graph.node_of_latent(readout(buf.cur_z).squeeze(0).cpu().numpy())
+        gn = graph.node_of_latent(readout(goal_grid).squeeze(0).cpu().numpy())
+        path = graph.shortest_path(sn, gn) or [gn]
+        seg = path[1:] if len(path) > 1 else path[:]
+        waypoints = [graph.decoded_xy[n] for n in seg] + [goal_pos]
+    wp_overlay = waypoints[:-1] if len(waypoints) > 1 else None
+    label = "Operative (System 1)" if strategy == "operative" else "Four-Brain (System 2)"
+    frames, solved = [], False
+    for s in range(max_steps):
+        sub = waypoints[min(wp, len(waypoints) - 1)]
+        dec = decode_state(buf.cur_z)[0].cpu().numpy()                 # decoded pos overlay
+        frames.append(_frame(obs["image"], size, label, waypoints=wp_overlay, dot=dec))
+        best_a, best_d = 0, 1e30
+        for a in range(4):
+            pos_a = buf.rollout_decode(decode_state, a, ctrl_k).cpu().numpy()
+            d = float(np.linalg.norm(pos_a - sub))
+            if d < best_d:
+                best_d, best_a = d, a
+        obs, _, done, info = env.step(best_a); buf.push(obs_to_frame(obs, device), best_a)
+        if strategy == "fourbrain" and wp < len(waypoints) - 1:
+            cur_pos = decode_state(buf.cur_z)[0].cpu().numpy()
+            if np.linalg.norm(cur_pos - waypoints[wp]) < REACH:
+                wp += 1
+        reached = done if complex_mode else (done or info["distance"] < REACH)
+        if reached:
+            solved = True
+            frames.append(_frame(obs["image"], size, label, waypoints=wp_overlay,
+                                 dot=obs["position"], solved=True))
+            break
+    if not solved:
+        frames[-1] = _frame(obs["image"], size, label, waypoints=wp_overlay,
+                            dot=obs["position"], solved=False)
+    return frames, solved
+
+
 def build_for_mode(model, decode_op, frames_t, actions, positions, room_ids, starts, total,
                    device, complex_mode, hk, coarse_k, fine_k, stride):
     # LABEL-FREE: pure latent transition graph for both simple and complex. decode_op is
@@ -158,13 +218,41 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
     model, W = load_model(model_path, device)
     frames_t, actions, positions, room_ids, starts = load_raw(data_path)
     total = frames_t.shape[0]
-    hk = None
     rng = np.random.RandomState(0); idx = rng.permutation(total)[: args.probe_samples]
     Z, _, _, _, P = gather(model, frames_t, positions, room_ids, idx, device)
-    torch.set_grad_enabled(True); decode_op = fit_probe(Z, P, device); torch.set_grad_enabled(False)
-    graph, featurize = build_for_mode(model, decode_op, frames_t, actions, positions, room_ids,
-                                      starts, total, device, complex_mode, hk,
-                                      args.coarse_k, args.fine_k, args.stride)
+    spatial = getattr(args, "spatial", False)
+    if spatial:
+        # SPATIAL readout + frozen ridge + predictor-decoded rollout control: the routing path
+        # (the global pool is position-blind under pure SSL). Mirrors validate_temporal --spatial.
+        g = args.spatial_grid
+        readout = lambda z: model.spatial_readout(z, grid=g)
+
+        @torch.no_grad()
+        def _gather_readout(ix):
+            out_f = []
+            for c0 in range(0, len(ix), 128):
+                b = torch.as_tensor(np.asarray(ix[c0:c0 + 128]))
+                out_f.append(readout(model.encode_frame(frames_t[b].to(device).float() / 255.0)).cpu())
+            return torch.cat(out_f)
+
+        ridge_decode = fit_ridge_decode(_gather_readout(idx), P.float(), device)
+        decode_state = lambda grid: ridge_decode(model.spatial_readout(grid, grid=g))
+        graph = build_graph_raw(model, ridge_decode, frames_t, positions, room_ids, starts,
+                                total, device, k=args.fine_k, S=max(1, args.stride // 2), readout=readout)
+        graph.decoded_xy = ridge_decode(torch.tensor(graph.centroids, device=device)).cpu().numpy()
+
+        def record_fn(seed, sr, gr, strategy):
+            return record_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
+                                  strategy, complex_mode, args.size, getattr(args, "ctrl_k", 3))
+    else:
+        torch.set_grad_enabled(True); decode_op = fit_probe(Z, P, device); torch.set_grad_enabled(False)
+        graph, featurize = build_for_mode(model, decode_op, frames_t, actions, positions, room_ids,
+                                          starts, total, device, complex_mode, None,
+                                          args.coarse_k, args.fine_k, args.stride)
+
+        def record_fn(seed, sr, gr, strategy):
+            return record(model, W, seed, sr, gr, device, decode_op, graph, featurize,
+                         strategy, complex_mode, args.size)
     tag = "complex" if complex_mode else "simple"
     cfgs = [(0, 3, 2000 + i) for i in range(40)] if complex_mode else \
            [(0, 1, 1000 + i) for i in range(40)]  # cross-room configs
@@ -172,12 +260,10 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
     for sr, gr, seed in cfgs:
         if made >= n_clips:
             break
-        fb, ok_fb = record(model, W, seed, sr, gr, device, decode_op, graph, featurize,
-                           "fourbrain", complex_mode, args.size)
+        fb, ok_fb = record_fn(seed, sr, gr, "fourbrain")
         if not ok_fb and not args.include_failures:
             continue   # prefer clips where the Four-Brain actually solves (the proof)
-        op, ok_op = record(model, W, seed, sr, gr, device, decode_op, graph, featurize,
-                           "operative", complex_mode, args.size)
+        op, ok_op = record_fn(seed, sr, gr, "operative")
         out = _hstack(op, fb)
         path = os.path.join(save_dir, f"fourbrain_{tag}_seed{seed}.gif")
         _save(out, path, fps=args.fps)
@@ -207,6 +293,13 @@ def main():
     ap.add_argument("--include-failures", action="store_true")
     ap.add_argument("--simple-only", action="store_true")
     ap.add_argument("--complex-only", action="store_true")
+    ap.add_argument("--spatial", action="store_true",
+                    help="Render with the SPATIAL readout + predictor-decoded rollout control "
+                         "(grid x grid) -- the path that routes under pure SSL. WITHOUT this the "
+                         "renderer uses the position-blind global pool and the Four-Brain panel "
+                         "will stall even on a good model. Match the gate's --spatial-grid/--ctrl-k.")
+    ap.add_argument("--spatial-grid", type=int, default=8)
+    ap.add_argument("--ctrl-k", type=int, default=3)
     a = ap.parse_args()
     os.makedirs(a.save_dir, exist_ok=True)
     dev = torch.device(a.device)

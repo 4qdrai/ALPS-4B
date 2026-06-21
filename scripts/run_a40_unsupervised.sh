@@ -52,6 +52,14 @@ FINE_K="${FINE_K:-24}"
 # decode); set SPATIAL_GRID=0 to disable and fall back to the global pool.
 SPATIAL_GRID="${SPATIAL_GRID:-8}"
 SPATIAL_ARGS=""; [ "$SPATIAL_GRID" != "0" ] && SPATIAL_ARGS="--spatial --spatial-grid $SPATIAL_GRID"
+# PATCH size (t h w). Default (2 16 16) -> 8x8=64 tokens (decode resolution-capped
+# ~0.55-0.73wu, above per-step motion 0.27 -> control can't route). For sharper decode
+# set PATCH="2 8 8" -> 16x16=256 tokens (~0.3wu) and pair with SPATIAL_GRID=16. The
+# spatial grid can be no finer than the token grid, so patch8 is required for grid16.
+PATCH="${PATCH:-2 16 16}"
+# CTRL_K: K-step predictor rollout per control decision -> raises per-decision
+# displacement above the decode noise WITHOUT retraining (the cheap routing lever).
+CTRL_K="${CTRL_K:-3}"; CTRL_ARGS="--ctrl-k $CTRL_K"
 FB_CAL="${FB_CAL:-60}"; FB_EVAL="${FB_EVAL:-100}"
 CX_EPISODES="${CX_EPISODES:-3000}"
 CX_BFS_FRACTION="${CX_BFS_FRACTION:-0.5}"
@@ -66,7 +74,7 @@ mkdir -p "$OUT"
 TRAIN_ARGS="--lewm-ssl --d-model $DMODEL --enc-depth $ENC_DEPTH --enc-heads $ENC_HEADS \
   --window $WINDOW --stride $STRIDE --batch-size $BATCH --sigreg-slices $SIGREG_SLICES \
   --num-codes $NUM_CODES --num-experts $NUM_EXPERTS --active-experts $ACTIVE_EXPERTS \
-  --epochs $EPOCHS --save-model"
+  --epochs $EPOCHS --patch-size $PATCH --save-model"
 
 echo "================ ALPS-4B FULLY-UNSUPERVISED validation ================"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
@@ -88,7 +96,7 @@ fi
 echo "--- [2/8] GO/NO-GO: G1_spatial + collapse + four-brain (spatial readout) ---"
 python -m alps.evaluation.validate_temporal \
     --model-path "$MODEL" --data-path "$DATA" --n-episodes "$N_EVAL" \
-    --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" $SPATIAL_ARGS
+    --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" $SPATIAL_ARGS $CTRL_ARGS
 
 # ---- 3. Abstraction gates: strategic/tactical predict latent + emit goals ----
 echo "--- [3/8] abstraction-layer gates (unsupervised) ---"
@@ -109,12 +117,12 @@ echo "--- [4/8] COMPLEX four-brain, H3 VQ-graph, H4 label-free key, H2 emitter -
 python -m alps.evaluation.validate_temporal --complex \
     --model-path "$CX_MODEL" --data-path "$CX_DATA" --n-episodes "$N_EVAL" \
     --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" \
-    --h4-unsup-key --vq-graph --h2-emitter $SPATIAL_ARGS
+    --h4-unsup-key --vq-graph --h2-emitter $SPATIAL_ARGS $CTRL_ARGS
 # Simple mode: H3 + H2 gates (no key) + spatial-readout four-brain edge
 python -m alps.evaluation.validate_temporal \
     --model-path "$MODEL" --data-path "$DATA" --n-episodes "$N_EVAL" \
     --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" \
-    --vq-graph --h2-emitter $SPATIAL_ARGS
+    --vq-graph --h2-emitter $SPATIAL_ARGS $CTRL_ARGS
 
 # ---- 5. Fourth Brain: monitors -> escalation -> fallback (unsupervised) ------
 echo "--- [5/8] Fourth Brain, simple + complex (H4 label-free key in complex) ---"
@@ -146,7 +154,8 @@ if [ "$MAKE_VIDEOS" = "1" ]; then
       --model-path "$MODEL" --data-path "$DATA" \
       --complex-model-path "$CX_MODEL" --complex-data-path "$CX_DATA" \
       --save-dir results/two_rooms/videos_unsup \
-      --coarse-k "$COARSE_K" --fine-k "$FINE_K" --stride "$STRIDE" --n-clips "${N_CLIPS:-3}"
+      --coarse-k "$COARSE_K" --fine-k "$FINE_K" --stride "$STRIDE" --n-clips "${N_CLIPS:-3}" \
+      $SPATIAL_ARGS $CTRL_ARGS
 fi
 
 echo "--- DONE ---"

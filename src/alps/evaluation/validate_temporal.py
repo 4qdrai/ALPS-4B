@@ -21,7 +21,7 @@ USAGE
 from __future__ import annotations
 import sys, os
 sys.path.insert(0, "src")
-import argparse, json
+import argparse, json, copy
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -177,7 +177,8 @@ def fit_ridge_decode(X, Y, device, lam=10.0):
 
 @torch.no_grad()
 def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
-                        strategy, complex_mode=False, max_steps=140, ctrl_k=3):
+                        strategy, complex_mode=False, max_steps=140, ctrl_k=3,
+                        true_pos_exec=False):
     """4B edge under PURE SSL via predictor-based DECODED control on the spatial readout.
     The TRAINED op predictor predicts the next latent grid; decode_state (spatial_readout
     + frozen ridge) reads the predicted agent POSITION (action-sensitive, unlike the coarse
@@ -185,7 +186,15 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
       operative : greedy to the decoded GOAL position (System 1) -> stalls at wall/locked door.
       graph     : follow the position-faithful latent-graph waypoints (complex: through the
                   KEY, since keyed/unkeyed frames are distinct latent nodes connected only by
-                  the pickup transition -- label-free key routing)."""
+                  the pickup transition -- label-free key routing).
+
+    true_pos_exec (Track B, the decode-INDEPENDENT planning proof): keep the UNSUPERVISED
+    plan (the graph + its waypoint order, built on the frozen SSL spatial readout) but pick
+    the action by the env's TRUE next position (one-step lookahead on a cloned env) instead
+    of the decoded rollout, and use the TRUE goal as the final waypoint. This removes decode
+    precision as a confound, isolating the PLANNING edge (operative greedy stalls at the wall;
+    the graph plan threads the door/key). The graph/landmarks stay unsupervised -- only the
+    low-level execution is made oracle, which is what we report alongside it."""
     env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
     obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
@@ -198,7 +207,8 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
     if complex_mode:
         eg.has_key = True
     goal_grid = model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))
-    goal_pos = decode_state(goal_grid)[0].cpu().numpy()
+    # final waypoint: TRUE goal under oracle exec (no decode in the loop), else decoded goal
+    goal_pos = goal_xy.copy() if true_pos_exec else decode_state(goal_grid)[0].cpu().numpy()
     waypoints, wp = [goal_pos], 0
     if strategy == "graph":
         sn = graph.node_of_latent(readout(buf.cur_z).squeeze(0).cpu().numpy())
@@ -210,13 +220,17 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
         sub = waypoints[min(wp, len(waypoints) - 1)]
         best_a, best_d = 0, 1e30
         for a in range(4):
-            pos_a = buf.rollout_decode(decode_state, a, ctrl_k).cpu().numpy()   # K-step-ahead decoded pos
+            if true_pos_exec:
+                e2 = copy.deepcopy(env); o2, _, _, _ = e2.step(a)              # oracle exec: true next pos
+                pos_a = o2["position"]
+            else:
+                pos_a = buf.rollout_decode(decode_state, a, ctrl_k).cpu().numpy()   # K-step-ahead decoded pos
             d = float(np.linalg.norm(pos_a - sub))
             if d < best_d:
                 best_d, best_a = d, a
         obs, _, done, info = env.step(best_a); buf.push(obs_to_frame(obs, device), best_a)
         if strategy == "graph" and wp < len(waypoints) - 1:
-            cur_pos = decode_state(buf.cur_z)[0].cpu().numpy()                 # decoded, not true
+            cur_pos = obs["position"] if true_pos_exec else decode_state(buf.cur_z)[0].cpu().numpy()
             if np.linalg.norm(cur_pos - waypoints[wp]) < REACH:
                 wp += 1
         reached = done if complex_mode else (done or info["distance"] < REACH)  # env oracle = task metric
@@ -227,10 +241,13 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
 
 @torch.no_grad()
 def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, readout,
-                            device, n_episodes, complex_mode=False, ctrl_k=3):
+                            device, n_episodes, complex_mode=False, ctrl_k=3,
+                            true_pos_exec=False):
     """3-tier ablation under pure SSL with predictor-based decoded control on the spatial
     readout: operative (greedy) vs strategic (coarse graph) vs tactical (fine graph).
-    Complex mode = key->door->goal (the graph routes through the key landmark)."""
+    Complex mode = key->door->goal (the graph routes through the key landmark).
+    true_pos_exec=True => Track B: same unsupervised plans, oracle low-level execution =
+    the decode-independent PLANNING edge (see run_episode_spatial)."""
     if complex_mode:
         cfgs = [(0, 3, 2000 + i) for i in range(n_episodes)]
     else:
@@ -238,10 +255,12 @@ def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, re
     plan = {"operative": (None, "operative"), "strategic": (coarse_graph, "graph"),
             "tactical": (fine_graph, "graph")}
     out = {}
-    print(f"  [spatial-4B] running {len(cfgs)} episodes x 3 tiers (silent control loop)...", flush=True)
+    tag = "planning/oracle-exec" if true_pos_exec else "decoded-control"
+    print(f"  [spatial-4B | {tag}] running {len(cfgs)} episodes x 3 tiers (silent control loop)...", flush=True)
     for name, (gph, strat) in plan.items():
         res = [run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout,
-                                   gph, strat, complex_mode=complex_mode, ctrl_k=ctrl_k)
+                                   gph, strat, complex_mode=complex_mode, ctrl_k=ctrl_k,
+                                   true_pos_exec=true_pos_exec)
                for sr, gr, seed in cfgs]
         out[name] = summarize(res)
         sv = out[name].get("cross_room_success", out[name])
@@ -691,7 +710,8 @@ def run(args):
         coarse_graph, fine_graph = build_sp(args.coarse_k), build_sp(args.fine_k)
         fb = gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state,
                                      readout4b, device, args.n_episodes, complex_mode=args.complex,
-                                     ctrl_k=getattr(args, "ctrl_k", 3))
+                                     ctrl_k=getattr(args, "ctrl_k", 3),
+                                     true_pos_exec=getattr(args, "true_pos_exec", False))
     else:
         def build(k):
             return build_graph_raw(model, decode_op, frames, positions, room_ids, starts,
@@ -699,7 +719,9 @@ def run(args):
         coarse_graph, fine_graph = build(args.coarse_k), build(args.fine_k)
         fb = gate_four_brain(model, W, coarse_graph, fine_graph, featurize, decode_op,
                              device, args.n_episodes, complex_mode=args.complex)
-    out["G_4brain"] = fb
+    # Track B reports under a distinct key (the decode-INDEPENDENT planning edge) so it never
+    # overwrites the headline decoded-control G_4brain.
+    out["G_4brain_planning" if getattr(args, "true_pos_exec", False) else "G_4brain"] = fb
 
     # H3 — VQ concept-graph ablation (--vq-graph)
     if getattr(args, "vq_graph", False):
@@ -1143,6 +1165,12 @@ def main():
                     help="spatial control lookahead: roll the predictor K steps per action so "
                          "each decision compares ~K*0.27wu apart (beats the ~0.55wu decode "
                          "noise). 1 = old 1-step control.")
+    ap.add_argument("--true-pos-exec", action="store_true",
+                    help="Track B (decode-INDEPENDENT planning proof): keep the unsupervised "
+                         "spatial-graph plans but execute the low level with the env's TRUE "
+                         "next position (oracle exec). Isolates the PLANNING edge from decode "
+                         "precision -> reports G_4brain_planning (operative << strategic <= "
+                         "tactical). Requires --spatial.")
     ap.add_argument("--h4-unsup-key", action="store_true",
                     help="H4: run label-free key detector and report G_H4 gate "
                          "(precision/recall vs ground-truth labels, measurement only).")

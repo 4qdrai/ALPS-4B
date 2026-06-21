@@ -5,6 +5,57 @@
 
 ---
 
+## ⭐ REFINED MASTER PLAN (2026-06-21) — supersedes §4–§6 and §9b below
+
+### Where we actually are (Run-2 = FIRST real closed-loop measurement)
+Fresh A40 patch-16 model `unsup_temporal.pt` (d192/depth10/W6/S4, `--lewm-ssl`, 80 ep; healthy: op 0.786, sig 0.91, no collapse, enc 4.88M), **backed up to HF `Free2035/alps-4b-tworooms`** (model-loss-proof after the pod was deleted twice). On a 1500-ep `_eval_small.pt` (N=103,113):
+- **G1_spatial = 0.730 wu** (global-pool 3.518) → spatial readout recovers position ~4.8×. Representation edge holds.
+- **G_4brain = 0** at `--ctrl-k 2`: operative 0.00 → +strategic 0.00 → +tactical 0.00, **oracle 0.97**, necessity +0.00/+0.00.
+
+**THE REFRAME — this collapses to ONE bottleneck.** Oracle 0.97 proves the task + k-means graph + waypoints + planner are all correct (with TRUE position the hierarchy solves cross-room 97%). The only broken link is **execution**: decoded position (0.730 wu) is noisier than one step of motion (0.27 wu), so decoded control can't pick the right action → all tiers read 0 and become incomparable. **Planning is almost certainly already correct; execution decode-precision is the wall.** The whole plan is: get decoded execution below the motion scale, then bank each edge.
+
+### The claim ladder (what "all edges proven" means — acceptance criteria)
+| # | Edge | Proven by | Target | Status |
+|---|---|---|---|---|
+| E1 | Unsup representation | G1_spatial ≪ random | ≫ 3.5; ↓ with patch8 | ✅ 0.73 vs 3.5 |
+| E2 | **Hierarchical PLANNING** | tier plan @ fixed exec: op ≪ str ≤ tac (cross-room) | tac ≥ 2× op | ⏳ Track B (decode-independent) |
+| E3 | Unsup closed-loop SIMPLE | decoded control solves; op ≪ tac | tac ≥ 2× op, → oracle | ⏳ gated on decode |
+| E4 | Unsup closed-loop COMPLEX | routes start→key→goal; op=0 ≪ tac | tac ≥ 0.5·oracle | ⏳ gated on decode < 0.55 pickup |
+| E5 | Latent-RAG H7 | lifelong, 0 weight updates | gain ≥0.10, interf ≤0.02 | ⏳ needs a routing model |
+| E6 | Fourth Brain H8/9/10 | monitor AUROC, escalation lift, safe fallback | AUROC ≥0.8, safe-reach ≥0.8 | ⏳ needs a routing model |
+| E7 | MoE H11 | expert↔regime MI + knockout | diag-dominant | ✅ passes locally |
+| E8 | **Proof videos** SIMPLE+COMPLEX | side-by-side op-stalls vs 4B-solves | both solve on screen | ⛔ blocked by **V1** |
+
+### Two tracks
+**Track A — full unsupervised closed-loop (north star):** sharpen decoded execution until it routes, then run the whole suite + videos.
+**Track B — decode-independent planning proof (de-risk E2 NOW):** execute each tier's UNSUPERVISED plan with a fixed near-oracle controller → proves "hierarchy > flat" even while decode sharpening is in flight.
+
+### Track A — sequenced, with the decision tree
+- **A1 (running now): ctrl-k sweep, NO retrain.** `--ctrl-k 5` on the current model (5×0.27 = 1.35 > 0.730 → SNR ~1.8). If 0, try `--ctrl-k 8`. Branch on the result:
+  - operative > 0 **and** tac > op → **routing achieved at patch16** → jump to A4 + A5.
+  - operative > 0 **but** tac ≈ op → execution works, hierarchy not separating → run Track B + inspect graph/waypoints.
+  - still 0 → decode too coarse even amplified → **A2**.
+- **A2: sharpen decode — retrain at patch8 (the real fix).** Now one command (script is patch-tunable as of today): `PATCH="2 8 8" SPATIAL_GRID=16 CTRL_K=3 RETRAIN=1 EPISODES=10000 EPOCHS=80 bash scripts/run_a40_unsupervised.sh`. 16×16 = 256 tokens → decode ~0.3 wu. **Back up both models to HF before anything else.** Re-read G1_spatial (~0.3) + G_4brain.
+- **A3: combine if borderline.** ~0.3 decode ≈ 0.27 motion → pair patch8 with `CTRL_K=3..5` (the script now threads ctrl-k into every gate).
+- **A4: full edge suite (once op>0, tac>op).** Same script runs it all on the routing model: four-brain simple+complex+key (E3/E4), abstraction goal-emission (E2 @ scale), fourth-brain H8/9/10 (E6), RAG H7 (E5), MoE H11 (E7).
+- **A5: complex closed-loop (E4).** patch8 complex model (script trains it) → decode < 0.55 pickup radius so the agent can physically touch the key; operative 0 (can't detour for the key) ≪ tactical (routes start→key→door→goal). The most dramatic hierarchy demo.
+- **A6: proof videos (E8)** — runs only after **V1**.
+
+- **V1 (REQUIRED code, found 2026-06-21): spatial-wire `make_videos_4b.py`.** It currently drives the Four-Brain panel on the **global pool** (`model.pool`, `hist_greedy_action_latent`, `build_graph_raw` over pooled `fit_probe`) = the position-blind path we proved fails → the videos would film the Four-Brain **stalling** even when the gates route. Fix = mirror `validate_temporal.run_episode_spatial`: build the graph on `spatial_readout`, decode waypoints + live position via the spatial **ridge** decode, drive control with `buf.rollout_decode(decode_state, a, ctrl_k)`, add `--spatial/--spatial-grid/--ctrl-k` flags, pass them from script stage 8. Smoke-renderable on any model; becomes the proof the moment a model routes. **Implement while the pod trains.**
+
+### Track B — decode-independent planning proof (do this to bank E2)
+Add a `true_pos_exec` flag to the four-brain gate: keep each tier's **unsupervised** plan (operative = no plan; strategic = coarse graph; tactical = fine graph — all built on frozen SSL latents), but execute the chosen waypoint with the env's true-position controller. Removes decode precision as a confound → directly measures the PLANNING edge (expect op ≪ str ≤ tac). Honest framing: "the unsupervised hierarchy PLANS the route; execution shown separately." Small addition to `run_episode_spatial`.
+
+### Open code gaps to verify (so E2/E6/E7 aren't measured through a position-blind decoder)
+- `validate_abstraction` goal-emission gates (G_str2tac / G_tac2op) decode subgoal POSITIONS via `tac_pos_head` (pooled) → position-blind under pure SSL. Verify they read the spatial readout, else their "points toward goal" check is meaningless on the `--lewm-ssl` model.
+- `moe_specialization` knockout Δerr is on the pooled tac-decode — fine for relative routing/MI, but note the absolute decode is pooled.
+
+### Discipline (lessons from losing the pod twice)
+- **Back up every trained model to HF immediately** (`HfApi.upload_file`, `$HF_TOKEN` from env; never echo the token; revoke the exposed one).
+- `--n-episodes 30` for fast reads; the silent control loop is NOT a hang (progress prints since `84917be`). Keep the box awake; don't pipe runs through `grep`.
+
+---
+
 ## 0. Coordinates
 - **Repo:** `https://github.com/4qdrai/ALPS-4B` — branch `main`. Owner/committer: **`sfreedoms2035 <sfreedoms2035@gmail.com>`**.
 - **Local working dir:** `H:\Meine Ablage\SayBouBase\raw\Projects\AIFrontTierChallenge\Synthese\FormulatioofEdgeHypotheses&Evidences\Evidences\ALPS-4B`
@@ -108,4 +159,4 @@ Toy testbed = **Two-Rooms** (128×128, an agent/dot navigates between rooms thro
 - **`G_4brain` is STILL UNMEASURED.** The definitive test: on the A40, run `validate_temporal --spatial --spatial-grid 8 --ctrl-k 3 --n-episodes 30` on `unsup_temporal.pt` (better predictor → fair rollout). Try `--ctrl-k 2` first (lighter); bump to 5 if needed.
 
 ## 10. One-line status
-*Representation under pure SSL is solved via the spatial readout (position recoverable, G1_spatial 0.584 vs random 3.6). The closed-loop hierarchy edge is still open — decode precision (0.58) is resolution-capped above the per-step motion (0.27), so control likely won't route until we either (a) sharpen the decode with finer patches, and/or (b) use a larger-displacement control. The immediate next action is to read `G_4brain` on the saved A40 model (cheap, model already trained) to decide which.*
+*See the ⭐ REFINED MASTER PLAN at the top — it supersedes this and §4–§6/§9b. In short (2026-06-21): `G_4brain` is now MEASURED for the first time = 0 at ctrl-k 2, with **oracle 0.97** → the task/graph/planner are all correct; the sole wall is execution decode-precision (G1_spatial 0.730 > motion 0.27). Path: ctrl-k sweep (no retrain, in flight) → patch8 retrain (decode ~0.3) → full edge suite + complex → videos (blocked on V1: `make_videos_4b` is still on the position-blind global pool and must be spatial-wired). Track B (tier-plan @ true-position exec) banks the planning edge E2 independent of the decode wall.*
