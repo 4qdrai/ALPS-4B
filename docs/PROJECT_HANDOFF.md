@@ -53,22 +53,26 @@ Toy testbed = **Two-Rooms** (128×128, an agent/dot navigates between rooms thro
 - Per-step agent motion ≈ **0.27 wu**. Since decode noise (0.58) **> motion (0.27)**, the predictor-decoded control can't reliably pick the right action → **`G_4brain` ≈ 0 expected** (matches every local run; no local model routed cross-room in either pooled or spatial mode).
 - **We have NOT yet cleanly demonstrated that the control routes at ANY decode precision** — the one local "sharp" model test was inconclusive (that model didn't route in *pooled* mode either). So the open question is: *is the bottleneck decode precision, or something deeper in the control (stride/action-sensitivity)?*
 
-## 5. Current A40 run state (as of handoff)
+## 5. Current A40 run state (UPDATED — pod was STOPPED by owner)
 - Stage 1 (data, two-pass): **OK**, 675k frames / 33 GB, no OOM.
 - Stage 2 training: **DONE**, model saved at `results/two_rooms/validation/unsup_temporal.pt`. Loss plateaued `op ≈ 0.91` (expected weak-dynamics), no collapse (`sig 2.3→0.97`, VQ diversifying).
-- Stage 2 validation: printed **`G1_spatial 0.584`** then **OOM-killed** (spatial gather 26 GB at grid 8). **FIXED** (commit `e234f78`: cap ridge-fit probe to 20k/5k). The full pipeline script aborted at that point (`set -e`).
-- **We have NOT yet seen `G_4brain`** (the edge). That is the immediate next read.
+- **`G1_spatial` CONFIRMED at A40 scale = 0.544–0.584** (grid 8; pooled G1 ~3.5). Same as local → readout-resolution floor, *not* model-limited. Representation claim holds; closed-loop still the open question.
+- Two OOMs hit and fixed: spatial ridge-probe gather (commit `e234f78`, cap 20k/5k); then validation on the **full 33 GB frame tensor + grid-8 ops** stayed too tight on the cgroup → **WORKAROUND: validate on a small eval subset** (`python -m alps.benchmarks.two_rooms.data_generator --save-path data/two_rooms/_eval_small.pt --num-episodes 1500 --max-steps 100 --heuristic-fraction 0.4 --seed 7`, ~5 GB). That cleared the OOM and printed `G1_spatial 0.544`.
+- **"Stuck" was a FALSE ALARM** — not a hang: after `G1_spatial` the spatial four-brain runs **`n-episodes 200 × 3 tiers × ~140 steps × 4 predictions` ≈ 336k predictor passes + two 12288-d k-means, ALL SILENT** (~20–40 min) until `G_4brain` prints. Owner read the silence as stuck and **stopped the pod**. FIXED: added **progress prints** (commit `84917be`) so each tier + the graph build now report. **For a fast read, use `--n-episodes 30`** (~5 min) not 200.
+- **We have STILL NOT seen `G_4brain`** (the edge). That is THE immediate next read on the next pod.
 
 ## 6. NEXT STEPS (in order)
-1. **IMMEDIATE — see `G_4brain` cheaply** (the simple model is saved; no retrain): on the pod, `git pull` then
+1. **IMMEDIATE — see `G_4brain` cheaply** (model saved, no retrain). On a fresh pod, clone, `pip install -e .`, then make a SMALL eval set (avoids the 33 GB OOM) and run with **few episodes + progress prints** so it's fast and visibly not-hung:
    ```bash
+   python -m alps.benchmarks.two_rooms.data_generator --save-path data/two_rooms/_eval_small.pt \
+     --num-episodes 1500 --max-steps 100 --heuristic-fraction 0.4 --seed 7
    python -m alps.evaluation.validate_temporal \
      --model-path results/two_rooms/validation/unsup_temporal.pt \
-     --data-path  data/two_rooms/trajectories_unsup.pt \
-     --n-episodes 200 --coarse-k 8 --fine-k 24 --spatial --spatial-grid 8 \
+     --data-path  data/two_rooms/_eval_small.pt \
+     --n-episodes 30 --coarse-k 8 --fine-k 24 --spatial --spatial-grid 8 \
      --save-dir results/two_rooms/validation/unsupervised
    ```
-   Read `G_4brain` (operative vs strategic vs tactical) + `G_collapse`.
+   (The trained model `unsup_temporal.pt` lives on the stopped pod's volume — if that volume is gone, the ~8 h stage-2 training must be redone via `bash scripts/run_a40_unsupervised.sh` first.) Read `G_4brain` (operative vs strategic vs tactical) + `G_collapse`.
 2. **Branch on `G_4brain`:**
    - **If it routes** (operative ≈ 0 ≪ graph) → resume the full pipeline: `EPISODES=10000 EPOCHS=80 DMODEL=192 SPATIAL_GRID=8 bash scripts/run_a40_unsupervised.sh` (skips the saved simple model, trains complex, runs all spatial-wired gates: four-brain simple+complex+key, abstraction, fourth-brain H8/H9/H10, RAG H7, MoE, videos).
    - **If it's ≈ 0** (likely) → **decode is resolution-capped above what control needs.** Real fix = **finer patches**: `patch_size (2,16,16) → (2,8,8)` ⇒ 16×16 = 256 tokens ⇒ ~2× sharper decode (~0.3 wu). Needs a small **`--patch-size` CLI flag** added to `train_temporal.py` + threaded to the model, then **retrain** (~8 h simple).
