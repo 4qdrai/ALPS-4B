@@ -114,6 +114,20 @@ class HistoryBuffer:
         a_hist = F.one_hot(torch.tensor(a_idx, device=self.dev), 4).float().unsqueeze(0)
         return self.readout(self.m.op_predict_next(z_hist, a_hist)).squeeze(0)   # [R]
 
+    @torch.no_grad()
+    def rollout_decode(self, decode_state, action, K):
+        """Roll the op predictor K steps committing to `action`; return the decoded position
+        of the K-step-ahead state. Displacement ~ K x per-step motion, so it beats the decode
+        noise (the larger-displacement fix for predictor-decoded control). K=1 == 1-step."""
+        z, a = list(self.z), list(self.a)
+        z_next = self.z[-1]
+        for _ in range(max(1, int(K))):
+            z_hist = torch.stack(z, dim=1)
+            a_hist = F.one_hot(torch.tensor(a[1:] + [action], device=self.dev), 4).float().unsqueeze(0)
+            z_next = self.m.op_predict_next(z_hist, a_hist)
+            z = (z + [z_next])[-self.W:]; a = (a + [action])[-self.W:]
+        return decode_state(z_next)[0]          # [2] decoded position K steps ahead
+
     @property
     def cur_z(self): return self.z[-1]
 
@@ -163,7 +177,7 @@ def fit_ridge_decode(X, Y, device, lam=10.0):
 
 @torch.no_grad()
 def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
-                        strategy, complex_mode=False, max_steps=140):
+                        strategy, complex_mode=False, max_steps=140, ctrl_k=3):
     """4B edge under PURE SSL via predictor-based DECODED control on the spatial readout.
     The TRAINED op predictor predicts the next latent grid; decode_state (spatial_readout
     + frozen ridge) reads the predicted agent POSITION (action-sensitive, unlike the coarse
@@ -196,7 +210,7 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
         sub = waypoints[min(wp, len(waypoints) - 1)]
         best_a, best_d = 0, 1e30
         for a in range(4):
-            pos_a = buf.decode_next_for_action(decode_state, a).cpu().numpy()  # PREDICTED decoded pos
+            pos_a = buf.rollout_decode(decode_state, a, ctrl_k).cpu().numpy()   # K-step-ahead decoded pos
             d = float(np.linalg.norm(pos_a - sub))
             if d < best_d:
                 best_d, best_a = d, a
@@ -213,7 +227,7 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
 
 @torch.no_grad()
 def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, readout,
-                            device, n_episodes, complex_mode=False):
+                            device, n_episodes, complex_mode=False, ctrl_k=3):
     """3-tier ablation under pure SSL with predictor-based decoded control on the spatial
     readout: operative (greedy) vs strategic (coarse graph) vs tactical (fine graph).
     Complex mode = key->door->goal (the graph routes through the key landmark)."""
@@ -227,7 +241,8 @@ def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, re
     print(f"  [spatial-4B] running {len(cfgs)} episodes x 3 tiers (silent control loop)...", flush=True)
     for name, (gph, strat) in plan.items():
         res = [run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout,
-                                   gph, strat, complex_mode=complex_mode) for sr, gr, seed in cfgs]
+                                   gph, strat, complex_mode=complex_mode, ctrl_k=ctrl_k)
+               for sr, gr, seed in cfgs]
         out[name] = summarize(res)
         sv = out[name].get("cross_room_success", out[name])
         print(f"  [spatial-4B] {name:<10} done -> {sv}", flush=True)
@@ -675,7 +690,8 @@ def run(args):
         print(f"  [spatial] building graphs (k-means on {g*g*model.d_model}-d readout)...", flush=True)
         coarse_graph, fine_graph = build_sp(args.coarse_k), build_sp(args.fine_k)
         fb = gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state,
-                                     readout4b, device, args.n_episodes, complex_mode=args.complex)
+                                     readout4b, device, args.n_episodes, complex_mode=args.complex,
+                                     ctrl_k=getattr(args, "ctrl_k", 3))
     else:
         def build(k):
             return build_graph_raw(model, decode_op, frames, positions, room_ids, starts,
@@ -1123,6 +1139,10 @@ def main():
                          "instead of the global pool, so graph nodes are position-faithful "
                          "under pure SSL (the pool discards the small agent). Reports G1_spatial.")
     ap.add_argument("--spatial-grid", type=int, default=4, help="spatial readout grid size (g x g)")
+    ap.add_argument("--ctrl-k", type=int, default=3,
+                    help="spatial control lookahead: roll the predictor K steps per action so "
+                         "each decision compares ~K*0.27wu apart (beats the ~0.55wu decode "
+                         "noise). 1 = old 1-step control.")
     ap.add_argument("--h4-unsup-key", action="store_true",
                     help="H4: run label-free key detector and report G_H4 gate "
                          "(precision/recall vs ground-truth labels, measurement only).")
