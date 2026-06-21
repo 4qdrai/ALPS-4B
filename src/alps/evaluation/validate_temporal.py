@@ -223,10 +223,13 @@ def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, re
     plan = {"operative": (None, "operative"), "strategic": (coarse_graph, "graph"),
             "tactical": (fine_graph, "graph")}
     out = {}
+    print(f"  [spatial-4B] running {len(cfgs)} episodes x 3 tiers (silent control loop)...", flush=True)
     for name, (gph, strat) in plan.items():
         res = [run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout,
                                    gph, strat, complex_mode=complex_mode) for sr, gr, seed in cfgs]
         out[name] = summarize(res)
+        sv = out[name].get("cross_room_success", out[name])
+        print(f"  [spatial-4B] {name:<10} done -> {sv}", flush=True)
     out["oracle"] = float(np.mean([_bfs_oracle_cfg(sr, gr, seed, complex_mode) for sr, gr, seed in cfgs]))
     return out
 
@@ -668,6 +671,7 @@ def run(args):
                                   total, device, k=k, S=max(1, args.stride // 2), readout=readout4b)
             gph.decoded_xy = ridge_decode(torch.tensor(gph.centroids, device=device)).cpu().numpy()
             return gph
+        print(f"  [spatial] building graphs (k-means on {g*g*model.d_model}-d readout)...", flush=True)
         coarse_graph, fine_graph = build_sp(args.coarse_k), build_sp(args.fine_k)
         fb = gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state,
                                      readout4b, device, args.n_episodes, complex_mode=args.complex)
