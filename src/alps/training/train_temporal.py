@@ -99,6 +99,20 @@ def train(args):
 
     W, Kt, Ks = args.window, args.k_tac, args.k_str
     rng = np.random.RandomState(0)
+    def _save_ckpt(tag):
+        if not args.save_model:
+            return
+        os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+        torch.save({"model_state_dict": model.state_dict(), "d_model": args.d_model,
+                    "enc_depth": args.enc_depth, "enc_heads": args.enc_heads,
+                    "num_codes": args.num_codes, "num_experts": args.num_experts,
+                    "active_experts": args.active_experts, "op_depth": args.op_depth,
+                    "abs_depth": args.abs_depth, "window": args.window, "stride": args.stride,
+                    "k_tac": args.k_tac, "k_str": args.k_str,
+                    "use_projection_head": True, "use_cls_pool": args.cls_pool,
+                    "patch_size": list(args.patch_size)}, args.out)
+        print(f"[save] {args.out} ({tag})", flush=True)
+
     model.train()
     for epoch in range(1, args.epochs + 1):
         t0 = time.perf_counter()
@@ -221,18 +235,10 @@ def train(args):
               f"dyn {agg['dyn']/nb:.3f} pos {agg['pos']/nb:.3f} tac {agg['tac']/nb:.3f} "
               f"str {agg['str']/nb:.3f} vq {agg['vq']/nb:.3f} sub {agg['sub']/nb:.3f} "
               f"sig {agg['sig']/nb:.3f} inv {agg['inv']/nb:.3f} | {time.perf_counter()-t0:.1f}s")
+        if getattr(args, "save_every", 0) and epoch % args.save_every == 0:
+            _save_ckpt(f"epoch {epoch}")          # periodic checkpoint -> crash-safe long runs
 
-    if args.save_model:
-        os.makedirs(os.path.dirname(args.out), exist_ok=True)
-        torch.save({"model_state_dict": model.state_dict(), "d_model": args.d_model,
-                    "enc_depth": args.enc_depth, "enc_heads": args.enc_heads,
-                    "num_codes": args.num_codes, "num_experts": args.num_experts,
-                    "active_experts": args.active_experts, "op_depth": args.op_depth,
-                    "abs_depth": args.abs_depth, "window": args.window, "stride": args.stride,
-                    "k_tac": args.k_tac, "k_str": args.k_str,
-                    "use_projection_head": True, "use_cls_pool": args.cls_pool,
-                    "patch_size": list(args.patch_size)}, args.out)
-        print(f"[save] {args.out}")
+    _save_ckpt("final")
     return model
 
 
@@ -289,6 +295,9 @@ def build_parser():
     ap.add_argument("--sigreg-slices", type=int, default=256)
     ap.add_argument("--limit-samples", type=int, default=0)
     ap.add_argument("--save-model", action="store_true")
+    ap.add_argument("--save-every", type=int, default=0,
+                    help="checkpoint to --out every N epochs (crash-safe for long patch8 runs; "
+                         "0 = only at the end).")
     return ap
 
 

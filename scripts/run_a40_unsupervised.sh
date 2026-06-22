@@ -74,7 +74,7 @@ mkdir -p "$OUT"
 TRAIN_ARGS="--lewm-ssl --d-model $DMODEL --enc-depth $ENC_DEPTH --enc-heads $ENC_HEADS \
   --window $WINDOW --stride $STRIDE --batch-size $BATCH --sigreg-slices $SIGREG_SLICES \
   --num-codes $NUM_CODES --num-experts $NUM_EXPERTS --active-experts $ACTIVE_EXPERTS \
-  --epochs $EPOCHS --patch-size $PATCH --save-model"
+  --epochs $EPOCHS --patch-size $PATCH --save-every ${SAVE_EVERY:-5} --save-model"
 
 echo "================ ALPS-4B FULLY-UNSUPERVISED validation ================"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true

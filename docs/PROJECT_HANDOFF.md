@@ -18,13 +18,19 @@ Fresh A40 patch-16 model `unsup_temporal.pt` (d192/depth10/W6/S4, `--lewm-ssl`, 
 | # | Edge | Proven by | Target | Status |
 |---|---|---|---|---|
 | E1 | Unsup representation | G1_spatial ≪ random | ≫ 3.5; ↓ with patch8 | ✅ 0.73 vs 3.5 |
-| E2 | **Hierarchical PLANNING** | tier plan @ fixed exec: op ≪ str ≤ tac (cross-room) | tac ≥ 2× op | ⏳ Track B (decode-independent) |
-| E3 | Unsup closed-loop SIMPLE | decoded control solves; op ≪ tac | tac ≥ 2× op, → oracle | ⏳ gated on decode |
+| E2 | **Hierarchical PLANNING** | tier plan @ fixed exec: op ≪ str ≤ tac (cross-room) | tac ≥ 2× op | ✅ **PROVEN** str 0.79 ≫ op 0.50 (+0.29) @ true landmarks+exec |
+| E3 | Unsup closed-loop SIMPLE | decoded control solves; op ≪ tac | tac ≥ 2× op, → oracle | ⏳ sole wall = decode precision (sharpen readout, then maybe patch8) |
 | E4 | Unsup closed-loop COMPLEX | routes start→key→goal; op=0 ≪ tac | tac ≥ 0.5·oracle | ⏳ gated on decode < 0.55 pickup |
 | E5 | Latent-RAG H7 | lifelong, 0 weight updates | gain ≥0.10, interf ≤0.02 | ⏳ needs a routing model |
 | E6 | Fourth Brain H8/9/10 | monitor AUROC, escalation lift, safe fallback | AUROC ≥0.8, safe-reach ≥0.8 | ⏳ needs a routing model |
 | E7 | MoE H11 | expert↔regime MI + knockout | diag-dominant | ✅ passes locally |
 | E8 | **Proof videos** SIMPLE+COMPLEX | side-by-side op-stalls vs 4B-solves | both solve on screen | ⛔ blocked by **V1** |
+
+### RESULT + PIVOT (2026-06-21, after Track B)
+**E2 PROVEN (Track B, `--true-pos-exec`, NO retrain on the patch-16 model):** with oracle landmarks (`graph.true_xy`) + oracle execution, cross-room op 0.50 → **strategic 0.79 (+0.29, +58%)** → tactical 0.71. The unsupervised graph ROUTING is correct. The intermediate run (oracle exec but DECODED landmarks) gave strategic 0.36 < op 0.50 → **decode noise destroys the edge via the landmark positions**; Track A (decoded exec + decoded landmarks, even ctrl-k5) = 0.00. So decode precision (0.73wu) is the SOLE wall and hurts in BOTH roles (landmarks AND execution).
+**COST PIVOT — patch8 is NOT cheap:** 256 tokens, attention O(n²) ≈ 10–16× → ~3000s/epoch × 80 ≈ *tens of hours*, pod-death-risky.
+**SOFT-ARGMAX READOUT — TRIED, REFUTED (local):** `--readout softargmax` (linear heatmap over the position-indexed tokens → sub-cell interpolation). On `_local_lewm_ssl.pt`: ridge 0.394 < soft-argmax 0.467 → the single heatmap is lower-capacity than the full ridge; does NOT sharpen decode. Flag-gated infra only. **But it surfaced the key fact: the local pure-SSL model decodes at 0.39wu (ridge), well under the pod model's 0.73 → 0.73 is NOT a hard floor; the pod checkpoint is just weaker.**
+**DECISIVE CHEAP EXPERIMENT (new A1.5, NO retrain) — the DECODE-NOISE SWEEP:** `--noise-sweep` (with `--spatial --true-pos-exec`) injects a decoder of precision σ into the proven Track B (landmarks + execution + advancement) and sweeps σ∈{0,.15,.25,.35,.45,.55,.73}, printing where strategic−operative collapses = **the decode precision a real read-out must beat**. This decides the route WITHOUT guessing: if the edge survives to σ≈0.4 → a **better-trained patch16** (more epochs/data/STRIDE → ~0.4, ~7h) suffices; if it needs σ≲0.25 → **patch8** (~0.3, reduced ≈5k eps/≈30 ep, ~10–15h) is required. Command: `validate_temporal --spatial --spatial-grid 8 --true-pos-exec --noise-sweep --n-episodes 30` on the current model; reads `temporal_gates_noise_sweep.json`.
 
 ### Two tracks
 **Track A — full unsupervised closed-loop (north star):** sharpen decoded execution until it routes, then run the whole suite + videos.
