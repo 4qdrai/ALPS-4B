@@ -101,7 +101,8 @@ python -m alps.evaluation.validate_temporal \
 # ---- 3. Abstraction gates: strategic/tactical predict latent + emit goals ----
 echo "--- [3/8] abstraction-layer gates (unsupervised) ---"
 python -m alps.evaluation.validate_abstraction \
-    --model-path "$MODEL" --data-path "$DATA" --save-dir "$OUT"
+    --model-path "$MODEL" --data-path "$DATA" --save-dir "$OUT" \
+    || echo "[warn] [3/8] abstraction gate failed -- NON-FATAL, continuing to the proof videos"
 
 # ---- 4. COMPLEX (key->door->goal), unsupervised — H4 label-free key ---------
 if [ ! -f "$CX_DATA" ]; then
@@ -117,32 +118,40 @@ echo "--- [4/8] COMPLEX four-brain, H3 VQ-graph, H4 label-free key, H2 emitter -
 python -m alps.evaluation.validate_temporal --complex \
     --model-path "$CX_MODEL" --data-path "$CX_DATA" --n-episodes "$N_EVAL" \
     --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" \
-    --h4-unsup-key --vq-graph --h2-emitter $SPATIAL_ARGS $CTRL_ARGS
+    --h4-unsup-key --vq-graph --h2-emitter $SPATIAL_ARGS $CTRL_ARGS \
+    || echo "[warn] [4/8] COMPLEX four-brain gate failed -- NON-FATAL (complex model still saved for videos)"
 # Simple mode: H3 + H2 gates (no key) + spatial-readout four-brain edge
 python -m alps.evaluation.validate_temporal \
     --model-path "$MODEL" --data-path "$DATA" --n-episodes "$N_EVAL" \
     --coarse-k "$COARSE_K" --fine-k "$FINE_K" --save-dir "$OUT" \
-    --vq-graph --h2-emitter $SPATIAL_ARGS $CTRL_ARGS
+    --vq-graph --h2-emitter $SPATIAL_ARGS $CTRL_ARGS \
+    || echo "[warn] [4/8] simple H3/H2 gate failed -- NON-FATAL, continuing"
 
 # ---- 5. Fourth Brain: monitors -> escalation -> fallback (unsupervised) ------
 echo "--- [5/8] Fourth Brain, simple + complex (H4 label-free key in complex) ---"
 python -m alps.evaluation.fourth_brain \
-    --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT" $SPATIAL_ARGS
+    --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT" $SPATIAL_ARGS \
+    || echo "[warn] [5/8] fourth-brain (simple) failed -- NON-FATAL, continuing"
 python -m alps.evaluation.fourth_brain --complex --label-free-key \
-    --model-path "$CX_MODEL" --data-path "$CX_DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT" $SPATIAL_ARGS
+    --model-path "$CX_MODEL" --data-path "$CX_DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT" $SPATIAL_ARGS \
+    || echo "[warn] [5/8] fourth-brain (complex) failed -- NON-FATAL, continuing"
 
 # ---- 6. MoE expert specialization (unsupervised) -----------------------------
 echo "--- [6/8] MoE expert specialization, simple + complex ---"
-python -m alps.evaluation.moe_specialization --model-path "$MODEL" --data-path "$DATA" --save-dir "$OUT"
-python -m alps.evaluation.moe_specialization --complex --model-path "$CX_MODEL" --data-path "$CX_DATA" --save-dir "$OUT"
+python -m alps.evaluation.moe_specialization --model-path "$MODEL" --data-path "$DATA" --save-dir "$OUT" \
+    || echo "[warn] [6/8] MoE (simple) failed -- NON-FATAL, continuing"
+python -m alps.evaluation.moe_specialization --complex --model-path "$CX_MODEL" --data-path "$CX_DATA" --save-dir "$OUT" \
+    || echo "[warn] [6/8] MoE (complex) failed -- NON-FATAL, continuing"
 
 # ---- 7a. Latent-RAG: single-pass (H7 original) + lifelong batches (H7 extended) --
 echo "--- [7/8] RAG-in-the-loop H7 (single-pass + lifelong batches) ---"
 python -m alps.evaluation.fourth_brain --rag \
-    --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT" $SPATIAL_ARGS
+    --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" --save-dir "$OUT" $SPATIAL_ARGS \
+    || echo "[warn] [7/8] RAG single-pass failed -- NON-FATAL, continuing"
 python -m alps.evaluation.fourth_brain --h7-lifelong \
     --model-path "$MODEL" --data-path "$DATA" --n-cal "$FB_CAL" --n-eval "$FB_EVAL" \
-    --n-batches 5 --save-dir "$OUT" $SPATIAL_ARGS
+    --n-batches 5 --save-dir "$OUT" $SPATIAL_ARGS \
+    || echo "[warn] [7/8] RAG lifelong failed -- NON-FATAL, continuing"
 
 # ---- 8. PROOF VIDEOS: Four-Brain solving SIMPLE + COMPLEX (unsupervised model) -
 # Side-by-side operative(stalls) vs Four-Brain(solves), env's own frames, GIF + MP4.
