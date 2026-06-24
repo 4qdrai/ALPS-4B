@@ -43,6 +43,16 @@ class TwoRoomsEnv:
     COLOR_AGENT = np.array([220, 50, 50], dtype=np.uint8)       # red
     COLOR_TARGET = np.array([50, 200, 50], dtype=np.uint8)      # green
     COLOR_KEY = np.array([255, 215, 0], dtype=np.uint8)         # bright yellow
+    # Agent/target/key are drawn LARGER than their physics radius so the mover occupies enough
+    # pixels for the pure-SSL objective to ENCODE its position. With a ~2-4px agent (radius 0.3)
+    # the dot is a negligible fraction of every 16x16 patch, the next-frame prediction is
+    # dominated by static background, and the latent stays position-blind -> predictor-decoded
+    # control fails (the tiny-agent-in-static-scene pathology). Enlarging it is RENDER-ONLY:
+    # AGENT_RADIUS (collision), STEP_SIZE, boundaries and the door geometry are unchanged, so the
+    # navigation task is identical; only the visible blob grows enough to be encodable/decodable.
+    AGENT_RENDER_RADIUS = 0.8      # ~20px diameter @128 ~= 1.25 patches @ patch16 (encodable)
+    TARGET_RENDER_RADIUS = 0.7
+    KEY_RENDER_RADIUS = 0.6
 
     # Wall rendering thickness in world units
     WALL_THICKNESS = 0.15
@@ -256,13 +266,13 @@ class TwoRoomsEnv:
 
         # --- 4. Draw Key (yellow circle, Complex Mode only) ---
         if self.complex_mode and not self.has_key:
-            img = self._draw_circle_aa(img, self.key_pos, 0.25, self.COLOR_KEY)
+            img = self._draw_circle_aa(img, self.key_pos, self.KEY_RENDER_RADIUS, self.COLOR_KEY)
 
         # --- 5. Draw target (green circle) ---
-        img = self._draw_circle_aa(img, self.target_pos, self.AGENT_RADIUS, self.COLOR_TARGET)
+        img = self._draw_circle_aa(img, self.target_pos, self.TARGET_RENDER_RADIUS, self.COLOR_TARGET)
 
         # --- 6. Draw agent (red circle, on top) ---
-        img = self._draw_circle_aa(img, self.agent_pos, self.AGENT_RADIUS, self.COLOR_AGENT)
+        img = self._draw_circle_aa(img, self.agent_pos, self.AGENT_RENDER_RADIUS, self.COLOR_AGENT)
 
         return img
 
