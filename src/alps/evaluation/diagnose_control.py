@@ -24,11 +24,36 @@ import sys; sys.path.insert(0, "src")
 import argparse, copy
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from alps.benchmarks.two_rooms.environment import TwoRoomsEnv
 from alps.benchmarks.two_rooms.world_model_planning import obs_to_frame
 from alps.training.train_hier import load_raw
 from alps.evaluation.validate_temporal import load_model, fit_ridge_decode, HistoryBuffer
+
+
+@torch.no_grad()
+def fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W, dev, n_win=3000):
+    """Fit the ridge on the PREDICTOR's OWN outputs (op_predict_next -> spatial readout) paired
+    with the TRUE next position -- not on real frames. The control decodes predicted latents,
+    which are off the real-frame manifold; calibrating on predictions removes any systematic
+    linear (sign/scale/offset) distortion. Still a frozen label-free probe (measuring instrument)."""
+    E = starts.shape[0]; rng = np.random.RandomState(1); ss = []
+    for _ in range(n_win):
+        e = rng.randint(E - 1); s = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else tot
+        if end - s >= W + 1:
+            ss.append(rng.randint(s, end - W))
+    ss = np.array(ss); Xs, Ys, bs = [], [], 64
+    for c in range(0, len(ss), bs):
+        sb = ss[c:c + bs]
+        fidx = np.stack([sb + k for k in range(W + 1)], 1)              # [B,W+1]
+        fr = frames[torch.as_tensor(fidx.reshape(-1))].to(dev).float() / 255.
+        z = m.encode_frame(fr); N, D = z.shape[1], z.shape[2]
+        z = z.reshape(len(sb), W + 1, N, D)
+        a_hist = F.one_hot(actions[torch.as_tensor(fidx[:, :W].reshape(-1))].to(dev).long(), 4).float().reshape(len(sb), W, 4)
+        z_pred = m.op_predict_next(z[:, :W], a_hist)                    # [B,N,D]
+        Xs.append(readout(z_pred).cpu()); Ys.append(positions[torch.as_tensor(fidx[:, W])])
+    return fit_ridge_decode(torch.cat(Xs), torch.cat(Ys), dev)
 
 
 @torch.no_grad()
@@ -59,8 +84,12 @@ def main():
     ridge = fit_ridge_decode(gr(tr), positions[torch.as_tensor(tr)], dev)
     decode_state = lambda grid: ridge(m.spatial_readout(grid, grid=g))
     g1 = (ridge(gr(va)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
+    ridge_c = fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W, dev)
+    decode_calib = lambda grid: ridge_c(m.spatial_readout(grid, grid=g))
 
-    spreads, errs, dir_hits, n, ep = [], [], 0, 0, 0
+    spreads, errs, dir_hits = [], [], 0
+    spreads_c, errs_c, dir_hits_c = [], [], 0
+    n, ep = 0, 0
     while n < a.n_steps:
         env = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False)
         obs = env.reset(start_room=0, goal_room=1); ep += 1
@@ -69,23 +98,25 @@ def main():
         for _ in range(40):
             if n >= a.n_steps:
                 break
-            pred = np.stack([buf.rollout_decode(decode_state, ai, 1).cpu().numpy() for ai in range(4)])  # [4,2]
-            true = np.stack([copy.deepcopy(env).step(ai)[0]["position"] for ai in range(4)])              # [4,2]
-            spreads.append(float(pred.std(0).mean()))
-            errs.append(float(np.linalg.norm(pred - true, axis=1).mean()))
-            pa = int(np.argmin(np.linalg.norm(pred - target, axis=1)))
+            pred = np.stack([buf.rollout_decode(decode_state, ai, 1).cpu().numpy() for ai in range(4)])   # [4,2]
+            pred_c = np.stack([buf.rollout_decode(decode_calib, ai, 1).cpu().numpy() for ai in range(4)])  # [4,2]
+            true = np.stack([copy.deepcopy(env).step(ai)[0]["position"] for ai in range(4)])               # [4,2]
             ta = int(np.argmin(np.linalg.norm(true - target, axis=1)))
-            dir_hits += int(pa == ta); n += 1
+            spreads.append(float(pred.std(0).mean())); errs.append(float(np.linalg.norm(pred - true, axis=1).mean()))
+            dir_hits += int(int(np.argmin(np.linalg.norm(pred - target, axis=1))) == ta)
+            spreads_c.append(float(pred_c.std(0).mean())); errs_c.append(float(np.linalg.norm(pred_c - true, axis=1).mean()))
+            dir_hits_c += int(int(np.argmin(np.linalg.norm(pred_c - target, axis=1))) == ta)
+            n += 1
             obs, _, done, info = env.step(ta); buf.push(obs_to_frame(obs, dev), ta)  # traverse via TRUE best
             if done or info["distance"] < 0.6:
                 break
 
     print(f"G1_spatial(real frames) = {g1:.3f} wu")
-    print(f"action_spread           = {np.mean(spreads):.3f} wu   "
-          f"[~0 => predictor IGNORES action; healthy ~0.5-1.0]")
-    print(f"pred_err (pred vs TRUE)  = {np.mean(errs):.3f} wu")
-    print(f"direction_acc           = {dir_hits / max(1, n):.2f}      "
-          f"[1.0 perfect, 0.25 random; <0.5 => predictor unusable for greedy control]")
+    print(f"--- decode fit on REAL frames (current control path) ---")
+    print(f"  action_spread {np.mean(spreads):.3f} | pred_err {np.mean(errs):.3f} | direction_acc {dir_hits/max(1,n):.2f}")
+    print(f"--- decode CALIBRATED on predictor outputs (the fix under test) ---")
+    print(f"  action_spread {np.mean(spreads_c):.3f} | pred_err {np.mean(errs_c):.3f} | direction_acc {dir_hits_c/max(1,n):.2f}")
+    print(f"[direction_acc: 1.0 perfect, 0.25 random; >0.6 => predictor USABLE for greedy control]")
 
 
 if __name__ == "__main__":
