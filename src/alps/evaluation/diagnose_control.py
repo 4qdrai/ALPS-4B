@@ -57,6 +57,35 @@ def fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W
 
 
 @torch.no_grad()
+def fit_forward_probe(m, frames, positions, actions, starts, tot, readout, dev, n=8000):
+    """Frozen ACTION-CONDITIONED forward-dynamics probe on the frozen latent: for each action a,
+    ridge( spatial_readout(z_t) ) -> true position_{t+1}, from observed 1-step transitions. This is
+    the DINO-WM recipe -- a lightweight dynamics model fit on frozen SSL features for MPC -- the
+    approach that actually beats LeWM on TwoRoom. The encoder stays untouched/unsupervised; this is
+    a frozen control instrument (like the position read-out) + proprioceptive actions. Returns
+    fn(spatial_readout[..,R], action:int) -> predicted next position [..,2]."""
+    E = starts.shape[0]; rng = np.random.RandomState(2)
+    ti = {a: [] for a in range(4)}; tj = {a: [] for a in range(4)}
+    while sum(len(v) for v in ti.values()) < n:
+        e = rng.randint(E - 1); s = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else tot
+        if end - s < 2:
+            continue
+        t = rng.randint(s, end - 1); a = int(actions[t].item())
+        ti[a].append(t); tj[a].append(t + 1)
+    dec = {}
+    for a in range(4):
+        if len(ti[a]) < 50:
+            continue
+        I = torch.as_tensor(np.asarray(ti[a])); J = torch.as_tensor(np.asarray(tj[a]))
+        X = []
+        for c in range(0, len(I), 128):
+            b = I[c:c + 128]
+            X.append(readout(m.encode_frame(frames[b].to(dev).float() / 255.)).cpu())
+        dec[a] = fit_ridge_decode(torch.cat(X), positions[J], dev)
+    return lambda sr, a: dec[a](sr)
+
+
+@torch.no_grad()
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-path", required=True)
@@ -86,9 +115,11 @@ def main():
     g1 = (ridge(gr(va)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
     ridge_c = fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W, dev)
     decode_calib = lambda grid: ridge_c(m.spatial_readout(grid, grid=g))
+    fwd = fit_forward_probe(m, frames, positions, actions, starts, tot, readout, dev)
 
     spreads, errs, dir_hits = [], [], 0
     spreads_c, errs_c, dir_hits_c = [], [], 0
+    errs_f, dir_hits_f = [], 0
     n, ep = 0, 0
     while n < a.n_steps:
         env = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False)
@@ -106,6 +137,9 @@ def main():
             dir_hits += int(int(np.argmin(np.linalg.norm(pred - target, axis=1))) == ta)
             spreads_c.append(float(pred_c.std(0).mean())); errs_c.append(float(np.linalg.norm(pred_c - true, axis=1).mean()))
             dir_hits_c += int(int(np.argmin(np.linalg.norm(pred_c - target, axis=1))) == ta)
+            pred_f = np.stack([fwd(readout(buf.cur_z), ai)[0].cpu().numpy() for ai in range(4)])           # [4,2]
+            errs_f.append(float(np.linalg.norm(pred_f - true, axis=1).mean()))
+            dir_hits_f += int(int(np.argmin(np.linalg.norm(pred_f - target, axis=1))) == ta)
             n += 1
             obs, _, done, info = env.step(ta); buf.push(obs_to_frame(obs, dev), ta)  # traverse via TRUE best
             if done or info["distance"] < 0.6:
@@ -114,9 +148,11 @@ def main():
     print(f"G1_spatial(real frames) = {g1:.3f} wu")
     print(f"--- decode fit on REAL frames (current control path) ---")
     print(f"  action_spread {np.mean(spreads):.3f} | pred_err {np.mean(errs):.3f} | direction_acc {dir_hits/max(1,n):.2f}")
-    print(f"--- decode CALIBRATED on predictor outputs (the fix under test) ---")
+    print(f"--- decode CALIBRATED on op-predictor outputs ---")
     print(f"  action_spread {np.mean(spreads_c):.3f} | pred_err {np.mean(errs_c):.3f} | direction_acc {dir_hits_c/max(1,n):.2f}")
-    print(f"[direction_acc: 1.0 perfect, 0.25 random; >0.6 => predictor USABLE for greedy control]")
+    print(f"--- FORWARD-DYNAMICS PROBE  g(latent,action)->next pos  (DINO-WM recipe) ---")
+    print(f"  pred_err {np.mean(errs_f):.3f} | direction_acc {dir_hits_f/max(1,n):.2f}   <<< the controller that should work")
+    print(f"[direction_acc: 1.0 perfect, 0.25 random; >0.6 => USABLE for greedy control]")
 
 
 if __name__ == "__main__":
