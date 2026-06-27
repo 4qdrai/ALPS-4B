@@ -116,7 +116,7 @@ def main():
     g1 = (ridge(gr(va)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
     ridge_c = fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W, dev)
     decode_calib = lambda grid: ridge_c(m.spatial_readout(grid, grid=g))
-    fwd = fit_forward_probe(m, frames, positions, actions, starts, tot, readout, dev)
+    fwd = fit_forward_probe(m, frames, positions, actions, starts, tot, readout, ridge, dev)
 
     spreads, errs, dir_hits = [], [], 0
     spreads_c, errs_c, dir_hits_c = [], [], 0
