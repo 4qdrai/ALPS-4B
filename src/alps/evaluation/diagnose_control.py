@@ -138,7 +138,8 @@ def main():
             dir_hits += int(int(np.argmin(np.linalg.norm(pred - target, axis=1))) == ta)
             spreads_c.append(float(pred_c.std(0).mean())); errs_c.append(float(np.linalg.norm(pred_c - true, axis=1).mean()))
             dir_hits_c += int(int(np.argmin(np.linalg.norm(pred_c - target, axis=1))) == ta)
-            pred_f = np.stack([fwd(readout(buf.cur_z), ai)[0].cpu().numpy() for ai in range(4)])           # [4,2]
+            dp_cur = decode_state(buf.cur_z)                                                               # decoded current pos [1,2]
+            pred_f = np.stack([fwd(dp_cur, ai)[0].cpu().numpy() for ai in range(4)])                       # [4,2]
             errs_f.append(float(np.linalg.norm(pred_f - true, axis=1).mean()))
             dir_hits_f += int(int(np.argmin(np.linalg.norm(pred_f - target, axis=1))) == ta)
             n += 1
