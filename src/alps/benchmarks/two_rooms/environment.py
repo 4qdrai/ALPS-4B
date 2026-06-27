@@ -106,6 +106,15 @@ class TwoRoomsEnv:
         # x varies across columns, y varies across rows (top = high y)
         self._grid_x, self._grid_y = np.meshgrid(px, px[::-1])
 
+        # Position-locked floor texture (FIXED across all env instances = one shared world).
+        # Egocentric views over open floor are otherwise featureless -> position unrecoverable;
+        # a non-repeating textured floor that scrolls with the agent gives optical-flow / absolute
+        # position cues EVERYWHERE. Used only in egocentric mode (absolute keeps the plain floor).
+        self._FLOOR_TEX_RES = 16
+        _tex_rng = np.random.RandomState(12345)
+        self._floor_tex = _tex_rng.randint(90, 205, (self._FLOOR_TEX_RES, self._FLOOR_TEX_RES, 3),
+                                           dtype=np.uint8)
+
     # ------------------------------------------------------------------
     #  Public API
     # ------------------------------------------------------------------
@@ -248,6 +257,15 @@ class TwoRoomsEnv:
             q3 = (gx > 5.0 + self.WALL_THICKNESS) & (gy < 5.0 - self.WALL_THICKNESS)
             floor_mask = q0 | q1 | q2 | q3
             img[floor_mask] = self.COLOR_FLOOR
+
+        # Position-locked textured floor (egocentric only): scrolls with the agent so every
+        # open-floor view still encodes absolute position (fixes the featureless white-room).
+        if self.egocentric:
+            R = self._FLOOR_TEX_RES
+            ix = np.clip((gx / self.WORLD_SIZE * R).astype(np.int64), 0, R - 1)
+            iy = np.clip((gy / self.WORLD_SIZE * R).astype(np.int64), 0, R - 1)
+            tex = self._floor_tex[iy, ix]
+            img[floor_mask] = tex[floor_mask]
 
         # --- 2. Draw walls ---
         if not self.complex_mode:
