@@ -110,10 +110,19 @@ class TwoRoomsEnv:
         # Egocentric views over open floor are otherwise featureless -> position unrecoverable;
         # a non-repeating textured floor that scrolls with the agent gives optical-flow / absolute
         # position cues EVERYWHERE. Used only in egocentric mode (absolute keeps the plain floor).
-        self._FLOOR_TEX_RES = 16
-        _tex_rng = np.random.RandomState(12345)
-        self._floor_tex = _tex_rng.randint(90, 205, (self._FLOOR_TEX_RES, self._FLOOR_TEX_RES, 3),
-                                           dtype=np.uint8)
+        # SMOOTH (low-frequency) non-repeating texture: an 8x8 random control grid bilinearly
+        # upsampled. Smooth => the predictor can "scroll" it accurately (high-freq texture is
+        # off-manifold to predict); 8x8 random => non-periodic, so position stays decodable
+        # everywhere. (Random, not a position gradient, so the encoder genuinely localises.)
+        self._FLOOR_TEX_RES = 256
+        _trng = np.random.RandomState(12345)
+        _low = _trng.uniform(80, 205, (8, 8, 3)).astype(np.float32)
+        _hi = self._FLOOR_TEX_RES
+        _fx = np.linspace(0, 7, _hi); _x0 = np.floor(_fx).astype(int); _x1 = np.clip(_x0 + 1, 0, 7)
+        _wx = (_fx - _x0)
+        _a = _low[:, _x0] * (1 - _wx)[None, :, None] + _low[:, _x1] * _wx[None, :, None]   # [8,_hi,3]
+        _tex = _a[_x0] * (1 - _wx)[:, None, None] + _a[_x1] * _wx[:, None, None]           # [_hi,_hi,3]
+        self._floor_tex = np.clip(_tex, 0, 255).astype(np.uint8)
 
     # ------------------------------------------------------------------
     #  Public API
