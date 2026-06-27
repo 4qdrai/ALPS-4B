@@ -57,13 +57,13 @@ def fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W
 
 
 @torch.no_grad()
-def fit_forward_probe(m, frames, positions, actions, starts, tot, readout, dev, n=8000):
-    """Frozen ACTION-CONDITIONED forward-dynamics probe on the frozen latent: for each action a,
-    ridge( spatial_readout(z_t) ) -> true position_{t+1}, from observed 1-step transitions. This is
-    the DINO-WM recipe -- a lightweight dynamics model fit on frozen SSL features for MPC -- the
-    approach that actually beats LeWM on TwoRoom. The encoder stays untouched/unsupervised; this is
-    a frozen control instrument (like the position read-out) + proprioceptive actions. Returns
-    fn(spatial_readout[..,R], action:int) -> predicted next position [..,2]."""
+def fit_forward_probe(m, frames, positions, actions, starts, tot, readout, ridge, dev, n=40000):
+    """Frozen forward-dynamics model in the DECODED-STATE space (DINO-WM recipe, robust version):
+    for each action a, ridge( decoded_pos(z_t) ) -> true position_{t+1}, from observed 1-step
+    transitions. The state is the frozen unsupervised position read-out (2-D -> CANNOT overfit,
+    unlike the 12k-D latent), the dynamics is learned per action from the agent's OWN transitions
+    (proprioceptive, label-free). The encoder stays untouched/unsupervised; this is a frozen control
+    instrument like the position read-out. Returns fn(decoded_pos[..,2], action:int) -> next pos."""
     E = starts.shape[0]; rng = np.random.RandomState(2)
     ti = {a: [] for a in range(4)}; tj = {a: [] for a in range(4)}
     while sum(len(v) for v in ti.values()) < n:
@@ -77,12 +77,12 @@ def fit_forward_probe(m, frames, positions, actions, starts, tot, readout, dev, 
         if len(ti[a]) < 50:
             continue
         I = torch.as_tensor(np.asarray(ti[a])); J = torch.as_tensor(np.asarray(tj[a]))
-        X = []
+        P = []
         for c in range(0, len(I), 128):
             b = I[c:c + 128]
-            X.append(readout(m.encode_frame(frames[b].to(dev).float() / 255.)).cpu())
-        dec[a] = fit_ridge_decode(torch.cat(X), positions[J], dev)
-    return lambda sr, a: dec[a](sr)
+            P.append(ridge(readout(m.encode_frame(frames[b].to(dev).float() / 255.))).cpu())  # decoded current pos
+        dec[a] = fit_ridge_decode(torch.cat(P), positions[J], dev, lam=1.0)                    # 2-D -> 2-D
+    return lambda dp, a: dec[a](dp)
 
 
 @torch.no_grad()
@@ -92,6 +92,7 @@ def main():
     ap.add_argument("--data-path", required=True)
     ap.add_argument("--spatial-grid", type=int, default=8)
     ap.add_argument("--n-steps", type=int, default=200)
+    ap.add_argument("--egocentric", action="store_true", help="agent-centered control episodes (match egocentric training)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     a = ap.parse_args()
     dev = torch.device(a.device)
@@ -122,7 +123,7 @@ def main():
     errs_f, dir_hits_f = [], 0
     n, ep = 0, 0
     while n < a.n_steps:
-        env = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False)
+        env = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False, egocentric=a.egocentric)
         obs = env.reset(start_room=0, goal_room=1); ep += 1
         target = obs["target"]
         buf = HistoryBuffer(m, W, dev, readout=readout); buf.reset(obs_to_frame(obs, dev))

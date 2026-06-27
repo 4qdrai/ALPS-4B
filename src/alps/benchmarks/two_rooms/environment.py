@@ -69,16 +69,24 @@ class TwoRoomsEnv:
     NUM_ACTIONS = 4
 
     def __init__(self, seed: Optional[int] = None, complex_mode: bool = False,
-                 hazards: bool = True):
+                 hazards: bool = True, egocentric: bool = False):
         """
         Args:
             seed: optional RNG seed for reproducibility.
             complex_mode: whether to enable the 4-room key-gated complex navigation mode.
             hazards: in complex mode, apply ice/wind momentum (System-1 control
                 challenge). Set False to test key-gated routing (System-2) in isolation.
+            egocentric: render the world AGENT-CENTERED (the agent sits at the frame centre
+                and the room/door/target scroll around it as it moves). This makes EVERY pixel
+                action-dependent -- the next frame is the current one shifted by the action --
+                so the pure-SSL next-frame predictor is forced to learn controllable dynamics
+                (the top-down god-view leaves the agent a ~2% static-background fraction, which
+                is why the predictor ignores the action). Physics/dynamics are unchanged; only
+                the camera changes. This is the real-video-aligned observation model.
         """
         self.complex_mode = complex_mode
         self.hazards = hazards
+        self.egocentric = egocentric
         self.rng = np.random.RandomState(seed)
 
         # State
@@ -202,6 +210,13 @@ class TwoRoomsEnv:
 
         return self._get_obs(), reward, self.done, info
 
+    def _ego(self, p):
+        """World position -> position in the current FRAME. Identity in absolute mode;
+        agent-centred (p - agent + centre) in egocentric mode."""
+        if not self.egocentric:
+            return p
+        return p - self.agent_pos + self.WORLD_SIZE / 2.0
+
     def render(self) -> np.ndarray:
         """Render current state as a 128x128x3 uint8 RGB numpy array."""
         img = np.full(
@@ -212,6 +227,12 @@ class TwoRoomsEnv:
 
         gx = self._grid_x
         gy = self._grid_y
+        if self.egocentric:
+            # world coord at each pixel = agent_pos + (frame_coord - centre); pixels mapping
+            # outside [0, WORLD_SIZE] fall through to background. The whole scene scrolls with the
+            # agent, so the NEXT frame is the current one shifted by the action.
+            gx = self._grid_x + (self.agent_pos[0] - self.WORLD_SIZE / 2.0)
+            gy = self._grid_y + (self.agent_pos[1] - self.WORLD_SIZE / 2.0)
 
         # --- 1. Draw floors ---
         if not self.complex_mode:
@@ -266,13 +287,13 @@ class TwoRoomsEnv:
 
         # --- 4. Draw Key (yellow circle, Complex Mode only) ---
         if self.complex_mode and not self.has_key:
-            img = self._draw_circle_aa(img, self.key_pos, self.KEY_RENDER_RADIUS, self.COLOR_KEY)
+            img = self._draw_circle_aa(img, self._ego(self.key_pos), self.KEY_RENDER_RADIUS, self.COLOR_KEY)
 
         # --- 5. Draw target (green circle) ---
-        img = self._draw_circle_aa(img, self.target_pos, self.TARGET_RENDER_RADIUS, self.COLOR_TARGET)
+        img = self._draw_circle_aa(img, self._ego(self.target_pos), self.TARGET_RENDER_RADIUS, self.COLOR_TARGET)
 
-        # --- 6. Draw agent (red circle, on top) ---
-        img = self._draw_circle_aa(img, self.agent_pos, self.AGENT_RENDER_RADIUS, self.COLOR_AGENT)
+        # --- 6. Draw agent (red circle, on top; at frame centre in egocentric mode) ---
+        img = self._draw_circle_aa(img, self._ego(self.agent_pos), self.AGENT_RENDER_RADIUS, self.COLOR_AGENT)
 
         return img
 

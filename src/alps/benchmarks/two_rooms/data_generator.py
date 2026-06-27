@@ -147,12 +147,14 @@ class TrajectoryGenerator:
         heuristic_fraction: float = 0.30,
         seed: int = 42,
         complex_mode: bool = False,
+        egocentric: bool = False,
     ):
         self.num_episodes = num_episodes
         self.max_steps = max_steps
         self.heuristic_fraction = heuristic_fraction
         self.seed = seed
         self.complex_mode = complex_mode
+        self.egocentric = egocentric
 
     def _rollout(self, obs_buf: Optional[np.ndarray] = None):
         """One deterministic pass over all episodes (fixed seed → identical
@@ -161,7 +163,7 @@ class TrajectoryGenerator:
         (no intermediate Python list). Returns the small arrays + total frame count.
         """
         rng = np.random.RandomState(self.seed)
-        env = TwoRoomsEnv(seed=self.seed, complex_mode=self.complex_mode)
+        env = TwoRoomsEnv(seed=self.seed, complex_mode=self.complex_mode, egocentric=self.egocentric)
         random_policy = RandomMomentumPolicy(rng)
         heuristic_policy = HeuristicPolicy(rng, complex_mode=self.complex_mode)
 
@@ -253,6 +255,7 @@ def generate_dataset(
     heuristic_fraction: float = 0.30,
     seed: int = 42,
     complex_mode: bool = False,
+    egocentric: bool = False,
 ) -> Dict[str, Any]:
     """Generate the dataset and save to disk."""
     generator = TrajectoryGenerator(
@@ -261,6 +264,7 @@ def generate_dataset(
         heuristic_fraction=heuristic_fraction,
         seed=seed,
         complex_mode=complex_mode,
+        egocentric=egocentric,
     )
     dataset = generator.generate()
 
@@ -286,6 +290,9 @@ if __name__ == "__main__":
     parser.add_argument("--heuristic-fraction", type=float, default=0.30)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--complex-mode", action="store_true", help="Enable 4-room complex navigation mode")
+    parser.add_argument("--egocentric", action="store_true",
+                        help="Agent-centered rendering (world scrolls around the agent) so the "
+                             "pure-SSL predictor is forced to learn controllable dynamics.")
     args = parser.parse_args()
 
     generate_dataset(
@@ -295,4 +302,5 @@ if __name__ == "__main__":
         heuristic_fraction=args.heuristic_fraction,
         seed=args.seed,
         complex_mode=args.complex_mode,
+        egocentric=args.egocentric,
     )
