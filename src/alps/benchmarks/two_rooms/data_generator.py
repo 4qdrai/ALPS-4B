@@ -148,6 +148,7 @@ class TrajectoryGenerator:
         seed: int = 42,
         complex_mode: bool = False,
         egocentric: bool = False,
+        perception_radius: float = None,
     ):
         self.num_episodes = num_episodes
         self.max_steps = max_steps
@@ -155,6 +156,7 @@ class TrajectoryGenerator:
         self.seed = seed
         self.complex_mode = complex_mode
         self.egocentric = egocentric
+        self.perception_radius = perception_radius
 
     def _rollout(self, obs_buf: Optional[np.ndarray] = None):
         """One deterministic pass over all episodes (fixed seed → identical
@@ -163,7 +165,8 @@ class TrajectoryGenerator:
         (no intermediate Python list). Returns the small arrays + total frame count.
         """
         rng = np.random.RandomState(self.seed)
-        env = TwoRoomsEnv(seed=self.seed, complex_mode=self.complex_mode, egocentric=self.egocentric)
+        env = TwoRoomsEnv(seed=self.seed, complex_mode=self.complex_mode, egocentric=self.egocentric,
+                          perception_radius=self.perception_radius)
         random_policy = RandomMomentumPolicy(rng)
         heuristic_policy = HeuristicPolicy(rng, complex_mode=self.complex_mode)
 
@@ -256,6 +259,7 @@ def generate_dataset(
     seed: int = 42,
     complex_mode: bool = False,
     egocentric: bool = False,
+    perception_radius: float = None,
 ) -> Dict[str, Any]:
     """Generate the dataset and save to disk."""
     generator = TrajectoryGenerator(
@@ -265,6 +269,7 @@ def generate_dataset(
         seed=seed,
         complex_mode=complex_mode,
         egocentric=egocentric,
+        perception_radius=perception_radius,
     )
     dataset = generator.generate()
 
@@ -293,6 +298,9 @@ if __name__ == "__main__":
     parser.add_argument("--egocentric", action="store_true",
                         help="Agent-centered rendering (world scrolls around the agent) so the "
                              "pure-SSL predictor is forced to learn controllable dynamics.")
+    parser.add_argument("--perception-radius", type=float, default=None,
+                        help="Limited perception (egocentric): the agent observes only a disk of "
+                             "this radius (world units) around itself; beyond is unobserved.")
     args = parser.parse_args()
 
     generate_dataset(
@@ -303,4 +311,5 @@ if __name__ == "__main__":
         seed=args.seed,
         complex_mode=args.complex_mode,
         egocentric=args.egocentric,
+        perception_radius=args.perception_radius,
     )

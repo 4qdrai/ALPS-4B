@@ -69,7 +69,7 @@ class TwoRoomsEnv:
     NUM_ACTIONS = 4
 
     def __init__(self, seed: Optional[int] = None, complex_mode: bool = False,
-                 hazards: bool = True, egocentric: bool = False):
+                 hazards: bool = True, egocentric: bool = False, perception_radius: float = None):
         """
         Args:
             seed: optional RNG seed for reproducibility.
@@ -87,6 +87,12 @@ class TwoRoomsEnv:
         self.complex_mode = complex_mode
         self.hazards = hazards
         self.egocentric = egocentric
+        # Limited perception (egocentric only): the agent observes only a disk of this radius (wu)
+        # around itself; everything beyond is unobserved (background). This makes the far static
+        # structure trivial-to-predict, so the ONLY non-trivial thing to predict is the local
+        # optical flow == the consequence of the action -> the predictor must learn it. Far goals
+        # are then reached by chaining local moves toward graph waypoints + latent-RAG memory.
+        self.perception_radius = perception_radius
         self.rng = np.random.RandomState(seed)
 
         # State
@@ -316,6 +322,12 @@ class TwoRoomsEnv:
 
         # --- 6. Draw agent (red circle, on top; at frame centre in egocentric mode) ---
         img = self._draw_circle_aa(img, self._ego(self.agent_pos), self.AGENT_RENDER_RADIUS, self.COLOR_AGENT)
+
+        # --- 7. Limited perception: mask everything beyond the perception radius (egocentric) ---
+        if self.egocentric and self.perception_radius is not None:
+            c = self.WORLD_SIZE / 2.0   # agent is at the frame centre in egocentric mode
+            dist_from_agent = np.sqrt((self._grid_x - c) ** 2 + (self._grid_y - c) ** 2)
+            img[dist_from_agent > self.perception_radius] = self.COLOR_BACKGROUND
 
         return img
 

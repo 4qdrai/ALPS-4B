@@ -93,6 +93,7 @@ def main():
     ap.add_argument("--spatial-grid", type=int, default=8)
     ap.add_argument("--n-steps", type=int, default=200)
     ap.add_argument("--egocentric", action="store_true", help="agent-centered control episodes (match egocentric training)")
+    ap.add_argument("--perception-radius", type=float, default=None, help="limited perception disk radius (match training)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     a = ap.parse_args()
     dev = torch.device(a.device)
@@ -123,14 +124,17 @@ def main():
     errs_f, dir_hits_f = [], 0
     lat_dir_hits = 0                       # LeWM-native forward latent-space control
     inv_dir_hits = 0                       # INVERSE-dynamics goal-emission control (option 2)
+    imag_err, ro_scale = [], []            # predictor 1-step imagination accuracy (latent)
     n, ep = 0, 0
     while n < a.n_steps:
-        env = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False, egocentric=a.egocentric)
+        env = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False, egocentric=a.egocentric,
+                          perception_radius=a.perception_radius)
         obs = env.reset(start_room=0, goal_room=1); ep += 1
         target = obs["target"]
         # GOAL latent: the view with the agent AT the target (LeWM-native control compares the
         # predicted next latent to THIS, with NO decoding -> immune to the off-manifold decode).
-        eg = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False, egocentric=a.egocentric)
+        eg = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False, egocentric=a.egocentric,
+                         perception_radius=a.perception_radius)
         eg.reset(start_room=0, goal_room=1); eg.agent_pos = target.copy(); eg.target_pos = target.copy()
         goal_z = m.encode_frame(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))
         goal_ro = readout(goal_z).squeeze(0)
@@ -157,6 +161,12 @@ def main():
             cur_pool = m.pool(buf.cur_z).squeeze(0)
             inv_logits = m.inverse_action(cur_pool.unsqueeze(0), goal_pool.unsqueeze(0))[0]      # [4]
             inv_dir_hits += int(int(inv_logits.argmax()) == ta)
+            # predictor 1-step IMAGINATION accuracy (latent, for the action actually taken): does the
+            # imagined next latent match the TRUE next latent? limited perception should sharpen this.
+            tn = copy.deepcopy(env).step(ta)[0]
+            true_ro = readout(m.encode_frame(obs_to_frame({"image": tn["image"]}, dev).unsqueeze(0))).squeeze(0)
+            imag_err.append(float((buf.pooled_next_for_action(ta) - true_ro).norm()))
+            ro_scale.append(float(true_ro.norm()))
             n += 1
             obs, _, done, info = env.step(ta); buf.push(obs_to_frame(obs, dev), ta)  # traverse via TRUE best
             if done or info["distance"] < 0.6:
@@ -173,6 +183,10 @@ def main():
     print(f"  direction_acc {lat_dir_hits/max(1,n):.2f}")
     print(f"--- INVERSE-DYNAMICS goal-emission (option 2: inv_head(current, goal) -> action) ---")
     print(f"  direction_acc {inv_dir_hits/max(1,n):.2f}   <<< uses the part of the model that IS accurate (inv 0.03)")
+    _ie, _sc = np.mean(imag_err), np.mean(ro_scale)
+    print(f"--- PREDICTOR 1-STEP IMAGINATION accuracy (latent) ---")
+    print(f"  imag_err {_ie:.2f} / readout_norm {_sc:.2f} = {_ie/max(1e-6,_sc):.3f} relative   "
+          f"<<< lower = the predictor imagines the next latent accurately (limited perception should drop this)")
     print(f"[direction_acc: 1.0 perfect, 0.25 random; >0.6 => USABLE for greedy control]")
 
 
