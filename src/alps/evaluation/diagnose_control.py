@@ -121,7 +121,8 @@ def main():
     spreads, errs, dir_hits = [], [], 0
     spreads_c, errs_c, dir_hits_c = [], [], 0
     errs_f, dir_hits_f = [], 0
-    lat_dir_hits = 0                       # LeWM-native latent-space control
+    lat_dir_hits = 0                       # LeWM-native forward latent-space control
+    inv_dir_hits = 0                       # INVERSE-dynamics goal-emission control (option 2)
     n, ep = 0, 0
     while n < a.n_steps:
         env = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False, egocentric=a.egocentric)
@@ -131,7 +132,9 @@ def main():
         # predicted next latent to THIS, with NO decoding -> immune to the off-manifold decode).
         eg = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False, egocentric=a.egocentric)
         eg.reset(start_room=0, goal_room=1); eg.agent_pos = target.copy(); eg.target_pos = target.copy()
-        goal_ro = readout(m.encode_frame(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))).squeeze(0)
+        goal_z = m.encode_frame(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))
+        goal_ro = readout(goal_z).squeeze(0)
+        goal_pool = m.pool(goal_z).squeeze(0)                 # pooled goal latent for inverse dynamics
         buf = HistoryBuffer(m, W, dev, readout=readout); buf.reset(obs_to_frame(obs, dev))
         for _ in range(40):
             if n >= a.n_steps:
@@ -150,6 +153,10 @@ def main():
             dir_hits_f += int(int(np.argmin(np.linalg.norm(pred_f - target, axis=1))) == ta)
             lat = [float((buf.pooled_next_for_action(ai) - goal_ro).norm()) for ai in range(4)]   # NO decode
             lat_dir_hits += int(int(np.argmin(lat)) == ta)
+            # INVERSE-dynamics goal-emission (option 2): ask "which action moves me toward the goal?"
+            cur_pool = m.pool(buf.cur_z).squeeze(0)
+            inv_logits = m.inverse_action(cur_pool.unsqueeze(0), goal_pool.unsqueeze(0))[0]      # [4]
+            inv_dir_hits += int(int(inv_logits.argmax()) == ta)
             n += 1
             obs, _, done, info = env.step(ta); buf.push(obs_to_frame(obs, dev), ta)  # traverse via TRUE best
             if done or info["distance"] < 0.6:
@@ -162,8 +169,10 @@ def main():
     print(f"  action_spread {np.mean(spreads_c):.3f} | pred_err {np.mean(errs_c):.3f} | direction_acc {dir_hits_c/max(1,n):.2f}")
     print(f"--- FORWARD-DYNAMICS PROBE  g(latent,action)->next pos  (decoded-state) ---")
     print(f"  pred_err {np.mean(errs_f):.3f} | direction_acc {dir_hits_f/max(1,n):.2f}")
-    print(f"--- LATENT-SPACE control (LeWM-native: nearest predicted latent to GOAL latent, NO decode) ---")
-    print(f"  direction_acc {lat_dir_hits/max(1,n):.2f}   <<< the op-predictor-native, no-decode controller")
+    print(f"--- LATENT-SPACE control (forward: nearest predicted latent to GOAL latent, NO decode) ---")
+    print(f"  direction_acc {lat_dir_hits/max(1,n):.2f}")
+    print(f"--- INVERSE-DYNAMICS goal-emission (option 2: inv_head(current, goal) -> action) ---")
+    print(f"  direction_acc {inv_dir_hits/max(1,n):.2f}   <<< uses the part of the model that IS accurate (inv 0.03)")
     print(f"[direction_acc: 1.0 perfect, 0.25 random; >0.6 => USABLE for greedy control]")
 
 
