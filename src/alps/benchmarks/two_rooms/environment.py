@@ -54,6 +54,15 @@ class TwoRoomsEnv:
     TARGET_RENDER_RADIUS = 0.7
     KEY_RENDER_RADIUS = 0.6
 
+    # BLOCK-ROOMS mode (consequence-dominant, fully-observed testbed for the predictor): the agent
+    # is a LARGE block moved by a LARGE, DETERMINISTIC step, so each action produces a big, fully-
+    # observed, action-determined change in the frame -> the SSL predictor MUST learn the dynamics
+    # (the tiny-dot/small-step navigation toy leaves the controllable signal a ~2% fraction that the
+    # predictor ignores). Top-down + fully observed, so no boilerplate-domination and no incoming
+    # unobserved content. See docs/BLOCK_ROOMS.md.
+    BLOCK_RENDER_RADIUS = 1.7      # ~44px diameter @128 = prominent, ~9% of the frame
+    BLOCK_STEP_SCALE = 7.0         # step = 0.3 * 7 = 2.1 wu per action (>> momentum-scale)
+
     # Wall rendering thickness in world units
     WALL_THICKNESS = 0.15
 
@@ -69,7 +78,8 @@ class TwoRoomsEnv:
     NUM_ACTIONS = 4
 
     def __init__(self, seed: Optional[int] = None, complex_mode: bool = False,
-                 hazards: bool = True, egocentric: bool = False, perception_radius: float = None):
+                 hazards: bool = True, egocentric: bool = False, perception_radius: float = None,
+                 block_mode: bool = False):
         """
         Args:
             seed: optional RNG seed for reproducibility.
@@ -87,6 +97,7 @@ class TwoRoomsEnv:
         self.complex_mode = complex_mode
         self.hazards = hazards
         self.egocentric = egocentric
+        self.block_mode = block_mode
         # Limited perception (egocentric only): the agent observes only a disk of this radius (wu)
         # around itself; everything beyond is unobserved (background). This makes the far static
         # structure trivial-to-predict, so the ONLY non-trivial thing to predict is the local
@@ -140,6 +151,17 @@ class TwoRoomsEnv:
         self.has_key = False
         self.ice_momentum = np.array([0.0, 0.0], dtype=np.float32)
 
+        if self.block_mode:
+            # Open fully-observed arena: a large block (agent) and a target, both placed at random
+            # (well inside the boundary so the big block fits). No rooms/walls in the minimal mode.
+            lo, hi = 2.0, self.WORLD_SIZE - 2.0
+            self.agent_pos = self.rng.uniform(lo, hi, 2).astype(np.float32)
+            for _ in range(20):
+                self.target_pos = self.rng.uniform(lo, hi, 2).astype(np.float32)
+                if np.linalg.norm(self.target_pos - self.agent_pos) > 3.0:
+                    break
+            return self._get_obs()
+
         if not self.complex_mode:
             # --- Baseline Reset ---
             if start_room is None:
@@ -173,6 +195,8 @@ class TwoRoomsEnv:
 
         old_pos = self.agent_pos.copy()
         delta = self.ACTION_DELTAS[action].copy()
+        if self.block_mode:
+            delta = delta * self.BLOCK_STEP_SCALE   # large, deterministic displacement per action
 
         # --- Apply Variable Physics (Complex Mode Only) ---
         # Hazards (ice/wind) are a System-1 control challenge; disable them to test
@@ -195,8 +219,12 @@ class TwoRoomsEnv:
         new_pos = old_pos + delta
 
         # --- Wall collision & boundaries ---
-        new_pos = self._apply_wall_collision(old_pos, new_pos)
-        new_pos = np.clip(new_pos, self.BOUNDARY_MIN, self.BOUNDARY_MAX)
+        if self.block_mode:
+            r = self.BLOCK_RENDER_RADIUS
+            new_pos = np.clip(new_pos, r, self.WORLD_SIZE - r)   # keep the big block fully in frame; open arena
+        else:
+            new_pos = self._apply_wall_collision(old_pos, new_pos)
+            new_pos = np.clip(new_pos, self.BOUNDARY_MIN, self.BOUNDARY_MAX)
 
         self.agent_pos = new_pos
         self.steps += 1
@@ -213,8 +241,8 @@ class TwoRoomsEnv:
 
         # Done Check: reached target within 0.5 units
         # In complex mode, we ALSO enforce that the agent must have the key to unlock victory!
-        if dist < 0.5:
-            if not self.complex_mode or self.has_key:
+        if dist < (1.0 if self.block_mode else 0.5):
+            if self.block_mode or not self.complex_mode or self.has_key:
                 self.done = True
                 reward = 10.0  # bonus
 
@@ -243,6 +271,14 @@ class TwoRoomsEnv:
             self.COLOR_BACKGROUND,
             dtype=np.uint8,
         )
+
+        if self.block_mode:
+            # Open, fully-observed arena: plain floor + target + the LARGE block (agent). The block's
+            # big action-determined displacement is the dominant, observed, predictable change.
+            img[:] = self.COLOR_FLOOR
+            img = self._draw_circle_aa(img, self.target_pos, self.TARGET_RENDER_RADIUS, self.COLOR_TARGET)
+            img = self._draw_circle_aa(img, self.agent_pos, self.BLOCK_RENDER_RADIUS, self.COLOR_AGENT)
+            return img
 
         gx = self._grid_x
         gy = self._grid_y

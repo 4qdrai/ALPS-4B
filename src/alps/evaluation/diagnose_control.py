@@ -94,6 +94,7 @@ def main():
     ap.add_argument("--n-steps", type=int, default=200)
     ap.add_argument("--egocentric", action="store_true", help="agent-centered control episodes (match egocentric training)")
     ap.add_argument("--perception-radius", type=float, default=None, help="limited perception disk radius (match training)")
+    ap.add_argument("--block-mode", action="store_true", help="Block-Rooms env (match training)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     a = ap.parse_args()
     dev = torch.device(a.device)
@@ -128,13 +129,13 @@ def main():
     n, ep = 0, 0
     while n < a.n_steps:
         env = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False, egocentric=a.egocentric,
-                          perception_radius=a.perception_radius)
+                          perception_radius=a.perception_radius, block_mode=a.block_mode)
         obs = env.reset(start_room=0, goal_room=1); ep += 1
         target = obs["target"]
         # GOAL latent: the view with the agent AT the target (LeWM-native control compares the
         # predicted next latent to THIS, with NO decoding -> immune to the off-manifold decode).
         eg = TwoRoomsEnv(seed=3000 + ep, complex_mode=False, hazards=False, egocentric=a.egocentric,
-                         perception_radius=a.perception_radius)
+                         perception_radius=a.perception_radius, block_mode=a.block_mode)
         eg.reset(start_room=0, goal_room=1); eg.agent_pos = target.copy(); eg.target_pos = target.copy()
         goal_z = m.encode_frame(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))
         goal_ro = readout(goal_z).squeeze(0)

@@ -149,6 +149,7 @@ class TrajectoryGenerator:
         complex_mode: bool = False,
         egocentric: bool = False,
         perception_radius: float = None,
+        block_mode: bool = False,
     ):
         self.num_episodes = num_episodes
         self.max_steps = max_steps
@@ -157,6 +158,7 @@ class TrajectoryGenerator:
         self.complex_mode = complex_mode
         self.egocentric = egocentric
         self.perception_radius = perception_radius
+        self.block_mode = block_mode
 
     def _rollout(self, obs_buf: Optional[np.ndarray] = None):
         """One deterministic pass over all episodes (fixed seed → identical
@@ -166,7 +168,7 @@ class TrajectoryGenerator:
         """
         rng = np.random.RandomState(self.seed)
         env = TwoRoomsEnv(seed=self.seed, complex_mode=self.complex_mode, egocentric=self.egocentric,
-                          perception_radius=self.perception_radius)
+                          perception_radius=self.perception_radius, block_mode=self.block_mode)
         random_policy = RandomMomentumPolicy(rng)
         heuristic_policy = HeuristicPolicy(rng, complex_mode=self.complex_mode)
 
@@ -260,6 +262,7 @@ def generate_dataset(
     complex_mode: bool = False,
     egocentric: bool = False,
     perception_radius: float = None,
+    block_mode: bool = False,
 ) -> Dict[str, Any]:
     """Generate the dataset and save to disk."""
     generator = TrajectoryGenerator(
@@ -270,6 +273,7 @@ def generate_dataset(
         complex_mode=complex_mode,
         egocentric=egocentric,
         perception_radius=perception_radius,
+        block_mode=block_mode,
     )
     dataset = generator.generate()
 
@@ -301,6 +305,9 @@ if __name__ == "__main__":
     parser.add_argument("--perception-radius", type=float, default=None,
                         help="Limited perception (egocentric): the agent observes only a disk of "
                              "this radius (world units) around itself; beyond is unobserved.")
+    parser.add_argument("--block-mode", action="store_true",
+                        help="Block-Rooms: a LARGE block (agent) moved by a LARGE deterministic step "
+                             "in an open fully-observed arena (consequence-dominant testbed).")
     args = parser.parse_args()
 
     generate_dataset(
@@ -312,4 +319,5 @@ if __name__ == "__main__":
         complex_mode=args.complex_mode,
         egocentric=args.egocentric,
         perception_radius=args.perception_radius,
+        block_mode=args.block_mode,
     )
