@@ -31,7 +31,7 @@ class TemporalHierWorldModel(nn.Module):
                  enc_depth=10, enc_heads=8, patch_size=(2, 16, 16), max_patches=512,
                  op_depth=6, abs_depth=4, lambda_sigreg=0.1, sigreg_slices=256,
                  rag_sim_threshold=0.75, k_tac=2, k_str=4, max_frames=12,
-                 use_projection_head=True, use_cls_pool=False):
+                 use_projection_head=True, use_cls_pool=False, residual_pred=False):
         super().__init__()
         self.d_model = d_model
         self.k_tac, self.k_str = k_tac, k_str
@@ -49,20 +49,23 @@ class TemporalHierWorldModel(nn.Module):
                                      use_cls_token=use_cls_pool)
         # operative: causal history over spatial tokens, conditioned on action
         self.op_predictor = CausalTemporalPredictor(d_model, d_cond=d_action, depth=op_depth,
-                                                    num_heads=enc_heads, max_frames=max_frames)
+                                                    num_heads=enc_heads, max_frames=max_frames,
+                                                    residual=residual_pred)
         self.pos_head = mlp(d_model, d_model, 2)
         # tactical: pooled history, conditioned on strategic concept
         self.tac_proj = nn.Linear(d_model, d_model)
         self.moe = SparseMoERouter(d_model=d_model, num_experts=num_experts, active_experts=active_experts)
         self.tac_predictor = CausalTemporalPredictor(d_model, d_cond=d_model, depth=abs_depth,
-                                                     num_heads=enc_heads, max_frames=max_frames)
+                                                     num_heads=enc_heads, max_frames=max_frames,
+                                                     residual=residual_pred)
         self.tac_pos_head = mlp(d_model, d_model, 2)
         self.subgoal_head = mlp(d_model + d_model, 2 * d_model, d_model)
         # strategic: pooled discrete-concept history, self-conditioned
         self.str_proj = nn.Linear(d_model, d_model)
         self.vq = VectorQuantizer(num_embeddings=num_codes, embedding_dim=d_model)
         self.str_predictor = CausalTemporalPredictor(d_model, d_cond=d_model, depth=abs_depth,
-                                                     num_heads=enc_heads, max_frames=max_frames)
+                                                     num_heads=enc_heads, max_frames=max_frames,
+                                                     residual=residual_pred)
         self.rag = LatentRAG(d_model=d_model, sim_threshold=rag_sim_threshold)
         self.sigreg = SIGReg(d_model=d_model, num_slices=sigreg_slices)
         # LeWM "the predictor is also followed by a projector": a BatchNorm projector on

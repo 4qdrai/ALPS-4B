@@ -32,13 +32,20 @@ def block_causal_mask(K: int, M: int, device) -> torch.Tensor:
 
 class CausalTemporalPredictor(nn.Module):
     def __init__(self, d_model: int, d_cond: int, depth: int = 4, num_heads: int = 6,
-                 mlp_ratio: float = 4.0, max_frames: int = 12, dropout: float = 0.1):
+                 mlp_ratio: float = 4.0, max_frames: int = 12, dropout: float = 0.1,
+                 residual: bool = False):
         super().__init__()
         if d_model % num_heads != 0:
             for h in range(num_heads, 0, -1):
                 if d_model % h == 0:
                     num_heads = h
                     break
+        # residual/delta prediction: the head outputs the CHANGE from frame i and we add
+        # back z[:, i], with the action re-injected just before the head. The static
+        # background is carried by the skip for free, so all capacity goes to the
+        # action-driven delta (the moving object) -- the part the uniform next-latent MSE
+        # otherwise under-learns (boilerplate domination). See diagnose_control / BLOCK_ROOMS.
+        self.residual = residual
         self.frame_emb = nn.Parameter(torch.randn(1, max_frames, 1, d_model) * 0.02)
         self.cond_proj = nn.Sequential(nn.Linear(d_cond, d_model), nn.GELU(),
                                        nn.Linear(d_model, d_model))
@@ -60,6 +67,12 @@ class CausalTemporalPredictor(nn.Module):
         cemb = self.cond_proj(cond).unsqueeze(2)        # [B,K,1,D]
         x = (z + self.frame_emb[:, :K] + cemb).reshape(B, K * M, D)
         x = self.transformer(x, mask=block_causal_mask(K, M, z.device))
+        if self.residual:
+            # re-inject the per-frame conditioning right before the head so the action
+            # directly shapes the delta, then add the skip: pred[:, i] = z[:, i] + delta.
+            cfull = cemb.expand(-1, -1, M, -1).reshape(B, K * M, D)
+            delta = self.head(x + cfull).reshape(B, K, M, D)
+            return z + delta
         return self.head(x).reshape(B, K, M, D)
 
     @torch.no_grad()

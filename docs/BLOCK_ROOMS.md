@@ -37,6 +37,24 @@ Threaded through `data_generator.py --block-mode` and `evaluation/diagnose_contr
    four-brain pipeline (graph waypoints as strategic/tactical goals + predictor-imagination control),
    and render the autonomous solving videos.
 
+## Predictor fixes (why the op-predictor under-learned the moving block)
+Block-Rooms isolated the failure to the *predictor*, not the observation: decode is perfect
+(G1 0.04-0.06) and the calibrated predictor read-out already matches the true step magnitude
+(~2.1 wu), but the raw-latent controller sits at ~0.5 direction-acc and `imag` ~1.5. Root cause:
+the operative loss is a **uniform next-latent MSE over all tokens**, so the static background
+(91% of tokens) dominates and the few moving-block tokens (the only action-driven, controllable
+signal) are under-learned -> the predicted delta is damped + off-manifold. Two label-free fixes,
+each an opt-in flag (ablatable), both targeting that root cause:
+
+- **`--residual-pred`** — every `CausalTemporalPredictor` outputs `z_t + delta` with the action
+  re-injected at the head. The background rides the skip for free; all capacity goes to the
+  action-driven change. (Applied to op/tac/str predictors; saved in the checkpoint so eval
+  rebuilds identically.)
+- **`--change-weighted-op`** — weight the per-token next-latent MSE by `|z_{t+1}-z_t|`, so the
+  moving block dominates the gradient instead of the background. `mean(w)≈1` keeps the scale.
+
+Recommended Block-Rooms run uses BOTH (they are complementary) at depth-10 / 30ep.
+
 ## Unchanged
 Pure SIGReg SSL (`--lewm-ssl`), abstraction layers, inverse dynamics, latent graph, RAG,
 self-monitor, all gates, all CLI. Only the environment the agent acts in changes.

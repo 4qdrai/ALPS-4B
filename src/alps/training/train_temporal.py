@@ -90,7 +90,14 @@ def train(args):
         op_depth=args.op_depth, abs_depth=args.abs_depth, k_tac=args.k_tac, k_str=args.k_str,
         lambda_sigreg=args.lambda_sigreg, sigreg_slices=args.sigreg_slices,
         max_frames=args.window + 1, use_projection_head=True,
-        use_cls_pool=args.cls_pool, patch_size=tuple(args.patch_size)).to(device)
+        use_cls_pool=args.cls_pool, patch_size=tuple(args.patch_size),
+        residual_pred=getattr(args, "residual_pred", False)).to(device)
+    if getattr(args, "residual_pred", False):
+        print("[pred] RESIDUAL/DELTA prediction ON: head outputs z_t + delta, action "
+              "re-injected at the head (focus capacity on the action-driven change).")
+    if getattr(args, "change_weighted_op", False):
+        print("[loss] CHANGE-WEIGHTED op-loss ON: per-token next-latent MSE weighted by "
+              "|z_{t+1}-z_t| (moving object dominates, not the static background).")
     pm, ps = positions.mean(0), positions.std(0) + 1e-6
     model.pos_mean.copy_(pm.to(device)); model.pos_std.copy_(ps.to(device))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -110,7 +117,8 @@ def train(args):
                     "abs_depth": args.abs_depth, "window": args.window, "stride": args.stride,
                     "k_tac": args.k_tac, "k_str": args.k_str,
                     "use_projection_head": True, "use_cls_pool": args.cls_pool,
-                    "patch_size": list(args.patch_size)}, args.out)
+                    "patch_size": list(args.patch_size),
+                    "residual_pred": getattr(args, "residual_pred", False)}, args.out)
         print(f"[save] {args.out} ({tag})", flush=True)
 
     model.train()
@@ -143,7 +151,19 @@ def train(args):
             # forces stop-grad even under --lewm-ssl, for diagnostics.)
             _stopgrad = (not args.lewm_ssl) or getattr(args, "stopgrad_target", False)
             _tgt = z[:, 1:W].detach() if _stopgrad else z[:, 1:W]
-            L_op = F.mse_loss(op_pred[:, :W-1], _tgt)
+            if getattr(args, "change_weighted_op", False):
+                # weight the per-token next-latent MSE by where the latent actually CHANGES
+                # frame-to-frame -> the moving object's tokens (high change energy) dominate
+                # instead of the static background. Label-free (only |z_{t+1}-z_t|); mean(w)≈1
+                # keeps the loss scale comparable to the uniform MSE.
+                with torch.no_grad():
+                    chg = (z[:, 1:W] - z[:, :W-1]).pow(2).sum(-1)          # [B,W-1,N] change energy
+                    w = chg / (chg.mean(dim=-1, keepdim=True) + 1e-6)      # normalize over tokens
+                    w = w.clamp(min=0.25, max=10.0)
+                err = (op_pred[:, :W-1] - _tgt).pow(2).mean(-1)            # [B,W-1,N] per-token MSE
+                L_op = (w * err).mean()
+            else:
+                L_op = F.mse_loss(op_pred[:, :W-1], _tgt)
             L_pos = F.mse_loss(model.pos_head(model.tok_pool(z)), pos_n)         # decode z[:,k]->pos_k
             L_dyn = F.mse_loss(model.pos_head(model.tok_pool(op_pred[:, :W-1])), pos_n[:, 1:W])
 
@@ -287,6 +307,15 @@ def build_parser():
                          "on the non-detached pooled latent. Forces the compact readout to encode "
                          "the controllable agent state -> fixes pure-SSL G1 position-blindness.")
     ap.add_argument("--inv-weight", type=float, default=1.0, help="weight of the inverse-dynamics loss")
+    ap.add_argument("--residual-pred", action="store_true",
+                    help="Residual/delta prediction: every CausalTemporalPredictor outputs "
+                         "z_t + delta with the conditioning re-injected at the head. The static "
+                         "background rides the skip; all capacity goes to the action-driven "
+                         "change -> fixes the op-predictor under-learning the moving object.")
+    ap.add_argument("--change-weighted-op", action="store_true",
+                    help="Weight the operative next-latent MSE per-token by |z_{t+1}-z_t| so the "
+                         "moving object dominates the loss instead of the static background "
+                         "(label-free; counters boilerplate domination in the latent MSE).")
     ap.add_argument("--self-supervised", action="store_true",
                     help="LeWM-faithful: zero position/dynamics supervision; encoder learns "
                          "only from feature prediction + collapse prevention (probe at eval)")
