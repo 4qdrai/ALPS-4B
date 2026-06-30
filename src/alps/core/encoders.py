@@ -46,6 +46,16 @@ class ProjectionHead(nn.Module):
         # breaks the abstraction predictors (tactical/strategic) at inference time. We
         # always encode in large batches, so batch stats are stable. (Running-stat BN
         # gave eval-time tactical prediction rel-err 6.3 vs 0.72 in train mode.)
+        #
+        # *** CRITICAL INFERENCE GOTCHA ***  Because eval uses BATCH stats, a frame's
+        # latent DEPENDS ON ITS BATCHMATES: encode(one frame) != that frame's encoding
+        # inside a batch (measured: 115% relative difference, batch=1 vs batch=128). Any
+        # ONLINE / single-frame inference (the control loop, MPC, video rollout) therefore
+        # encodes OFF the distribution the decoder/predictor were fit on -> garbage. This
+        # silently zeroed predictor-driven control across the whole project. Before any
+        # single-frame inference call `evaluation.validate_temporal.calibrate_bn(model,
+        # frames, device)` once to populate running stats (exact cumulative mean/var) and
+        # switch these BNs to eval/running-stat mode -> batch-independent + training-matched.
         self.bn = nn.BatchNorm1d(d_model, track_running_stats=False)
         # NOTE: NO trailing activation. LeWM's "1-layer MLP with BatchNorm" ends on
         # the BN output -- that IS the embedding SIGReg regularizes. A trailing GELU
