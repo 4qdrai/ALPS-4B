@@ -29,7 +29,7 @@ import torch.nn.functional as F
 from alps.benchmarks.two_rooms.environment import TwoRoomsEnv
 from alps.benchmarks.two_rooms.world_model_planning import obs_to_frame
 from alps.training.train_hier import load_raw
-from alps.evaluation.validate_temporal import load_model, fit_ridge_decode, HistoryBuffer
+from alps.evaluation.validate_temporal import load_model, fit_ridge_decode, HistoryBuffer, calibrate_bn
 
 
 @torch.no_grad()
@@ -95,6 +95,9 @@ def main():
     ap.add_argument("--egocentric", action="store_true", help="agent-centered control episodes (match egocentric training)")
     ap.add_argument("--perception-radius", type=float, default=None, help="limited perception disk radius (match training)")
     ap.add_argument("--block-mode", action="store_true", help="Block-Rooms env (match training)")
+    ap.add_argument("--no-bn-calib", action="store_true",
+                    help="disable BatchNorm running-stat calibration (debug: reproduces the "
+                         "batch-dependent single-frame encoding bug)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     a = ap.parse_args()
     dev = torch.device(a.device)
@@ -103,6 +106,10 @@ def main():
     readout = lambda z: m.spatial_readout(z, grid=g)
     frames, actions, positions, room_ids, starts = load_raw(a.data_path)
     tot = frames.shape[0]
+    if not a.no_bn_calib:
+        nb = calibrate_bn(m, frames, dev)
+        print(f"[calibrate_bn] populated running stats for {nb} encoder BatchNorm layer(s) "
+              f"-> single-frame inference is now batch-independent")
     rng = np.random.RandomState(0); idx = rng.permutation(tot)[:8000]
 
     def gr(ix, bs=128):
@@ -123,6 +130,7 @@ def main():
     spreads, errs, dir_hits = [], [], 0
     spreads_c, errs_c, dir_hits_c = [], [], 0
     errs_f, dir_hits_f = [], 0
+    errs_od, dir_hits_od = [], 0           # ORACLE-DECODE: decode the REAL next frame (instrument check)
     lat_dir_hits = 0                       # LeWM-native forward latent-space control
     inv_dir_hits = 0                       # INVERSE-dynamics goal-emission control (option 2)
     imag_err, ro_scale = [], []            # predictor 1-step imagination accuracy (latent)
@@ -146,8 +154,18 @@ def main():
                 break
             pred = np.stack([buf.rollout_decode(decode_state, ai, 1).cpu().numpy() for ai in range(4)])   # [4,2]
             pred_c = np.stack([buf.rollout_decode(decode_calib, ai, 1).cpu().numpy() for ai in range(4)])  # [4,2]
-            true = np.stack([copy.deepcopy(env).step(ai)[0]["position"] for ai in range(4)])               # [4,2]
+            nxt = [copy.deepcopy(env).step(ai)[0] for ai in range(4)]
+            true = np.stack([o["position"] for o in nxt])                                                  # [4,2]
             ta = int(np.argmin(np.linalg.norm(true - target, axis=1)))
+            # ORACLE-DECODE: decode the REAL next frame for each action (NOT the predictor). This
+            # isolates the decode+instrument chain from the predictor: with G1<<step it MUST rank
+            # actions (direction_acc ~1.0). If it does not, the failure is the control-loop
+            # decode/readout/env (not the predictor); if it does, the predictor is the sole problem.
+            pred_od = np.stack([decode_state(
+                m.encode_frame(obs_to_frame({"image": o["image"]}, dev).unsqueeze(0)))[0].cpu().numpy()
+                for o in nxt])                                                                             # [4,2]
+            errs_od.append(float(np.linalg.norm(pred_od - true, axis=1).mean()))
+            dir_hits_od += int(int(np.argmin(np.linalg.norm(pred_od - target, axis=1))) == ta)
             spreads.append(float(pred.std(0).mean())); errs.append(float(np.linalg.norm(pred - true, axis=1).mean()))
             dir_hits += int(int(np.argmin(np.linalg.norm(pred - target, axis=1))) == ta)
             spreads_c.append(float(pred_c.std(0).mean())); errs_c.append(float(np.linalg.norm(pred_c - true, axis=1).mean()))
@@ -174,6 +192,9 @@ def main():
                 break
 
     print(f"G1_spatial(real frames) = {g1:.3f} wu")
+    print(f"--- ORACLE-DECODE: decode the REAL next frame per action (INSTRUMENT CHECK, no predictor) ---")
+    print(f"  pred_err {np.mean(errs_od):.3f} | direction_acc {dir_hits_od/max(1,n):.2f}   "
+          f"<<< MUST be ~1.0 if decode resolves the step; else the control-loop decode is broken")
     print(f"--- decode fit on REAL frames (current control path) ---")
     print(f"  action_spread {np.mean(spreads):.3f} | pred_err {np.mean(errs):.3f} | direction_acc {dir_hits/max(1,n):.2f}")
     print(f"--- decode CALIBRATED on op-predictor outputs ---")

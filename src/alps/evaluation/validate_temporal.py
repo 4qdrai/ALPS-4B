@@ -60,6 +60,39 @@ def load_model(path, device):
     return m, ck.get("window", 6)
 
 
+@torch.no_grad()
+def calibrate_bn(model, frames, device, n=4096, bs=256):
+    """Populate running statistics for the encoder's BatchNorm so single-frame inference is
+    BATCH-INDEPENDENT and matches the training distribution.
+
+    The encoder's projection head ends in BatchNorm1d(track_running_stats=False), which
+    normalizes with BATCH statistics at eval too. Training encodes large batches; online
+    control encodes ONE frame at a time -> a frame's latent depends on its batchmates, so
+    the decoder (fit on batched latents) reads single-frame latents as noise (the operative=0
+    bug). Fix: enable running-stat tracking, accumulate the cumulative mean/var over a data
+    pass (== the average large-batch normalization), then eval uses those fixed stats. Now
+    encode_frame(one frame) == its encoding inside any batch. Call once after load_model."""
+    import torch.nn as nn
+    bns = [mod for mod in model.encoder.modules() if isinstance(mod, nn.BatchNorm1d)]
+    for bn in bns:
+        if bn.running_mean is None:                       # track_running_stats=False -> no buffers
+            bn.running_mean = torch.zeros(bn.num_features, device=device)
+            bn.running_var = torch.ones(bn.num_features, device=device)
+            bn.num_batches_tracked = torch.zeros((), dtype=torch.long, device=device)
+        bn.track_running_stats = True
+        bn.momentum = None                                # cumulative moving average (exact mean/var)
+        bn.reset_running_stats()
+        bn.train()                                        # train mode => update running stats on forward
+    tot = frames.shape[0]
+    idx = np.random.RandomState(0).permutation(tot)[:min(n, tot)]
+    for c in range(0, len(idx), bs):
+        b = torch.as_tensor(np.asarray(idx[c:c + bs]))
+        model.encode_frame(frames[b].to(device).float() / 255.)   # forward accumulates BN stats
+    for bn in bns:
+        bn.eval()                                         # now uses the accumulated running stats
+    return len(bns)
+
+
 def load_has_keys(path):
     """Load the per-frame has_key labels (complex datasets only); None if absent."""
     d = torch.load(path, map_location="cpu", weights_only=True)
