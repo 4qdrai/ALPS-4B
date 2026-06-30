@@ -92,7 +92,11 @@ def train(args):
         max_frames=args.window + 1, use_projection_head=True,
         use_cls_pool=args.cls_pool, patch_size=tuple(args.patch_size),
         residual_pred=getattr(args, "residual_pred", False),
-        film_cond=getattr(args, "film_cond", False)).to(device)
+        film_cond=getattr(args, "film_cond", False),
+        flow_pred=getattr(args, "flow_pred", False)).to(device)
+    if getattr(args, "flow_pred", False):
+        print("[pred] FLOW-MATCHING op-predictor ON: next-latent via conditional flow "
+              "(noise -> SHARP sample) instead of MSE mean -> fixes the off-manifold blur.")
     if getattr(args, "residual_pred", False):
         print("[pred] RESIDUAL/DELTA prediction ON: head outputs z_t + delta, action "
               "re-injected at the head (focus capacity on the action-driven change).")
@@ -123,7 +127,8 @@ def train(args):
                     "use_projection_head": True, "use_cls_pool": args.cls_pool,
                     "patch_size": list(args.patch_size),
                     "residual_pred": getattr(args, "residual_pred", False),
-                    "film_cond": getattr(args, "film_cond", False)}, args.out)
+                    "film_cond": getattr(args, "film_cond", False),
+                    "flow_pred": getattr(args, "flow_pred", False)}, args.out)
         print(f"[save] {args.out} ({tag})", flush=True)
 
     model.train()
@@ -147,8 +152,6 @@ def train(args):
             a_idx = torch.from_numpy(ba).to(device)                     # [B,W] action indices
             a = F.one_hot(a_idx, 4).float()                             # [B,W,4]
 
-            # operative (trains encoder); pos decoded from per-frame pooled tokens
-            op_pred = model.op_predict_window(z, a)                      # [B,W,N,D]
             # `--lewm-ssl` = LeWM-faithful (2603.19312, Eq.3): NO stop-gradient on the
             # target (SIGReg alone prevents collapse). DEFAULT (anchored hierarchy):
             # stop-grad the target + position anchor + VICReg = the validated healthy
@@ -156,19 +159,30 @@ def train(args):
             # forces stop-grad even under --lewm-ssl, for diagnostics.)
             _stopgrad = (not args.lewm_ssl) or getattr(args, "stopgrad_target", False)
             _tgt = z[:, 1:W].detach() if _stopgrad else z[:, 1:W]
-            if getattr(args, "change_weighted_op", False):
-                # weight the per-token next-latent MSE by where the latent actually CHANGES
-                # frame-to-frame -> the moving object's tokens (high change energy) dominate
-                # instead of the static background. Label-free (only |z_{t+1}-z_t|); mean(w)≈1
-                # keeps the loss scale comparable to the uniform MSE.
+            # operative (trains encoder); pos decoded from per-frame pooled tokens
+            if getattr(args, "flow_pred", False):
+                # FLOW-MATCHING op-loss: encode context once (differentiable), learn the
+                # conditional velocity that transports noise -> the next latent. op_pred is a
+                # (no-grad) sample, used only for the dyn term / SIGReg-on-prediction below.
+                ctx_op = model.op_predictor.encode_context(z, a)            # [B,W,N,D]
+                L_op = model.op_predictor.flow_loss(ctx_op[:, :W-1], _tgt)
                 with torch.no_grad():
-                    chg = (z[:, 1:W] - z[:, :W-1]).pow(2).sum(-1)          # [B,W-1,N] change energy
-                    w = chg / (chg.mean(dim=-1, keepdim=True) + 1e-6)      # normalize over tokens
-                    w = w.clamp(min=0.25, max=10.0)
-                err = (op_pred[:, :W-1] - _tgt).pow(2).mean(-1)            # [B,W-1,N] per-token MSE
-                L_op = (w * err).mean()
+                    op_pred = model.op_predictor.flow_sample(ctx_op, n_steps=4, n_samples=1)
             else:
-                L_op = F.mse_loss(op_pred[:, :W-1], _tgt)
+                op_pred = model.op_predict_window(z, a)                     # [B,W,N,D]
+                if getattr(args, "change_weighted_op", False):
+                    # weight the per-token next-latent MSE by where the latent actually CHANGES
+                    # frame-to-frame -> the moving object's tokens (high change energy) dominate
+                    # instead of the static background. Label-free (only |z_{t+1}-z_t|); mean(w)≈1
+                    # keeps the loss scale comparable to the uniform MSE.
+                    with torch.no_grad():
+                        chg = (z[:, 1:W] - z[:, :W-1]).pow(2).sum(-1)          # [B,W-1,N] change energy
+                        w = chg / (chg.mean(dim=-1, keepdim=True) + 1e-6)      # normalize over tokens
+                        w = w.clamp(min=0.25, max=10.0)
+                    err = (op_pred[:, :W-1] - _tgt).pow(2).mean(-1)            # [B,W-1,N] per-token MSE
+                    L_op = (w * err).mean()
+                else:
+                    L_op = F.mse_loss(op_pred[:, :W-1], _tgt)
             L_pos = F.mse_loss(model.pos_head(model.tok_pool(z)), pos_n)         # decode z[:,k]->pos_k
             L_dyn = F.mse_loss(model.pos_head(model.tok_pool(op_pred[:, :W-1])), pos_n[:, 1:W])
 
@@ -217,12 +231,18 @@ def train(args):
                 # (LeWM "the predictor is also followed by a projector"). SIGReg-only, no
                 # EMA, no stop-grad. This keeps operative + tactical + strategic all
                 # collapse-free and predicting in latent space.
-                op_pred_pool = model.op_pred_proj(model.tok_pool(op_pred).reshape(B * W, D))
                 tac_pred_p = model.tac_pred_proj(tac_pred.reshape(B * W, D))
                 str_pred_p = model.str_pred_proj(str_pred.reshape(B * W, D))
+                L_sig_pred = model.sigreg(tac_pred_p) + model.sigreg(str_pred_p)
+                if not getattr(args, "flow_pred", False):
+                    # op_pred is a differentiable MSE prediction -> SIGReg it too. In flow mode
+                    # op_pred is a no-grad sample, so its SIGReg term carries no predictor
+                    # gradient; collapse-freeness of the op prediction is instead inherited
+                    # from the (SIGReg'd) embedding targets the flow transports toward.
+                    op_pred_pool = model.op_pred_proj(model.tok_pool(op_pred).reshape(B * W, D))
+                    L_sig_pred = L_sig_pred + model.sigreg(op_pred_pool)
                 L_sig = model.lambda_sigreg * (
-                    model.sigreg(z_pool) + model.sigreg(h_flat) + model.sigreg(s_flat)
-                    + model.sigreg(op_pred_pool) + model.sigreg(tac_pred_p) + model.sigreg(str_pred_p))
+                    model.sigreg(z_pool) + model.sigreg(h_flat) + model.sigreg(s_flat) + L_sig_pred)
                 L_col = torch.zeros((), device=device)
             else:
                 # Anchored hierarchy (validated): per-row-normalized SIGReg as a light
@@ -326,6 +346,12 @@ def build_parser():
                          "before EVERY predictor layer instead of once at the input. Targets the "
                          "manifold-mismatch symptom (right magnitude, wrong direction) by keeping "
                          "the action driving the prediction through the full depth.")
+    ap.add_argument("--flow-pred", action="store_true",
+                    help="FLOW-MATCHING op-predictor: replace the next-latent MSE head with a "
+                         "conditional rectified-flow velocity field that transports noise to a "
+                         "SHARP SAMPLE of the next latent (committed mode, not the blurry MSE "
+                         "mean). Attacks the off-manifold blur that made the imagined readout "
+                         "direction-random. Op-predictor only; tactical/strategic stay MSE.")
     ap.add_argument("--self-supervised", action="store_true",
                     help="LeWM-faithful: zero position/dynamics supervision; encoder learns "
                          "only from feature prediction + collapse prevention (probe at eval)")

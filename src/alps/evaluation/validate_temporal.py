@@ -52,7 +52,8 @@ def load_model(path, device):
         use_cls_pool=ck.get("use_cls_pool", False),
         patch_size=tuple(ck.get("patch_size", (2, 16, 16))),
         residual_pred=ck.get("residual_pred", False),
-        film_cond=ck.get("film_cond", False)).to(device)
+        film_cond=ck.get("film_cond", False),
+        flow_pred=ck.get("flow_pred", False)).to(device)
     msd = m.state_dict()
     sd = {k: v for k, v in ck["model_state_dict"].items() if k in msd and msd[k].shape == v.shape}
     m.load_state_dict(sd, strict=False); m.eval()

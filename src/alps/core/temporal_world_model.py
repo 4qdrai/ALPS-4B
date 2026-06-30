@@ -32,8 +32,9 @@ class TemporalHierWorldModel(nn.Module):
                  op_depth=6, abs_depth=4, lambda_sigreg=0.1, sigreg_slices=256,
                  rag_sim_threshold=0.75, k_tac=2, k_str=4, max_frames=12,
                  use_projection_head=True, use_cls_pool=False, residual_pred=False,
-                 film_cond=False):
+                 film_cond=False, flow_pred=False):
         super().__init__()
+        self.flow_pred = flow_pred
         self.d_model = d_model
         self.k_tac, self.k_str = k_tac, k_str
         self.SINGLE_FRAME_T = 2
@@ -51,7 +52,8 @@ class TemporalHierWorldModel(nn.Module):
         # operative: causal history over spatial tokens, conditioned on action
         self.op_predictor = CausalTemporalPredictor(d_model, d_cond=d_action, depth=op_depth,
                                                     num_heads=enc_heads, max_frames=max_frames,
-                                                    residual=residual_pred, film_cond=film_cond)
+                                                    residual=residual_pred, film_cond=film_cond,
+                                                    flow=flow_pred)
         self.pos_head = mlp(d_model, d_model, 2)
         # tactical: pooled history, conditioned on strategic concept
         self.tac_proj = nn.Linear(d_model, d_model)
