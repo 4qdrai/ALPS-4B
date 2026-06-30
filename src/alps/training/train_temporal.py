@@ -91,10 +91,14 @@ def train(args):
         lambda_sigreg=args.lambda_sigreg, sigreg_slices=args.sigreg_slices,
         max_frames=args.window + 1, use_projection_head=True,
         use_cls_pool=args.cls_pool, patch_size=tuple(args.patch_size),
-        residual_pred=getattr(args, "residual_pred", False)).to(device)
+        residual_pred=getattr(args, "residual_pred", False),
+        film_cond=getattr(args, "film_cond", False)).to(device)
     if getattr(args, "residual_pred", False):
         print("[pred] RESIDUAL/DELTA prediction ON: head outputs z_t + delta, action "
               "re-injected at the head (focus capacity on the action-driven change).")
+    if getattr(args, "film_cond", False):
+        print("[pred] PER-LAYER (FiLM) action conditioning ON: action re-injected before "
+              "every predictor layer (sharper action->direction mapping).")
     if getattr(args, "change_weighted_op", False):
         print("[loss] CHANGE-WEIGHTED op-loss ON: per-token next-latent MSE weighted by "
               "|z_{t+1}-z_t| (moving object dominates, not the static background).")
@@ -118,7 +122,8 @@ def train(args):
                     "k_tac": args.k_tac, "k_str": args.k_str,
                     "use_projection_head": True, "use_cls_pool": args.cls_pool,
                     "patch_size": list(args.patch_size),
-                    "residual_pred": getattr(args, "residual_pred", False)}, args.out)
+                    "residual_pred": getattr(args, "residual_pred", False),
+                    "film_cond": getattr(args, "film_cond", False)}, args.out)
         print(f"[save] {args.out} ({tag})", flush=True)
 
     model.train()
@@ -316,6 +321,11 @@ def build_parser():
                     help="Weight the operative next-latent MSE per-token by |z_{t+1}-z_t| so the "
                          "moving object dominates the loss instead of the static background "
                          "(label-free; counters boilerplate domination in the latent MSE).")
+    ap.add_argument("--film-cond", action="store_true",
+                    help="Per-layer (FiLM-lite) action conditioning: re-inject the conditioning "
+                         "before EVERY predictor layer instead of once at the input. Targets the "
+                         "manifold-mismatch symptom (right magnitude, wrong direction) by keeping "
+                         "the action driving the prediction through the full depth.")
     ap.add_argument("--self-supervised", action="store_true",
                     help="LeWM-faithful: zero position/dynamics supervision; encoder learns "
                          "only from feature prediction + collapse prevention (probe at eval)")

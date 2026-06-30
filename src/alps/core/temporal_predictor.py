@@ -33,7 +33,7 @@ def block_causal_mask(K: int, M: int, device) -> torch.Tensor:
 class CausalTemporalPredictor(nn.Module):
     def __init__(self, d_model: int, d_cond: int, depth: int = 4, num_heads: int = 6,
                  mlp_ratio: float = 4.0, max_frames: int = 12, dropout: float = 0.1,
-                 residual: bool = False):
+                 residual: bool = False, film_cond: bool = False):
         super().__init__()
         if d_model % num_heads != 0:
             for h in range(num_heads, 0, -1):
@@ -46,6 +46,13 @@ class CausalTemporalPredictor(nn.Module):
         # action-driven delta (the moving object) -- the part the uniform next-latent MSE
         # otherwise under-learns (boilerplate domination). See diagnose_control / BLOCK_ROOMS.
         self.residual = residual
+        # per-layer (FiLM-lite) conditioning: re-inject the action before EVERY transformer
+        # layer instead of once at the input. Injected once, the action is washed out through
+        # a deep stack -> the predicted consequence keeps the right magnitude but the wrong
+        # DIRECTION (calibrated dir_acc 0.41, action_spread ~= true step). Re-injecting per
+        # layer keeps the action driving the prediction all the way through -> sharper
+        # action->direction mapping. See the manifold-mismatch diagnosis.
+        self.film_cond = film_cond
         self.frame_emb = nn.Parameter(torch.randn(1, max_frames, 1, d_model) * 0.02)
         self.cond_proj = nn.Sequential(nn.Linear(d_cond, d_model), nn.GELU(),
                                        nn.Linear(d_model, d_model))
@@ -65,8 +72,16 @@ class CausalTemporalPredictor(nn.Module):
         """
         B, K, M, D = z.shape
         cemb = self.cond_proj(cond).unsqueeze(2)        # [B,K,1,D]
+        mask = block_causal_mask(K, M, z.device)
         x = (z + self.frame_emb[:, :K] + cemb).reshape(B, K * M, D)
-        x = self.transformer(x, mask=block_causal_mask(K, M, z.device))
+        if self.film_cond:
+            # re-inject the conditioning before every layer so the action keeps driving the
+            # prediction through the full depth (not washed out after the input).
+            cfull = cemb.expand(-1, -1, M, -1).reshape(B, K * M, D)
+            for layer in self.transformer.layers:
+                x = layer(x + cfull, src_mask=mask)
+        else:
+            x = self.transformer(x, mask=mask)
         if self.residual:
             # re-inject the per-frame conditioning right before the head so the action
             # directly shapes the delta, then add the skip: pred[:, i] = z[:, i] + delta.
