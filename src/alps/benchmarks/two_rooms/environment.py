@@ -63,6 +63,15 @@ class TwoRoomsEnv:
     BLOCK_RENDER_RADIUS = 1.7      # ~44px diameter @128 = prominent, ~9% of the frame
     BLOCK_STEP_SCALE = 7.0         # step = 0.3 * 7 = 2.1 wu per action (>> momentum-scale)
 
+    # Block-Rooms WALL+GAP (the hierarchy obstacle): a vertical wall at x=BLOCK_WALL_X with a
+    # single gap y in [BLOCK_GAP_LO, BLOCK_GAP_HI]. Agent + target spawn on OPPOSITE sides, so a
+    # greedy operative drives straight into the wall and STALLS, while the four-brain plan routes
+    # via a gap waypoint. Gap (4 wu) > block diameter (3.4) so the block fits through.
+    BLOCK_WALL_X = 5.0
+    BLOCK_WALL_HALF = 0.30         # half wall thickness (wu)
+    BLOCK_GAP_LO = 3.0
+    BLOCK_GAP_HI = 7.0
+
     # Wall rendering thickness in world units
     WALL_THICKNESS = 0.15
 
@@ -79,7 +88,7 @@ class TwoRoomsEnv:
 
     def __init__(self, seed: Optional[int] = None, complex_mode: bool = False,
                  hazards: bool = True, egocentric: bool = False, perception_radius: float = None,
-                 block_mode: bool = False):
+                 block_mode: bool = False, block_wall: bool = False):
         """
         Args:
             seed: optional RNG seed for reproducibility.
@@ -98,6 +107,7 @@ class TwoRoomsEnv:
         self.hazards = hazards
         self.egocentric = egocentric
         self.block_mode = block_mode
+        self.block_wall = block_wall
         # Limited perception (egocentric only): the agent observes only a disk of this radius (wu)
         # around itself; everything beyond is unobserved (background). This makes the far static
         # structure trivial-to-predict, so the ONLY non-trivial thing to predict is the local
@@ -152,9 +162,20 @@ class TwoRoomsEnv:
         self.ice_momentum = np.array([0.0, 0.0], dtype=np.float32)
 
         if self.block_mode:
+            lo, hi = 2.0, self.WORLD_SIZE - 2.0
+            if self.block_wall:
+                # WALL+GAP: agent and target on OPPOSITE sides of the wall -> crossing the gap is
+                # required (greedy stalls at the wall; the four-brain routes through the gap).
+                m = self.BLOCK_RENDER_RADIUS + self.BLOCK_WALL_HALF + 0.1
+                WX = self.BLOCK_WALL_X
+                left = bool(self.rng.randint(2))
+                ax = self.rng.uniform(lo, WX - m) if left else self.rng.uniform(WX + m, hi)
+                tx = self.rng.uniform(WX + m, hi) if left else self.rng.uniform(lo, WX - m)
+                self.agent_pos = np.array([ax, self.rng.uniform(lo, hi)], dtype=np.float32)
+                self.target_pos = np.array([tx, self.rng.uniform(lo, hi)], dtype=np.float32)
+                return self._get_obs()
             # Open fully-observed arena: a large block (agent) and a target, both placed at random
             # (well inside the boundary so the big block fits). No rooms/walls in the minimal mode.
-            lo, hi = 2.0, self.WORLD_SIZE - 2.0
             self.agent_pos = self.rng.uniform(lo, hi, 2).astype(np.float32)
             for _ in range(20):
                 self.target_pos = self.rng.uniform(lo, hi, 2).astype(np.float32)
@@ -222,6 +243,15 @@ class TwoRoomsEnv:
         if self.block_mode:
             r = self.BLOCK_RENDER_RADIUS
             new_pos = np.clip(new_pos, r, self.WORLD_SIZE - r)   # keep the big block fully in frame; open arena
+            if self.block_wall:
+                # center-point wall collision: block an x-crossing of the wall unless the new
+                # y is inside the gap. The block must first line up with the gap, then cross.
+                WX = self.BLOCK_WALL_X
+                crossing = (old_pos[0] - WX) * (new_pos[0] - WX) < 0
+                in_gap = self.BLOCK_GAP_LO <= new_pos[1] <= self.BLOCK_GAP_HI
+                if crossing and not in_gap:
+                    margin = r + self.BLOCK_WALL_HALF + 0.05
+                    new_pos[0] = (WX - margin) if old_pos[0] < WX else (WX + margin)
         else:
             new_pos = self._apply_wall_collision(old_pos, new_pos)
             new_pos = np.clip(new_pos, self.BOUNDARY_MIN, self.BOUNDARY_MAX)
@@ -276,6 +306,11 @@ class TwoRoomsEnv:
             # Open, fully-observed arena: plain floor + target + the LARGE block (agent). The block's
             # big action-determined displacement is the dominant, observed, predictable change.
             img[:] = self.COLOR_FLOOR
+            if self.block_wall:
+                # vertical wall at BLOCK_WALL_X with a gap [BLOCK_GAP_LO, BLOCK_GAP_HI]
+                wall = (np.abs(self._grid_x - self.BLOCK_WALL_X) <= self.BLOCK_WALL_HALF) & \
+                       ((self._grid_y < self.BLOCK_GAP_LO) | (self._grid_y > self.BLOCK_GAP_HI))
+                img[wall] = self.COLOR_WALL
             img = self._draw_circle_aa(img, self.target_pos, self.TARGET_RENDER_RADIUS, self.COLOR_TARGET)
             img = self._draw_circle_aa(img, self.agent_pos, self.BLOCK_RENDER_RADIUS, self.COLOR_AGENT)
             return img

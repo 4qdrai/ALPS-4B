@@ -39,7 +39,8 @@ from alps.training.train_hier import load_raw
 from alps.evaluation.validate_hierarchy import fit_probe
 from alps.evaluation.validate_temporal import (
     load_model, gather, HistoryBuffer, hist_greedy_action_latent, build_graph_raw, REACH,
-    fit_ridge_decode)
+    fit_ridge_decode, calibrate_bn)
+from alps.evaluation.diagnose_control import fit_calibrated_decode
 
 
 def _px(xy, size):
@@ -147,7 +148,8 @@ def record(model, W, seed, sr, gr, device, decode_op, graph, featurize, strategy
 
 @torch.no_grad()
 def record_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
-                   strategy, complex_mode=False, size=288, ctrl_k=3, max_steps=160):
+                   strategy, complex_mode=False, size=288, ctrl_k=3, max_steps=160,
+                   block_mode=False, block_wall=False, decode_pred=None):
     """SPATIAL-readout, predictor-DECODED control (mirrors validate_temporal.run_episode_spatial)
     while capturing env frames -- the path that ACTUALLY routes under pure SSL. The global-pool
     `record` above is position-blind (the small agent is diluted), so the Four-Brain panel would
@@ -156,15 +158,22 @@ def record_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
     steers toward the position-faithful graph waypoint.
       operative : greedy to the decoded GOAL (System 1) -> stalls at the wall / locked door.
       fourbrain : follow the latent-graph waypoints (complex: routes through the KEY)."""
-    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
-    obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
+    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False,
+                      block_mode=block_mode, block_wall=block_wall)
+    obs = env.reset() if (complex_mode or block_mode) else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
     buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
-    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
-    eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
+    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False,
+                     block_mode=block_mode, block_wall=block_wall)
+    eg.reset() if (complex_mode or block_mode) else eg.reset(start_room=gr, goal_room=gr)
     eg.agent_pos = goal_xy.copy()
     if complex_mode:
         eg.has_key = True
+    # decode_state (fit on REAL frames) reads the current/goal frame position; decode_pred
+    # (fit on the op-predictor's OWN outputs -- the calibrated decode, 0.97 vs 0.66) reads the
+    # IMAGINED next position in the rollout. Both return world units, so they compare directly.
+    if decode_pred is None:
+        decode_pred = decode_state
     goal_grid = model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))
     goal_pos = decode_state(goal_grid)[0].cpu().numpy()
     waypoints, wp = [goal_pos], 0
@@ -183,7 +192,7 @@ def record_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
         frames.append(_frame(obs["image"], size, label, waypoints=wp_overlay, dot=dec))
         best_a, best_d = 0, 1e30
         for a in range(4):
-            pos_a = buf.rollout_decode(decode_state, a, ctrl_k).cpu().numpy()
+            pos_a = buf.rollout_decode(decode_pred, a, ctrl_k).cpu().numpy()
             d = float(np.linalg.norm(pos_a - sub))
             if d < best_d:
                 best_d, best_a = d, a
@@ -218,6 +227,11 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
     model, W = load_model(model_path, device)
     frames_t, actions, positions, room_ids, starts = load_raw(data_path)
     total = frames_t.shape[0]
+    # CRITICAL: batch-dependent encoder BN -> single-frame control encoding is off-distribution
+    # without this. calibrate_bn makes encode_frame(one frame) batch-independent. See encoders.py.
+    if not getattr(args, "no_bn_calib", False):
+        calibrate_bn(model, frames_t, device)
+        print("[calibrate_bn] encoder BN running stats populated (single-frame inference fixed)")
     rng = np.random.RandomState(0); idx = rng.permutation(total)[: args.probe_samples]
     Z, _, _, _, P = gather(model, frames_t, positions, room_ids, idx, device)
     spatial = getattr(args, "spatial", False)
@@ -237,13 +251,22 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
 
         ridge_decode = fit_ridge_decode(_gather_readout(idx), P.float(), device)
         decode_state = lambda grid: ridge_decode(model.spatial_readout(grid, grid=g))
+        # CALIBRATED decode: a frozen ridge fit on the op-predictor's OWN outputs (imagined
+        # next latent) -> removes the off-manifold linear distortion so the ROLLOUT reads the
+        # imagined position accurately (bake-off: 0.97 vs 0.66 for the real-frame ridge).
+        ridge_calib = fit_calibrated_decode(model, frames_t, positions, actions, starts,
+                                            total, readout, W, device)
+        decode_pred = lambda grid: ridge_calib(model.spatial_readout(grid, grid=g))
         graph = build_graph_raw(model, ridge_decode, frames_t, positions, room_ids, starts,
                                 total, device, k=args.fine_k, S=max(1, args.stride // 2), readout=readout)
         graph.decoded_xy = ridge_decode(torch.tensor(graph.centroids, device=device)).cpu().numpy()
 
         def record_fn(seed, sr, gr, strategy):
             return record_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
-                                  strategy, complex_mode, args.size, getattr(args, "ctrl_k", 3))
+                                  strategy, complex_mode, args.size, getattr(args, "ctrl_k", 3),
+                                  block_mode=getattr(args, "block_mode", False),
+                                  block_wall=getattr(args, "block_wall", False),
+                                  decode_pred=decode_pred)
     else:
         torch.set_grad_enabled(True); decode_op = fit_probe(Z, P, device); torch.set_grad_enabled(False)
         graph, featurize = build_for_mode(model, decode_op, frames_t, actions, positions, room_ids,
@@ -253,9 +276,11 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
         def record_fn(seed, sr, gr, strategy):
             return record(model, W, seed, sr, gr, device, decode_op, graph, featurize,
                          strategy, complex_mode, args.size)
-    tag = "complex" if complex_mode else "simple"
+    tag = ("blockwall" if getattr(args, "block_wall", False) else "block") if getattr(args, "block_mode", False) \
+          else ("complex" if complex_mode else "simple")
+    # block_mode reset is random (opposite sides under block_wall), so sr/gr are ignored there.
     cfgs = [(0, 3, 2000 + i) for i in range(40)] if complex_mode else \
-           [(0, 1, 1000 + i) for i in range(40)]  # cross-room configs
+           [(0, 1, 1000 + i) for i in range(40)]  # cross-room / cross-wall configs
     made = 0
     for sr, gr, seed in cfgs:
         if made >= n_clips:
@@ -300,7 +325,18 @@ def main():
                          "will stall even on a good model. Match the gate's --spatial-grid/--ctrl-k.")
     ap.add_argument("--spatial-grid", type=int, default=8)
     ap.add_argument("--ctrl-k", type=int, default=3)
+    ap.add_argument("--block-mode", action="store_true",
+                    help="render the Block-Rooms env (large decodable block) instead of the rooms env")
+    ap.add_argument("--block-wall", action="store_true",
+                    help="Block-Rooms WALL+GAP: greedy operative stalls at the wall, four-brain "
+                         "routes through the gap (the hierarchy proof). Implies --block-mode.")
+    ap.add_argument("--no-bn-calib", action="store_true",
+                    help="disable encoder BatchNorm running-stat calibration (debug only)")
     a = ap.parse_args()
+    if a.block_wall:
+        a.block_mode = True
+    if a.block_mode:
+        a.simple_only = True   # block-mode is a single env (no complex variant here)
     os.makedirs(a.save_dir, exist_ok=True)
     dev = torch.device(a.device)
     if not a.complex_only:

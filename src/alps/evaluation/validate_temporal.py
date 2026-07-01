@@ -717,6 +717,13 @@ def run(args):
     model, W = load_model(args.model_path, device)
     frames, actions, positions, room_ids, starts = load_raw(args.data_path)
     total = frames.shape[0]
+    # CRITICAL: the encoder's projection-head BatchNorm uses batch stats at eval, so single-
+    # frame inference (the control loop / spatial readout) is batch-dependent and decodes off
+    # the distribution the probes are fit on -> zero control. Calibrate running stats once so
+    # all single-frame encoding here is batch-independent. See encoders.py / calibrate_bn.
+    if not getattr(args, "no_bn_calib", False):
+        nb = calibrate_bn(model, frames, device)
+        print(f"[calibrate_bn] populated running stats for {nb} encoder BatchNorm layer(s)")
     rng = np.random.RandomState(1)
     out = {}
 

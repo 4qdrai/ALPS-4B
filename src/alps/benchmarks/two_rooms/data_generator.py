@@ -150,6 +150,7 @@ class TrajectoryGenerator:
         egocentric: bool = False,
         perception_radius: float = None,
         block_mode: bool = False,
+        block_wall: bool = False,
     ):
         self.num_episodes = num_episodes
         self.max_steps = max_steps
@@ -159,6 +160,7 @@ class TrajectoryGenerator:
         self.egocentric = egocentric
         self.perception_radius = perception_radius
         self.block_mode = block_mode
+        self.block_wall = block_wall
 
     def _rollout(self, obs_buf: Optional[np.ndarray] = None):
         """One deterministic pass over all episodes (fixed seed → identical
@@ -168,7 +170,8 @@ class TrajectoryGenerator:
         """
         rng = np.random.RandomState(self.seed)
         env = TwoRoomsEnv(seed=self.seed, complex_mode=self.complex_mode, egocentric=self.egocentric,
-                          perception_radius=self.perception_radius, block_mode=self.block_mode)
+                          perception_radius=self.perception_radius, block_mode=self.block_mode,
+                          block_wall=self.block_wall)
         random_policy = RandomMomentumPolicy(rng)
         heuristic_policy = HeuristicPolicy(rng, complex_mode=self.complex_mode)
 
@@ -263,6 +266,7 @@ def generate_dataset(
     egocentric: bool = False,
     perception_radius: float = None,
     block_mode: bool = False,
+    block_wall: bool = False,
 ) -> Dict[str, Any]:
     """Generate the dataset and save to disk."""
     generator = TrajectoryGenerator(
@@ -274,6 +278,7 @@ def generate_dataset(
         egocentric=egocentric,
         perception_radius=perception_radius,
         block_mode=block_mode,
+        block_wall=block_wall,
     )
     dataset = generator.generate()
 
@@ -308,6 +313,9 @@ if __name__ == "__main__":
     parser.add_argument("--block-mode", action="store_true",
                         help="Block-Rooms: a LARGE block (agent) moved by a LARGE deterministic step "
                              "in an open fully-observed arena (consequence-dominant testbed).")
+    parser.add_argument("--block-wall", action="store_true",
+                        help="Add a vertical WALL+GAP to Block-Rooms (agent+target spawn on opposite "
+                             "sides) -> the hierarchy obstacle: greedy stalls, four-brain routes the gap.")
     args = parser.parse_args()
 
     generate_dataset(
@@ -320,4 +328,5 @@ if __name__ == "__main__":
         egocentric=args.egocentric,
         perception_radius=args.perception_radius,
         block_mode=args.block_mode,
+        block_wall=args.block_wall,
     )
