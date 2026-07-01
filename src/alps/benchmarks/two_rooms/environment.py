@@ -94,7 +94,8 @@ class TwoRoomsEnv:
 
     def __init__(self, seed: Optional[int] = None, complex_mode: bool = False,
                  hazards: bool = True, egocentric: bool = False, perception_radius: float = None,
-                 block_mode: bool = False, block_wall: bool = False, block_gate: bool = False):
+                 block_mode: bool = False, block_wall: bool = False, block_gate: bool = False,
+                 block_radius: float = None, block_step_scale: float = None):
         """
         Args:
             seed: optional RNG seed for reproducibility.
@@ -115,6 +116,12 @@ class TwoRoomsEnv:
         self.block_mode = block_mode
         self.block_gate = block_gate
         self.block_wall = block_wall or block_gate   # the gate reuses the wall+gap structure
+        # tunable block geometry: the 1.7-radius / 2.1-step defaults made the agent dominate the
+        # frame (~9%) and the decode trivial. Now that the BatchNorm harness is fixed, a much
+        # smaller agent is decodable -- the only hard constraint is decode << step. Shrink the
+        # agent and scale the step together for a natural, unbiased top-down task.
+        self.block_radius = float(block_radius) if block_radius is not None else self.BLOCK_RENDER_RADIUS
+        self.block_step_scale = float(block_step_scale) if block_step_scale is not None else self.BLOCK_STEP_SCALE
         # Limited perception (egocentric only): the agent observes only a disk of this radius (wu)
         # around itself; everything beyond is unobserved (background). This makes the far static
         # structure trivial-to-predict, so the ONLY non-trivial thing to predict is the local
@@ -173,7 +180,7 @@ class TwoRoomsEnv:
             if self.block_wall:
                 # WALL+GAP: agent and target on OPPOSITE sides of the wall -> crossing the gap is
                 # required (greedy stalls at the wall; the four-brain routes through the gap).
-                m = self.BLOCK_RENDER_RADIUS + self.BLOCK_WALL_HALF + 0.1
+                m = self.block_radius + self.BLOCK_WALL_HALF + 0.1
                 WX = self.BLOCK_WALL_X
                 left = bool(self.rng.randint(2))
                 ax = self.rng.uniform(lo, WX - m) if left else self.rng.uniform(WX + m, hi)
@@ -233,7 +240,7 @@ class TwoRoomsEnv:
         old_pos = self.agent_pos.copy()
         delta = self.ACTION_DELTAS[action].copy()
         if self.block_mode:
-            delta = delta * self.BLOCK_STEP_SCALE   # large, deterministic displacement per action
+            delta = delta * self.block_step_scale   # large, deterministic displacement per action
 
         # --- Apply Variable Physics (Complex Mode Only) ---
         # Hazards (ice/wind) are a System-1 control challenge; disable them to test
@@ -257,8 +264,8 @@ class TwoRoomsEnv:
 
         # --- Wall collision & boundaries ---
         if self.block_mode:
-            r = self.BLOCK_RENDER_RADIUS
-            new_pos = np.clip(new_pos, r, self.WORLD_SIZE - r)   # keep the big block fully in frame; open arena
+            r = self.block_radius
+            new_pos = np.clip(new_pos, r, self.WORLD_SIZE - r)   # keep the block fully in frame; open arena
             if self.block_gate and not self.has_key:
                 # touch the key (on the current, pre-collision position) -> unlock the gate
                 if np.linalg.norm(old_pos - self.key_pos) < (self.BLOCK_KEY_RENDER_RADIUS + r):
@@ -339,7 +346,7 @@ class TwoRoomsEnv:
             if self.block_gate and not self.has_key:
                 img = self._draw_circle_aa(img, self.key_pos, self.BLOCK_KEY_RENDER_RADIUS, self.COLOR_KEY)
             img = self._draw_circle_aa(img, self.target_pos, self.TARGET_RENDER_RADIUS, self.COLOR_TARGET)
-            img = self._draw_circle_aa(img, self.agent_pos, self.BLOCK_RENDER_RADIUS, self.COLOR_AGENT)
+            img = self._draw_circle_aa(img, self.agent_pos, self.block_radius, self.COLOR_AGENT)
             return img
 
         gx = self._grid_x

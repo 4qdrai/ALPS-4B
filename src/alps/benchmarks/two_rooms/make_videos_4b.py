@@ -149,7 +149,8 @@ def record(model, W, seed, sr, gr, device, decode_op, graph, featurize, strategy
 @torch.no_grad()
 def record_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
                    strategy, complex_mode=False, size=288, ctrl_k=3, max_steps=160,
-                   block_mode=False, block_wall=False, block_gate=False, decode_pred=None):
+                   block_mode=False, block_wall=False, block_gate=False, decode_pred=None,
+                   block_radius=None, block_step_scale=None):
     """SPATIAL-readout, predictor-DECODED control (mirrors validate_temporal.run_episode_spatial)
     while capturing env frames -- the path that ACTUALLY routes under pure SSL. The global-pool
     `record` above is position-blind (the small agent is diluted), so the Four-Brain panel would
@@ -158,13 +159,13 @@ def record_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
     steers toward the position-faithful graph waypoint.
       operative : greedy to the decoded GOAL (System 1) -> stalls at the wall / locked door.
       fourbrain : follow the latent-graph waypoints (complex: routes through the KEY)."""
-    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False,
-                      block_mode=block_mode, block_wall=block_wall, block_gate=block_gate)
+    _bkw = dict(block_mode=block_mode, block_wall=block_wall, block_gate=block_gate,
+                block_radius=block_radius, block_step_scale=block_step_scale)
+    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_bkw)
     obs = env.reset() if (complex_mode or block_mode) else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
     buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
-    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False,
-                     block_mode=block_mode, block_wall=block_wall, block_gate=block_gate)
+    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_bkw)
     eg.reset() if (complex_mode or block_mode) else eg.reset(start_room=gr, goal_room=gr)
     eg.agent_pos = goal_xy.copy()
     if complex_mode or block_gate:
@@ -267,6 +268,8 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
                                   block_mode=getattr(args, "block_mode", False),
                                   block_wall=getattr(args, "block_wall", False),
                                   block_gate=getattr(args, "block_gate", False),
+                                  block_radius=getattr(args, "block_radius", None),
+                                  block_step_scale=getattr(args, "block_step_scale", None),
                                   decode_pred=decode_pred)
     else:
         torch.set_grad_enabled(True); decode_op = fit_probe(Z, P, device); torch.set_grad_enabled(False)
@@ -338,6 +341,8 @@ def main():
                          "The hierarchy-SUPREMACY proof. Implies --block-wall/--block-mode.")
     ap.add_argument("--no-bn-calib", action="store_true",
                     help="disable encoder BatchNorm running-stat calibration (debug only)")
+    ap.add_argument("--block-radius", type=float, default=None, help="block render radius (MUST match training)")
+    ap.add_argument("--block-step-scale", type=float, default=None, help="block step scale (MUST match training)")
     a = ap.parse_args()
     if a.block_gate:
         a.block_wall = True

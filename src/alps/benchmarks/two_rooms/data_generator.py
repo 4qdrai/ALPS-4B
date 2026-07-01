@@ -168,6 +168,8 @@ class TrajectoryGenerator:
         block_mode: bool = False,
         block_wall: bool = False,
         block_gate: bool = False,
+        block_radius: float = None,
+        block_step_scale: float = None,
     ):
         self.num_episodes = num_episodes
         self.max_steps = max_steps
@@ -179,6 +181,8 @@ class TrajectoryGenerator:
         self.block_mode = block_mode
         self.block_wall = block_wall
         self.block_gate = block_gate
+        self.block_radius = block_radius
+        self.block_step_scale = block_step_scale
 
     def _rollout(self, obs_buf: Optional[np.ndarray] = None):
         """One deterministic pass over all episodes (fixed seed → identical
@@ -189,7 +193,8 @@ class TrajectoryGenerator:
         rng = np.random.RandomState(self.seed)
         env = TwoRoomsEnv(seed=self.seed, complex_mode=self.complex_mode, egocentric=self.egocentric,
                           perception_radius=self.perception_radius, block_mode=self.block_mode,
-                          block_wall=self.block_wall, block_gate=self.block_gate)
+                          block_wall=self.block_wall, block_gate=self.block_gate,
+                          block_radius=self.block_radius, block_step_scale=self.block_step_scale)
         random_policy = RandomMomentumPolicy(rng)
         heuristic_policy = HeuristicPolicy(rng, complex_mode=self.complex_mode, block_gate=self.block_gate)
 
@@ -286,6 +291,8 @@ def generate_dataset(
     block_mode: bool = False,
     block_wall: bool = False,
     block_gate: bool = False,
+    block_radius: float = None,
+    block_step_scale: float = None,
 ) -> Dict[str, Any]:
     """Generate the dataset and save to disk."""
     generator = TrajectoryGenerator(
@@ -299,6 +306,8 @@ def generate_dataset(
         block_mode=block_mode,
         block_wall=block_wall,
         block_gate=block_gate,
+        block_radius=block_radius,
+        block_step_scale=block_step_scale,
     )
     dataset = generator.generate()
 
@@ -340,6 +349,12 @@ if __name__ == "__main__":
                         help="SWITCH-GATE: the gap is LOCKED until a KEY (in an agent-side corner, away "
                              "from the goal) is collected. Greedy PROVABLY fails (never fetches the key); "
                              "only strategic key->gate->goal routing solves it. Implies --block-wall.")
+    parser.add_argument("--block-radius", type=float, default=None,
+                        help="block (agent) render radius in wu (default 1.7 = ~9%% of frame). Smaller "
+                             "= less biased/dominant; keep decode << step (pair with --block-step-scale).")
+    parser.add_argument("--block-step-scale", type=float, default=None,
+                        help="per-action step = 0.3 * scale (default 7 -> 2.1 wu). Lower with a smaller "
+                             "block for a natural task; step must stay >> decode error.")
     args = parser.parse_args()
 
     generate_dataset(
@@ -354,4 +369,6 @@ if __name__ == "__main__":
         block_mode=args.block_mode,
         block_wall=args.block_wall,
         block_gate=args.block_gate,
+        block_radius=args.block_radius,
+        block_step_scale=args.block_step_scale,
     )
