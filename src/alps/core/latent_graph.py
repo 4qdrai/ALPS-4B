@@ -44,8 +44,11 @@ def _kmeans(x: np.ndarray, k: int, iters: int = 50, seed: int = 0):
         rng = np.random.RandomState(seed)
         centers = x[rng.choice(len(x), k, replace=False)].copy()
         labels = np.zeros(len(x), dtype=np.int64)
+        x2 = (x ** 2).sum(1)[:, None]                      # [N,1]
         for _ in range(iters):
-            d = ((x[:, None, :] - centers[None, :, :]) ** 2).sum(-1)
+            # ||x-c||^2 = ||x||^2 - 2 x·c + ||c||^2 via matmul -> [N,k], never the [N,k,D]
+            # broadcast tensor (which is 16+ GiB for the 12288-d spatial readout).
+            d = x2 - 2.0 * (x @ centers.T) + (centers ** 2).sum(1)[None, :]
             labels = d.argmin(1)
             for j in range(k):
                 m = labels == j

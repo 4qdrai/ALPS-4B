@@ -71,6 +71,12 @@ class TwoRoomsEnv:
     BLOCK_WALL_HALF = 0.30         # half wall thickness (wu)
     BLOCK_GAP_LO = 3.0
     BLOCK_GAP_HI = 7.0
+    # SWITCH-GATE (the hierarchy-SUPREMACY obstacle): the gap is LOCKED until the block touches a
+    # KEY placed in a corner on the agent's side, AWAY from the goal direction. A greedy operative
+    # heads at the goal, hits the locked gate, and never fetches the key (wrong way) -> STALLS.
+    # Only strategic routing (key -> gate -> goal) solves it. Greedy PROVABLY fails (unlike the
+    # single open gap, which greedy wall-follows through).
+    BLOCK_KEY_RENDER_RADIUS = 0.9
 
     # Wall rendering thickness in world units
     WALL_THICKNESS = 0.15
@@ -88,7 +94,7 @@ class TwoRoomsEnv:
 
     def __init__(self, seed: Optional[int] = None, complex_mode: bool = False,
                  hazards: bool = True, egocentric: bool = False, perception_radius: float = None,
-                 block_mode: bool = False, block_wall: bool = False):
+                 block_mode: bool = False, block_wall: bool = False, block_gate: bool = False):
         """
         Args:
             seed: optional RNG seed for reproducibility.
@@ -107,7 +113,8 @@ class TwoRoomsEnv:
         self.hazards = hazards
         self.egocentric = egocentric
         self.block_mode = block_mode
-        self.block_wall = block_wall
+        self.block_gate = block_gate
+        self.block_wall = block_wall or block_gate   # the gate reuses the wall+gap structure
         # Limited perception (egocentric only): the agent observes only a disk of this radius (wu)
         # around itself; everything beyond is unobserved (background). This makes the far static
         # structure trivial-to-predict, so the ONLY non-trivial thing to predict is the local
@@ -173,6 +180,15 @@ class TwoRoomsEnv:
                 tx = self.rng.uniform(WX + m, hi) if left else self.rng.uniform(lo, WX - m)
                 self.agent_pos = np.array([ax, self.rng.uniform(lo, hi)], dtype=np.float32)
                 self.target_pos = np.array([tx, self.rng.uniform(lo, hi)], dtype=np.float32)
+                if self.block_gate:
+                    # KEY in a corner on the AGENT's side, OUTSIDE the gap y-band and near the
+                    # outer x edge -> away from both the goal direction and the wall the greedy
+                    # controller oscillates against. has_key gates the crossing.
+                    kx = self.rng.uniform(lo, lo + 1.5) if left else self.rng.uniform(hi - 1.5, hi)
+                    ky = self.rng.uniform(lo, self.BLOCK_GAP_LO - 0.3) if bool(self.rng.randint(2)) \
+                        else self.rng.uniform(self.BLOCK_GAP_HI + 0.3, hi)
+                    self.key_pos = np.array([kx, ky], dtype=np.float32)
+                    self.has_key = False
                 return self._get_obs()
             # Open fully-observed arena: a large block (agent) and a target, both placed at random
             # (well inside the boundary so the big block fits). No rooms/walls in the minimal mode.
@@ -243,12 +259,17 @@ class TwoRoomsEnv:
         if self.block_mode:
             r = self.BLOCK_RENDER_RADIUS
             new_pos = np.clip(new_pos, r, self.WORLD_SIZE - r)   # keep the big block fully in frame; open arena
+            if self.block_gate and not self.has_key:
+                # touch the key (on the current, pre-collision position) -> unlock the gate
+                if np.linalg.norm(old_pos - self.key_pos) < (self.BLOCK_KEY_RENDER_RADIUS + r):
+                    self.has_key = True
             if self.block_wall:
                 # center-point wall collision: block an x-crossing of the wall unless the new
-                # y is inside the gap. The block must first line up with the gap, then cross.
+                # y is inside the gap AND (for the switch-gate) the key has been collected.
                 WX = self.BLOCK_WALL_X
                 crossing = (old_pos[0] - WX) * (new_pos[0] - WX) < 0
-                in_gap = self.BLOCK_GAP_LO <= new_pos[1] <= self.BLOCK_GAP_HI
+                gate_open = (not self.block_gate) or self.has_key
+                in_gap = gate_open and (self.BLOCK_GAP_LO <= new_pos[1] <= self.BLOCK_GAP_HI)
                 if crossing and not in_gap:
                     margin = r + self.BLOCK_WALL_HALF + 0.05
                     new_pos[0] = (WX - margin) if old_pos[0] < WX else (WX + margin)
@@ -307,10 +328,16 @@ class TwoRoomsEnv:
             # big action-determined displacement is the dominant, observed, predictable change.
             img[:] = self.COLOR_FLOOR
             if self.block_wall:
-                # vertical wall at BLOCK_WALL_X with a gap [BLOCK_GAP_LO, BLOCK_GAP_HI]
-                wall = (np.abs(self._grid_x - self.BLOCK_WALL_X) <= self.BLOCK_WALL_HALF) & \
-                       ((self._grid_y < self.BLOCK_GAP_LO) | (self._grid_y > self.BLOCK_GAP_HI))
+                # vertical wall at BLOCK_WALL_X. For the switch-gate the gap is CLOSED (full wall)
+                # until the key is collected, then OPEN (gap [BLOCK_GAP_LO, BLOCK_GAP_HI]).
+                col = np.abs(self._grid_x - self.BLOCK_WALL_X) <= self.BLOCK_WALL_HALF
+                if self.block_gate and not self.has_key:
+                    wall = col                                           # gate closed
+                else:
+                    wall = col & ((self._grid_y < self.BLOCK_GAP_LO) | (self._grid_y > self.BLOCK_GAP_HI))
                 img[wall] = self.COLOR_WALL
+            if self.block_gate and not self.has_key:
+                img = self._draw_circle_aa(img, self.key_pos, self.BLOCK_KEY_RENDER_RADIUS, self.COLOR_KEY)
             img = self._draw_circle_aa(img, self.target_pos, self.TARGET_RENDER_RADIUS, self.COLOR_TARGET)
             img = self._draw_circle_aa(img, self.agent_pos, self.BLOCK_RENDER_RADIUS, self.COLOR_AGENT)
             return img
@@ -552,7 +579,7 @@ class TwoRoomsEnv:
             "target": self.target_pos.copy(),
             "room_id": self.get_room_id(self.agent_pos, self.complex_mode),
         }
-        if self.complex_mode:
+        if self.complex_mode or self.block_gate:
             obs["has_key"] = float(self.has_key)
             obs["key_pos"] = self.key_pos.copy()
         return obs

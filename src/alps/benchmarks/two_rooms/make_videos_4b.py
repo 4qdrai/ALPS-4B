@@ -149,7 +149,7 @@ def record(model, W, seed, sr, gr, device, decode_op, graph, featurize, strategy
 @torch.no_grad()
 def record_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
                    strategy, complex_mode=False, size=288, ctrl_k=3, max_steps=160,
-                   block_mode=False, block_wall=False, decode_pred=None):
+                   block_mode=False, block_wall=False, block_gate=False, decode_pred=None):
     """SPATIAL-readout, predictor-DECODED control (mirrors validate_temporal.run_episode_spatial)
     while capturing env frames -- the path that ACTUALLY routes under pure SSL. The global-pool
     `record` above is position-blind (the small agent is diluted), so the Four-Brain panel would
@@ -159,16 +159,16 @@ def record_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
       operative : greedy to the decoded GOAL (System 1) -> stalls at the wall / locked door.
       fourbrain : follow the latent-graph waypoints (complex: routes through the KEY)."""
     env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False,
-                      block_mode=block_mode, block_wall=block_wall)
+                      block_mode=block_mode, block_wall=block_wall, block_gate=block_gate)
     obs = env.reset() if (complex_mode or block_mode) else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
     buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
     eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False,
-                     block_mode=block_mode, block_wall=block_wall)
+                     block_mode=block_mode, block_wall=block_wall, block_gate=block_gate)
     eg.reset() if (complex_mode or block_mode) else eg.reset(start_room=gr, goal_room=gr)
     eg.agent_pos = goal_xy.copy()
-    if complex_mode:
-        eg.has_key = True
+    if complex_mode or block_gate:
+        eg.has_key = True   # goal latent = block at the target with the gate already open
     # decode_state (fit on REAL frames) reads the current/goal frame position; decode_pred
     # (fit on the op-predictor's OWN outputs -- the calibrated decode, 0.97 vs 0.66) reads the
     # IMAGINED next position in the rollout. Both return world units, so they compare directly.
@@ -266,6 +266,7 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
                                   strategy, complex_mode, args.size, getattr(args, "ctrl_k", 3),
                                   block_mode=getattr(args, "block_mode", False),
                                   block_wall=getattr(args, "block_wall", False),
+                                  block_gate=getattr(args, "block_gate", False),
                                   decode_pred=decode_pred)
     else:
         torch.set_grad_enabled(True); decode_op = fit_probe(Z, P, device); torch.set_grad_enabled(False)
@@ -276,7 +277,8 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
         def record_fn(seed, sr, gr, strategy):
             return record(model, W, seed, sr, gr, device, decode_op, graph, featurize,
                          strategy, complex_mode, args.size)
-    tag = ("blockwall" if getattr(args, "block_wall", False) else "block") if getattr(args, "block_mode", False) \
+    tag = ("blockgate" if getattr(args, "block_gate", False) else
+           "blockwall" if getattr(args, "block_wall", False) else "block") if getattr(args, "block_mode", False) \
           else ("complex" if complex_mode else "simple")
     # block_mode reset is random (opposite sides under block_wall), so sr/gr are ignored there.
     cfgs = [(0, 3, 2000 + i) for i in range(40)] if complex_mode else \
@@ -330,9 +332,15 @@ def main():
     ap.add_argument("--block-wall", action="store_true",
                     help="Block-Rooms WALL+GAP: greedy operative stalls at the wall, four-brain "
                          "routes through the gap (the hierarchy proof). Implies --block-mode.")
+    ap.add_argument("--block-gate", action="store_true",
+                    help="Block-Rooms SWITCH-GATE: key-locked gap. Greedy PROVABLY fails (never "
+                         "fetches the key); only strategic key->gate->goal routing solves it. "
+                         "The hierarchy-SUPREMACY proof. Implies --block-wall/--block-mode.")
     ap.add_argument("--no-bn-calib", action="store_true",
                     help="disable encoder BatchNorm running-stat calibration (debug only)")
     a = ap.parse_args()
+    if a.block_gate:
+        a.block_wall = True
     if a.block_wall:
         a.block_mode = True
     if a.block_mode:

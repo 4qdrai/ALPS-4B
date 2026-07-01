@@ -57,9 +57,11 @@ class HeuristicPolicy:
     DOOR_CENTER = np.array([5.0, 5.0], dtype=np.float32)
     NOISE_PROB = 0.2
 
-    def __init__(self, rng: np.random.RandomState, complex_mode: bool = False):
+    def __init__(self, rng: np.random.RandomState, complex_mode: bool = False,
+                 block_gate: bool = False):
         self.rng = rng
         self.complex_mode = complex_mode
+        self.block_gate = block_gate
 
     def reset(self) -> None:
         pass
@@ -71,6 +73,20 @@ class HeuristicPolicy:
 
         agent_pos = obs["position"]
         target_pos = obs["target"]
+
+        if self.block_gate:
+            # SWITCH-GATE route: fetch the key first (it's away from the goal), then thread the
+            # gap, then head to the target. This makes the training data contain the key->gate->
+            # goal topology the strategic graph learns to route (greedy never does this).
+            WX = TwoRoomsEnv.BLOCK_WALL_X
+            gap_c = 0.5 * (TwoRoomsEnv.BLOCK_GAP_LO + TwoRoomsEnv.BLOCK_GAP_HI)
+            if not bool(obs.get("has_key", 0.0)):
+                goal = obs["key_pos"]
+            elif (agent_pos[0] - WX) * (target_pos[0] - WX) < 0:   # still on the wrong side
+                goal = np.array([WX, gap_c], dtype=np.float32)     # aim at the (now open) gap
+            else:
+                goal = target_pos
+            return self._direction_to_action(agent_pos, goal)
 
         if not self.complex_mode:
             # --- Baseline Mode Navigation ---
@@ -151,6 +167,7 @@ class TrajectoryGenerator:
         perception_radius: float = None,
         block_mode: bool = False,
         block_wall: bool = False,
+        block_gate: bool = False,
     ):
         self.num_episodes = num_episodes
         self.max_steps = max_steps
@@ -161,6 +178,7 @@ class TrajectoryGenerator:
         self.perception_radius = perception_radius
         self.block_mode = block_mode
         self.block_wall = block_wall
+        self.block_gate = block_gate
 
     def _rollout(self, obs_buf: Optional[np.ndarray] = None):
         """One deterministic pass over all episodes (fixed seed → identical
@@ -171,9 +189,9 @@ class TrajectoryGenerator:
         rng = np.random.RandomState(self.seed)
         env = TwoRoomsEnv(seed=self.seed, complex_mode=self.complex_mode, egocentric=self.egocentric,
                           perception_radius=self.perception_radius, block_mode=self.block_mode,
-                          block_wall=self.block_wall)
+                          block_wall=self.block_wall, block_gate=self.block_gate)
         random_policy = RandomMomentumPolicy(rng)
-        heuristic_policy = HeuristicPolicy(rng, complex_mode=self.complex_mode)
+        heuristic_policy = HeuristicPolicy(rng, complex_mode=self.complex_mode, block_gate=self.block_gate)
 
         all_actions: List[int] = []
         all_positions: List[np.ndarray] = []
@@ -267,6 +285,7 @@ def generate_dataset(
     perception_radius: float = None,
     block_mode: bool = False,
     block_wall: bool = False,
+    block_gate: bool = False,
 ) -> Dict[str, Any]:
     """Generate the dataset and save to disk."""
     generator = TrajectoryGenerator(
@@ -279,6 +298,7 @@ def generate_dataset(
         perception_radius=perception_radius,
         block_mode=block_mode,
         block_wall=block_wall,
+        block_gate=block_gate,
     )
     dataset = generator.generate()
 
@@ -316,6 +336,10 @@ if __name__ == "__main__":
     parser.add_argument("--block-wall", action="store_true",
                         help="Add a vertical WALL+GAP to Block-Rooms (agent+target spawn on opposite "
                              "sides) -> the hierarchy obstacle: greedy stalls, four-brain routes the gap.")
+    parser.add_argument("--block-gate", action="store_true",
+                        help="SWITCH-GATE: the gap is LOCKED until a KEY (in an agent-side corner, away "
+                             "from the goal) is collected. Greedy PROVABLY fails (never fetches the key); "
+                             "only strategic key->gate->goal routing solves it. Implies --block-wall.")
     args = parser.parse_args()
 
     generate_dataset(
@@ -329,4 +353,5 @@ if __name__ == "__main__":
         perception_radius=args.perception_radius,
         block_mode=args.block_mode,
         block_wall=args.block_wall,
+        block_gate=args.block_gate,
     )
