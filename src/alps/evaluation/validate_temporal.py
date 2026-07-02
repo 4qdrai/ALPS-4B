@@ -244,6 +244,12 @@ def fit_softargmax_decode(model, frames, positions, idx, device, iters=400):
     touched. Returns fn(token_grid [*,N,D]) -> position [*,2]."""
     Zt = _gather_token_grids(model, frames, idx, device).to(device).float()       # [M,N,D]
     Y = positions[torch.as_tensor(np.asarray(idx))].to(device).float()            # [M,2]
+    return _fit_softargmax(Zt, Y, device, iters)
+
+
+def _fit_softargmax(Zt, Y, device, iters=400):
+    """Core soft-argmax fit on token grids Zt [M,N,D] -> position Y [M,2]. Returns
+    fn(token_grid [*,N,D]) -> position [*,2]."""
     M, N, D = Zt.shape
     s = int(round(N ** 0.5))
     cc = _cell_centers(s, device)                                                 # [N,2]
@@ -268,6 +274,30 @@ def fit_softargmax_decode(model, frames, positions, idx, device, iters=400):
         pred = (alpha @ cc) @ A_.t() + b_
         return pred.reshape(*zt.shape[:-2], 2)
     return fn
+
+
+def fit_calibrated_softargmax(m, frames, positions, actions, starts, tot, W, dev, n_win=3000):
+    """Soft-argmax readout CALIBRATED on the op-predictor's OWN outputs (imagined next latent)
+    paired with the TRUE next position -> reads the IMAGINED agent position through the sub-cell
+    heatmap without the off-manifold flattening a real-frame-fit soft-argmax suffers. Frozen,
+    label-free measuring instrument (proprioceptive positions only)."""
+    E = starts.shape[0]; rng = np.random.RandomState(1); ss = []
+    for _ in range(n_win):
+        e = rng.randint(E - 1); s0 = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else tot
+        if end - s0 >= W + 1:
+            ss.append(rng.randint(s0, end - W))
+    ss = np.array(ss); Xs, Ys, bs = [], [], 48
+    for c in range(0, len(ss), bs):
+        sb = ss[c:c + bs]
+        fidx = np.stack([sb + k for k in range(W + 1)], 1)                        # [B,W+1]
+        fr = frames[torch.as_tensor(fidx.reshape(-1))].to(dev).float() / 255.
+        z = m.encode_frame(fr); N, D = z.shape[1], z.shape[2]
+        z = z.reshape(len(sb), W + 1, N, D)
+        a_hist = F.one_hot(actions[torch.as_tensor(fidx[:, :W].reshape(-1))].to(dev).long(), 4).float().reshape(len(sb), W, 4)
+        z_pred = m.op_predict_next(z[:, :W], a_hist)                              # [B,N,D] imagined next grid
+        Xs.append(z_pred.cpu()); Ys.append(positions[torch.as_tensor(fidx[:, W])])
+    with torch.enable_grad():
+        return _fit_softargmax(torch.cat(Xs).to(dev).float(), torch.cat(Ys).to(dev).float(), dev)
 
 
 @torch.no_grad()

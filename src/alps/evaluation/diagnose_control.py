@@ -29,7 +29,8 @@ import torch.nn.functional as F
 from alps.benchmarks.two_rooms.environment import TwoRoomsEnv
 from alps.benchmarks.two_rooms.world_model_planning import obs_to_frame
 from alps.training.train_hier import load_raw
-from alps.evaluation.validate_temporal import load_model, fit_ridge_decode, HistoryBuffer, calibrate_bn
+from alps.evaluation.validate_temporal import (load_model, fit_ridge_decode, HistoryBuffer, calibrate_bn,
+                                               fit_softargmax_decode, fit_calibrated_softargmax, _gather_token_grids)
 
 
 @torch.no_grad()
@@ -102,6 +103,11 @@ def main():
     ap.add_argument("--no-bn-calib", action="store_true",
                     help="disable BatchNorm running-stat calibration (debug: reproduces the "
                          "batch-dependent single-frame encoding bug)")
+    ap.add_argument("--readout", choices=["ridge", "softargmax"], default="ridge",
+                    help="position readout for control. 'ridge' = grid-pool + linear (cell-quantised, "
+                         "overfits at fine grids). 'softargmax' = sub-cell heatmap centroid (~198 params, "
+                         "no overfit) -> sharp decode for a SMALL agent among distractors (grid16: 0.10 vs "
+                         "ridge 1.11). Pair with --spatial-grid 16 (patch-8 model).")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     a = ap.parse_args()
     dev = torch.device(a.device)
@@ -124,12 +130,24 @@ def main():
         return torch.cat(o)
 
     tr, va = idx[:6000], idx[6000:8000]
-    ridge = fit_ridge_decode(gr(tr), positions[torch.as_tensor(tr)], dev)
-    decode_state = lambda grid: ridge(m.spatial_readout(grid, grid=g))
-    g1 = (ridge(gr(va)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
-    ridge_c = fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W, dev)
-    decode_calib = lambda grid: ridge_c(m.spatial_readout(grid, grid=g))
-    fwd = fit_forward_probe(m, frames, positions, actions, starts, tot, readout, ridge, dev)
+    if a.readout == "softargmax":
+        # sub-cell heatmap centroid: sharp for a SMALL agent (grid16 G1 ~0.10 vs ridge ~1.11),
+        # no overfit (the fine-grid ridge is 49k-dim and OOMs/overfits). decode_state reads the
+        # token grid directly. The calibrated path reuses it (soft-argmax is already on-manifold).
+        sa = fit_softargmax_decode(m, frames, positions, tr, dev)                 # reads REAL frames
+        sa_c = fit_calibrated_softargmax(m, frames, positions, actions, starts, tot, W, dev)  # reads IMAGINED latents
+        decode_state = sa                    # goal / current position (real frames)
+        decode_calib = sa_c                  # rollout of the predictor's off-manifold output
+        g1 = (sa(_gather_token_grids(m, frames, va, dev)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
+    else:
+        ridge = fit_ridge_decode(gr(tr), positions[torch.as_tensor(tr)], dev)
+        decode_state = lambda grid: ridge(m.spatial_readout(grid, grid=g))
+        g1 = (ridge(gr(va)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
+        ridge_c = fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W, dev)
+        decode_calib = lambda grid: ridge_c(m.spatial_readout(grid, grid=g))
+    # decoded-state forward-dynamics probe uses the ridge; skip it in softargmax mode (secondary row)
+    fwd = None if a.readout == "softargmax" else \
+        fit_forward_probe(m, frames, positions, actions, starts, tot, readout, ridge, dev)
 
     spreads, errs, dir_hits = [], [], 0
     spreads_c, errs_c, dir_hits_c = [], [], 0
@@ -176,10 +194,11 @@ def main():
             dir_hits += int(int(np.argmin(np.linalg.norm(pred - target, axis=1))) == ta)
             spreads_c.append(float(pred_c.std(0).mean())); errs_c.append(float(np.linalg.norm(pred_c - true, axis=1).mean()))
             dir_hits_c += int(int(np.argmin(np.linalg.norm(pred_c - target, axis=1))) == ta)
-            dp_cur = decode_state(buf.cur_z)                                                               # decoded current pos [1,2]
-            pred_f = np.stack([fwd(dp_cur, ai)[0].cpu().numpy() for ai in range(4)])                       # [4,2]
-            errs_f.append(float(np.linalg.norm(pred_f - true, axis=1).mean()))
-            dir_hits_f += int(int(np.argmin(np.linalg.norm(pred_f - target, axis=1))) == ta)
+            if fwd is not None:
+                dp_cur = decode_state(buf.cur_z)                                                           # decoded current pos [1,2]
+                pred_f = np.stack([fwd(dp_cur, ai)[0].cpu().numpy() for ai in range(4)])                   # [4,2]
+                errs_f.append(float(np.linalg.norm(pred_f - true, axis=1).mean()))
+                dir_hits_f += int(int(np.argmin(np.linalg.norm(pred_f - target, axis=1))) == ta)
             lat = [float((buf.pooled_next_for_action(ai) - goal_ro).norm()) for ai in range(4)]   # NO decode
             lat_dir_hits += int(int(np.argmin(lat)) == ta)
             # INVERSE-dynamics goal-emission (option 2): ask "which action moves me toward the goal?"
@@ -206,7 +225,10 @@ def main():
     print(f"--- decode CALIBRATED on op-predictor outputs ---")
     print(f"  action_spread {np.mean(spreads_c):.3f} | pred_err {np.mean(errs_c):.3f} | direction_acc {dir_hits_c/max(1,n):.2f}")
     print(f"--- FORWARD-DYNAMICS PROBE  g(latent,action)->next pos  (decoded-state) ---")
-    print(f"  pred_err {np.mean(errs_f):.3f} | direction_acc {dir_hits_f/max(1,n):.2f}")
+    if fwd is None:
+        print(f"  (skipped in --readout softargmax mode)")
+    else:
+        print(f"  pred_err {np.mean(errs_f):.3f} | direction_acc {dir_hits_f/max(1,n):.2f}")
     print(f"--- LATENT-SPACE control (forward: nearest predicted latent to GOAL latent, NO decode) ---")
     print(f"  direction_acc {lat_dir_hits/max(1,n):.2f}")
     print(f"--- INVERSE-DYNAMICS goal-emission (option 2: inv_head(current, goal) -> action) ---")
