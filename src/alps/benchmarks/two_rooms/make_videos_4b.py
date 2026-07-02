@@ -39,7 +39,7 @@ from alps.training.train_hier import load_raw
 from alps.evaluation.validate_hierarchy import fit_probe
 from alps.evaluation.validate_temporal import (
     load_model, gather, HistoryBuffer, hist_greedy_action_latent, build_graph_raw, REACH,
-    fit_ridge_decode, calibrate_bn)
+    fit_ridge_decode, calibrate_bn, fit_softargmax_decode, fit_calibrated_softargmax)
 from alps.evaluation.diagnose_control import fit_calibrated_decode
 
 
@@ -251,13 +251,21 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
             return torch.cat(out_f)
 
         ridge_decode = fit_ridge_decode(_gather_readout(idx), P.float(), device)
-        decode_state = lambda grid: ridge_decode(model.spatial_readout(grid, grid=g))
-        # CALIBRATED decode: a frozen ridge fit on the op-predictor's OWN outputs (imagined
-        # next latent) -> removes the off-manifold linear distortion so the ROLLOUT reads the
-        # imagined position accurately (bake-off: 0.97 vs 0.66 for the real-frame ridge).
-        ridge_calib = fit_calibrated_decode(model, frames_t, positions, actions, starts,
-                                            total, readout, W, device)
-        decode_pred = lambda grid: ridge_calib(model.spatial_readout(grid, grid=g))
+        if getattr(args, "readout", "ridge") == "softargmax":
+            # sub-cell heatmap centroid: sharp position for a SMALL agent among distractors.
+            # decode_state reads REAL frames; decode_pred is CALIBRATED on the predictor's own
+            # (off-manifold) outputs. The graph node positions still use the ridge (built in
+            # readout space) -- only the per-step CONTROL decode switches to soft-argmax.
+            decode_state = fit_softargmax_decode(model, frames_t, positions, idx, device)
+            decode_pred = fit_calibrated_softargmax(model, frames_t, positions, actions, starts, total, W, device)
+        else:
+            decode_state = lambda grid: ridge_decode(model.spatial_readout(grid, grid=g))
+            # CALIBRATED decode: a frozen ridge fit on the op-predictor's OWN outputs (imagined
+            # next latent) -> removes the off-manifold linear distortion so the ROLLOUT reads the
+            # imagined position accurately (bake-off: 0.97 vs 0.66 for the real-frame ridge).
+            ridge_calib = fit_calibrated_decode(model, frames_t, positions, actions, starts,
+                                                total, readout, W, device)
+            decode_pred = lambda grid: ridge_calib(model.spatial_readout(grid, grid=g))
         graph = build_graph_raw(model, ridge_decode, frames_t, positions, room_ids, starts,
                                 total, device, k=args.fine_k, S=max(1, args.stride // 2), readout=readout)
         graph.decoded_xy = ridge_decode(torch.tensor(graph.centroids, device=device)).cpu().numpy()
@@ -343,6 +351,9 @@ def main():
                     help="disable encoder BatchNorm running-stat calibration (debug only)")
     ap.add_argument("--block-radius", type=float, default=None, help="block render radius (MUST match training)")
     ap.add_argument("--block-step-scale", type=float, default=None, help="block step scale (MUST match training)")
+    ap.add_argument("--readout", choices=["ridge", "softargmax"], default="ridge",
+                    help="control decode: 'ridge' (grid-pool linear) or 'softargmax' (sub-cell "
+                         "centroid, sharp for a SMALL agent). Pair softargmax with --spatial-grid 16.")
     a = ap.parse_args()
     if a.block_gate:
         a.block_wall = True
