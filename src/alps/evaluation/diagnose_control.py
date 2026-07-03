@@ -30,7 +30,9 @@ from alps.benchmarks.two_rooms.environment import TwoRoomsEnv
 from alps.benchmarks.two_rooms.world_model_planning import obs_to_frame
 from alps.training.train_hier import load_raw
 from alps.evaluation.validate_temporal import (load_model, fit_ridge_decode, HistoryBuffer, calibrate_bn,
-                                               fit_softargmax_decode, fit_calibrated_softargmax, _gather_token_grids)
+                                               fit_softargmax_decode, fit_calibrated_softargmax,
+                                               _gather_token_grids, gather_pred_grids)
+from alps.core.slot_readout import fit_slot_decode
 
 
 @torch.no_grad()
@@ -103,11 +105,18 @@ def main():
     ap.add_argument("--no-bn-calib", action="store_true",
                     help="disable BatchNorm running-stat calibration (debug: reproduces the "
                          "batch-dependent single-frame encoding bug)")
-    ap.add_argument("--readout", choices=["ridge", "softargmax"], default="ridge",
+    ap.add_argument("--readout", choices=["ridge", "softargmax", "slot"], default="ridge",
                     help="position readout for control. 'ridge' = grid-pool + linear (cell-quantised, "
                          "overfits at fine grids). 'softargmax' = sub-cell heatmap centroid (~198 params, "
                          "no overfit) -> sharp decode for a SMALL agent among distractors (grid16: 0.10 vs "
-                         "ridge 1.11). Pair with --spatial-grid 16 (patch-8 model).")
+                         "ridge 1.11) but reads a DIFFUSE imagination flat. 'slot' = Slot-Attention "
+                         "object binding (size-invariant, AGGREGATES the diffuse imagination; the "
+                         "readout half of docs/SLOT_FOUR_BRAIN.md).")
+    ap.add_argument("--slot-epochs", type=int, default=3000,
+                    help="training steps for the slot readout probes (GPU budget; the 400-step CPU "
+                         "R1 test under-trained -- real-frame slot decode needs >=2000)")
+    ap.add_argument("--num-slots", type=int, default=6, help="number of slots (objects + background)")
+    ap.add_argument("--slot-samples", type=int, default=6000, help="token-grid samples for the slot fit")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     a = ap.parse_args()
     dev = torch.device(a.device)
@@ -130,7 +139,23 @@ def main():
         return torch.cat(o)
 
     tr, va = idx[:6000], idx[6000:8000]
-    if a.readout == "softargmax":
+    if a.readout == "slot":
+        # object-centric slot readout: size-invariant real-frame decode + a CALIBRATED twin fit
+        # on the predictor's own outputs (aggregates the diffuse imagination the peak-centroid
+        # readouts read flat -- R1 measured 21x the action_spread of soft-argmax).
+        tr_s = tr[:min(len(tr), a.slot_samples)]
+        Zt_tr = _gather_token_grids(m, frames, tr_s, dev)
+        sa = fit_slot_decode(Zt_tr, positions[torch.as_tensor(np.asarray(tr_s))], dev,
+                             num_slots=a.num_slots, epochs=a.slot_epochs)
+        del Zt_tr
+        Zp, Yp = gather_pred_grids(m, frames, positions, actions, starts, tot, W, dev,
+                                   n_win=a.slot_samples)
+        sa_c = fit_slot_decode(Zp, Yp, dev, num_slots=a.num_slots, epochs=a.slot_epochs)
+        del Zp, Yp
+        decode_state = sa                    # goal / current position (real frames)
+        decode_calib = sa_c                  # rollout of the predictor's off-manifold output
+        g1 = (sa(_gather_token_grids(m, frames, va, dev)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
+    elif a.readout == "softargmax":
         # sub-cell heatmap centroid: sharp for a SMALL agent (grid16 G1 ~0.10 vs ridge ~1.11),
         # no overfit (the fine-grid ridge is 49k-dim and OOMs/overfits). decode_state reads the
         # token grid directly. The calibrated path reuses it (soft-argmax is already on-manifold).
@@ -145,8 +170,8 @@ def main():
         g1 = (ridge(gr(va)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
         ridge_c = fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W, dev)
         decode_calib = lambda grid: ridge_c(m.spatial_readout(grid, grid=g))
-    # decoded-state forward-dynamics probe uses the ridge; skip it in softargmax mode (secondary row)
-    fwd = None if a.readout == "softargmax" else \
+    # decoded-state forward-dynamics probe uses the ridge; skip it in softargmax/slot modes (secondary row)
+    fwd = None if a.readout in ("softargmax", "slot") else \
         fit_forward_probe(m, frames, positions, actions, starts, tot, readout, ridge, dev)
 
     spreads, errs, dir_hits = [], [], 0
@@ -226,7 +251,7 @@ def main():
     print(f"  action_spread {np.mean(spreads_c):.3f} | pred_err {np.mean(errs_c):.3f} | direction_acc {dir_hits_c/max(1,n):.2f}")
     print(f"--- FORWARD-DYNAMICS PROBE  g(latent,action)->next pos  (decoded-state) ---")
     if fwd is None:
-        print(f"  (skipped in --readout softargmax mode)")
+        print(f"  (skipped in --readout {a.readout} mode)")
     else:
         print(f"  pred_err {np.mean(errs_f):.3f} | direction_acc {dir_hits_f/max(1,n):.2f}")
     print(f"--- LATENT-SPACE control (forward: nearest predicted latent to GOAL latent, NO decode) ---")

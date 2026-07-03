@@ -276,11 +276,12 @@ def _fit_softargmax(Zt, Y, device, iters=400):
     return fn
 
 
-def fit_calibrated_softargmax(m, frames, positions, actions, starts, tot, W, dev, n_win=3000):
-    """Soft-argmax readout CALIBRATED on the op-predictor's OWN outputs (imagined next latent)
-    paired with the TRUE next position -> reads the IMAGINED agent position through the sub-cell
-    heatmap without the off-manifold flattening a real-frame-fit soft-argmax suffers. Frozen,
-    label-free measuring instrument (proprioceptive positions only)."""
+@torch.no_grad()
+def gather_pred_grids(m, frames, positions, actions, starts, tot, W, dev, n_win=3000):
+    """Harvest (op-predictor's imagined next-latent token grids [M,N,D], TRUE next positions
+    [M,2]) from the training corpus. Shared by every CALIBRATED readout fitter (soft-argmax,
+    slot): fitting on the predictor's OWN outputs removes the off-manifold distortion that a
+    real-frame-fit readout suffers when reading imagination."""
     E = starts.shape[0]; rng = np.random.RandomState(1); ss = []
     for _ in range(n_win):
         e = rng.randint(E - 1); s0 = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else tot
@@ -296,8 +297,14 @@ def fit_calibrated_softargmax(m, frames, positions, actions, starts, tot, W, dev
         a_hist = F.one_hot(actions[torch.as_tensor(fidx[:, :W].reshape(-1))].to(dev).long(), 4).float().reshape(len(sb), W, 4)
         z_pred = m.op_predict_next(z[:, :W], a_hist)                              # [B,N,D] imagined next grid
         Xs.append(z_pred.cpu()); Ys.append(positions[torch.as_tensor(fidx[:, W])])
+    return torch.cat(Xs), torch.cat(Ys)
+
+
+def fit_calibrated_softargmax(m, frames, positions, actions, starts, tot, W, dev, n_win=3000):
+    """Soft-argmax readout CALIBRATED on the op-predictor's OWN outputs (see gather_pred_grids)."""
+    Zp, Yp = gather_pred_grids(m, frames, positions, actions, starts, tot, W, dev, n_win)
     with torch.enable_grad():
-        return _fit_softargmax(torch.cat(Xs).to(dev).float(), torch.cat(Ys).to(dev).float(), dev)
+        return _fit_softargmax(Zp.to(dev).float(), Yp.to(dev).float(), dev)
 
 
 @torch.no_grad()

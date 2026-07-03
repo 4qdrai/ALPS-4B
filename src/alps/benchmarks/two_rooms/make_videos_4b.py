@@ -39,8 +39,10 @@ from alps.training.train_hier import load_raw
 from alps.evaluation.validate_hierarchy import fit_probe
 from alps.evaluation.validate_temporal import (
     load_model, gather, HistoryBuffer, hist_greedy_action_latent, build_graph_raw, REACH,
-    fit_ridge_decode, calibrate_bn, fit_softargmax_decode, fit_calibrated_softargmax)
+    fit_ridge_decode, calibrate_bn, fit_softargmax_decode, fit_calibrated_softargmax,
+    _gather_token_grids, gather_pred_grids)
 from alps.evaluation.diagnose_control import fit_calibrated_decode
+from alps.core.slot_readout import fit_slot_decode
 
 
 def _px(xy, size):
@@ -251,7 +253,18 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
             return torch.cat(out_f)
 
         ridge_decode = fit_ridge_decode(_gather_readout(idx), P.float(), device)
-        if getattr(args, "readout", "ridge") == "softargmax":
+        if getattr(args, "readout", "ridge") == "slot":
+            # object-centric slot control decode (size-invariant; aggregates the diffuse
+            # imagination): real-frame slots for current/goal, calibrated slots for the rollout.
+            tr_s = idx[:min(len(idx), 6000)]
+            sl = fit_slot_decode(_gather_token_grids(model, frames_t, tr_s, device),
+                                 P.float()[:len(tr_s)], device, num_slots=6, epochs=3000)
+            Zp, Yp = gather_pred_grids(model, frames_t, positions, actions, starts, total, W, device, n_win=6000)
+            sl_c = fit_slot_decode(Zp, Yp, device, num_slots=6, epochs=3000)
+            del Zp, Yp
+            decode_state = sl
+            decode_pred = sl_c
+        elif getattr(args, "readout", "ridge") == "softargmax":
             # sub-cell heatmap centroid: sharp position for a SMALL agent among distractors.
             # decode_state reads REAL frames; decode_pred is CALIBRATED on the predictor's own
             # (off-manifold) outputs. The graph node positions still use the ridge (built in
@@ -351,9 +364,10 @@ def main():
                     help="disable encoder BatchNorm running-stat calibration (debug only)")
     ap.add_argument("--block-radius", type=float, default=None, help="block render radius (MUST match training)")
     ap.add_argument("--block-step-scale", type=float, default=None, help="block step scale (MUST match training)")
-    ap.add_argument("--readout", choices=["ridge", "softargmax"], default="ridge",
-                    help="control decode: 'ridge' (grid-pool linear) or 'softargmax' (sub-cell "
-                         "centroid, sharp for a SMALL agent). Pair softargmax with --spatial-grid 16.")
+    ap.add_argument("--readout", choices=["ridge", "softargmax", "slot"], default="ridge",
+                    help="control decode: 'ridge' (grid-pool linear), 'softargmax' (sub-cell "
+                         "centroid, sharp real-frame decode) or 'slot' (Slot-Attention object "
+                         "binding -- size-invariant AND reads the diffuse imagination).")
     a = ap.parse_args()
     if a.block_gate:
         a.block_wall = True
