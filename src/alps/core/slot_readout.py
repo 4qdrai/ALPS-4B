@@ -28,8 +28,10 @@ class SlotAttention(nn.Module):
         super().__init__()
         self.num_slots, self.iters, self.scale = num_slots, iters, dim ** -0.5
         hidden = hidden or dim
-        self.slots_mu = nn.Parameter(torch.randn(1, 1, dim) * 0.1)
-        self.slots_logsigma = nn.Parameter(torch.zeros(1, 1, dim))
+        # PER-SLOT learned inits (not one shared mu): breaks slot symmetry without needing the
+        # sampled noise, so eval can be DETERMINISTIC (an instrument must not be stochastic).
+        self.slots_mu = nn.Parameter(torch.randn(1, num_slots, dim) * 0.1)
+        self.slots_logsigma = nn.Parameter(torch.zeros(1, num_slots, dim))
         self.to_q = nn.Linear(dim, dim); self.to_k = nn.Linear(dim, dim); self.to_v = nn.Linear(dim, dim)
         self.gru = nn.GRUCell(dim, dim)
         self.mlp = nn.Sequential(nn.Linear(dim, hidden), nn.ReLU(), nn.Linear(hidden, dim))
@@ -38,8 +40,12 @@ class SlotAttention(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:      # x [B,N,D] -> slots [B,K,D]
         B, N, D = x.shape
         x = self.norm_in(x); k = self.to_k(x); v = self.to_v(x)
-        mu = self.slots_mu.expand(B, self.num_slots, -1)
-        slots = mu + self.slots_logsigma.exp().expand(B, self.num_slots, -1) * torch.randn_like(mu)
+        mu = self.slots_mu.expand(B, -1, -1)
+        if self.training:
+            slots = mu + self.slots_logsigma.exp().expand(B, -1, -1) * torch.randn_like(mu)
+        else:
+            slots = mu                                        # deterministic at eval; symmetry is
+            # broken by the per-slot learned inits, not by sampling
         for _ in range(self.iters):
             q = self.to_q(self.norm_slots(slots))
             attn = torch.softmax((q @ k.transpose(1, 2)) * self.scale, dim=1)     # softmax over SLOTS (compete)
@@ -50,6 +56,27 @@ class SlotAttention(nn.Module):
         return slots
 
 
+class SlotFeatureDecoder(nn.Module):
+    """Spatial-broadcast decoder: slots -> reconstructed token grid (+ per-token alpha masks).
+    THE objective that ORGANIZES slot attention into object binding (Slot Attention is always
+    trained with reconstruction; position regression alone gives NO binding signal -- measured:
+    the probe stalls at predict-the-mean, G1 ~2.1, at 400 AND 3000 steps). DINOSAUR-style:
+    reconstruct the ENCODER'S OWN FEATURES, not pixels -> stays decoder-free w.r.t. pixels and
+    fully self-supervised (the target is the model's own token grid)."""
+    def __init__(self, dim: int, n_tokens: int, hidden: int = None):
+        super().__init__()
+        hidden = hidden or 2 * dim
+        self.pos = nn.Parameter(torch.randn(1, 1, n_tokens, dim) * 0.02)          # per-token query
+        self.mlp = nn.Sequential(nn.Linear(dim, hidden), nn.ReLU(), nn.Linear(hidden, dim + 1))
+
+    def forward(self, slots: torch.Tensor):                   # [B,K,D] -> recon [B,N,D], masks [B,K,N]
+        x = slots.unsqueeze(2) + self.pos                     # [B,K,N,D] broadcast slot to tokens
+        out = self.mlp(x)                                     # [B,K,N,D+1]
+        feats, alpha = out[..., :-1], out[..., -1]
+        w = torch.softmax(alpha, dim=1)                       # tokens are explained by competing slots
+        return (w.unsqueeze(-1) * feats).sum(1), w
+
+
 class SlotPositionReadout(nn.Module):
     """Slot attention -> per-slot position + agent-score -> soft-selected AGENT position [.., 2]."""
     def __init__(self, dim: int, num_slots: int = 4, iters: int = 3):
@@ -58,12 +85,18 @@ class SlotPositionReadout(nn.Module):
         self.pos_head = nn.Sequential(nn.Linear(dim, dim), nn.ReLU(), nn.Linear(dim, 2))
         self.agent_head = nn.Linear(dim, 1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:      # [.., N, D] -> [.., 2]
-        shp = x.shape[:-2]
-        s = self.slots(x.reshape(-1, x.shape[-2], x.shape[-1]))                   # [B,K,D]
+    def slots_of(self, x: torch.Tensor) -> torch.Tensor:      # [B,N,D] -> [B,K,D]
+        return self.slots(x)
+
+    def pos_of(self, s: torch.Tensor) -> torch.Tensor:        # [B,K,D] -> [B,2]
         pos = self.pos_head(s)                                                    # [B,K,2]
         w = torch.softmax(self.agent_head(s).squeeze(-1), dim=-1)                 # [B,K] soft agent selector
-        return (w.unsqueeze(-1) * pos).sum(1).reshape(*shp, 2)
+        return (w.unsqueeze(-1) * pos).sum(1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:      # [.., N, D] -> [.., 2]
+        shp = x.shape[:-2]
+        s = self.slots_of(x.reshape(-1, x.shape[-2], x.shape[-1]))                # [B,K,D]
+        return self.pos_of(s).reshape(*shp, 2)
 
 
 @torch.no_grad()
@@ -73,17 +106,30 @@ def _grids(m, frames, idx, dev, bs=128):
 
 
 def fit_slot_decode(token_grids: torch.Tensor, Y: torch.Tensor, dev, num_slots=4, iters=3,
-                    epochs=300, lr=3e-3, bs=256):
+                    epochs=300, lr=3e-3, bs=256, recon_weight=1.0):
     """Fit a frozen SlotPositionReadout on token grids [M,N,D] -> position Y [M,2]. Returns
-    fn(token_grid [*,N,D]) -> [*,2]. Label-free instrument (positions are proprioception)."""
+    fn(token_grid [*,N,D]) -> [*,2]. Label-free instrument (positions are proprioception).
+
+    Trained with TWO objectives: (1) FEATURE RECONSTRUCTION of the token grid from the slots
+    (spatial-broadcast decoder) -- the standard signal WITHOUT WHICH slot attention never
+    organizes into objects (position-only fits stall at predict-the-mean, measured G1 ~2.1 at
+    400 and 3000 steps alike); (2) the position regression through the soft agent-selector.
+    Both self-supervised (targets = the model's own features + proprioceptive positions)."""
     M, N, D = token_grids.shape
     net = SlotPositionReadout(D, num_slots, iters).to(dev)
-    opt = torch.optim.Adam(net.parameters(), lr=lr)
+    decoder = SlotFeatureDecoder(D, N).to(dev)
+    opt = torch.optim.Adam(list(net.parameters()) + list(decoder.parameters()), lr=lr)
     Xg = token_grids.to(dev).float(); Yt = Y.to(dev).float()
+    net.train()
     with torch.enable_grad():
         for _ in range(epochs):
             i = torch.randint(0, M, (bs,), device=dev)
-            pred = net(Xg[i]); loss = ((pred - Yt[i]) ** 2).sum(1).mean()
+            xi = Xg[i]
+            s = net.slots_of(xi)                                        # [b,K,D]
+            recon, _ = decoder(s)
+            l_rec = ((recon - xi) ** 2).mean()
+            l_pos = ((net.pos_of(s) - Yt[i]) ** 2).sum(1).mean()
+            loss = l_pos + recon_weight * l_rec
             opt.zero_grad(); loss.backward(); opt.step()
     net.eval()
 

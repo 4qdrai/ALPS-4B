@@ -95,6 +95,30 @@ Conclusion unchanged from §7: **R1 validates the direction; R2 (slots trained *
 operative = slot dynamics) is where the size problem actually gets solved** — binding is then
 shaped by the SSL objectives over the whole dataset, not bolted on afterwards.
 
+### 8.1 R1.5 completes the negative chain: post-hoc slot probes are ruled OUT
+
+Full-budget follow-ups (2026-07-02, pod `_gate11` + local `_g16`):
+
+| Probe variant | real-frame G1 (episode-split) |
+|---|---|
+| slot, position-regression only, 400 CPU steps | 2.14 |
+| slot, position-regression only, **3000 GPU steps** | 2.16 (budget-independent → structural) |
+| slot **+ DINOSAUR-style feature-reconstruction** (SlotFeatureDecoder), det. eval, per-slot inits | **2.144 (unchanged)** |
+| soft-argmax (reference) | 0.099 |
+
+Diagnosis: on this SSL encoder's tokens, slots bind **spatial regions, not objects**. The token
+features are position-entangled (the prediction objective mixes appearance with location), so
+"the red agent" is not a coherent feature cluster; the reconstruction-optimal solution is each
+slot owning a patch of the grid, and the agent hops between slots as it moves — no fixed
+agent-selector can track it (probe collapses to predict-the-mean). DINOSAUR succeeds on DINO
+features because they are object-clustered; from-scratch SIGReg+prediction features are not.
+
+**The complete post-hoc-readout ablation chain — ridge (quantizes/overfits), soft-argmax (sharp
+real-frame, flat on imagination), slots ± reconstruction (regions, not objects) — is exhausted.
+Object binding must be learned JOINTLY with the representation: R2 is required, and this chain
+is its empirical justification.** (The recon decoder + deterministic per-slot-init machinery
+built here carries directly into R2's slot bottleneck.)
+
 ## 9. Key references
 
 Slot / object‑centric: Slot Attention (Locatello 2020); [SOLD — slot object‑centric latent dynamics for RL](https://arxiv.org/html/2410.08822v2); [Slot‑MPC](https://arxiv.org/pdf/2605.14937); OCVP.
