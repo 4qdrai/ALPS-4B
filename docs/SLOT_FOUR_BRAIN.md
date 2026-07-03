@@ -75,9 +75,25 @@ Because a slot is low‑dimensional and object‑bound, "predict where the agent
 
 R1 keeps everything else fixed and tells us immediately whether object‑binding is the right lever; R2 is the real fix (small agent, clean control); R3–R4 carry it to the hierarchy and to real video.
 
-## 8. Measured result of the slot readout (R1)
+## 8. Measured result of the slot readout (R1) — mechanism confirmed, probe insufficient
 
-*(filled from `scratchpad/test_slot.py` on the grid‑16 radius‑0.9 gate model — see the session log / commit message. Compares slot vs soft‑argmax for real‑frame decode, and the calibrated slot readout's `action_spread` + imagined‑move‑vs‑action alignment against soft‑argmax's flat 0.025.)*
+Measured 2026‑07‑02 on the grid‑16 / radius‑0.9 switch‑gate model (depth‑4 debug), episode‑split,
+CPU probe fit (400 steps — a deliberate minimal budget):
+
+| Readout | REAL‑frame G1 | IMAGINATION `action_spread` | imagined‑move ↔ action alignment |
+|---|---|---|---|
+| soft‑argmax (peak centroid) | **0.099 wu** | 0.025 (flat) | – |
+| **slot (calibrated on predictor outputs)** | 2.139 (under‑trained probe) | **0.521 (21×)** | **0.55** (0.5 = random) |
+
+Read: **the aggregation mechanism works** — on the predictor's *imagined* (diffuse, off‑manifold)
+outputs, where the peak‑centroid readout is dead flat, slot binding recovers 21× more
+action‑conditioned signal with above‑random direction. That is precisely the property claimed in
+§5.2 and the evidence that object‑binding is the right lever. **But a post‑hoc probe is not the
+fix**: fit from scratch on a frozen dense‑grid model with a tiny budget, the slot module
+under‑trains (real‑frame decode 2.1 wu) and 0.55 alignment is directional, not control‑grade.
+Conclusion unchanged from §7: **R1 validates the direction; R2 (slots trained *into* the model,
+operative = slot dynamics) is where the size problem actually gets solved** — binding is then
+shaped by the SSL objectives over the whole dataset, not bolted on afterwards.
 
 ## 9. Key references
 
