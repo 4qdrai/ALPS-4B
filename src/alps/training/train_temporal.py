@@ -93,7 +93,12 @@ def train(args):
         use_cls_pool=args.cls_pool, patch_size=tuple(args.patch_size),
         residual_pred=getattr(args, "residual_pred", False),
         film_cond=getattr(args, "film_cond", False),
-        flow_pred=getattr(args, "flow_pred", False)).to(device)
+        flow_pred=getattr(args, "flow_pred", False),
+        slot_mode=getattr(args, "slot_mode", False),
+        num_slots=getattr(args, "num_slots", 6)).to(device)
+    if getattr(args, "slot_mode", False):
+        print(f"[pred] SLOT MODE ON (R2): operative = {args.num_slots}-slot object dynamics; "
+              f"binding learned jointly via feature-reconstruction (weight {args.slot_recon_weight}).")
     if getattr(args, "flow_pred", False):
         print("[pred] FLOW-MATCHING op-predictor ON: next-latent via conditional flow "
               "(noise -> SHARP sample) instead of MSE mean -> fixes the off-manifold blur.")
@@ -128,7 +133,9 @@ def train(args):
                     "patch_size": list(args.patch_size),
                     "residual_pred": getattr(args, "residual_pred", False),
                     "film_cond": getattr(args, "film_cond", False),
-                    "flow_pred": getattr(args, "flow_pred", False)}, args.out)
+                    "flow_pred": getattr(args, "flow_pred", False),
+                    "slot_mode": getattr(args, "slot_mode", False),
+                    "num_slots": getattr(args, "num_slots", 6)}, args.out)
         print(f"[save] {args.out} ({tag})", flush=True)
 
     model.train()
@@ -160,7 +167,32 @@ def train(args):
             _stopgrad = (not args.lewm_ssl) or getattr(args, "stopgrad_target", False)
             _tgt = z[:, 1:W].detach() if _stopgrad else z[:, 1:W]
             # operative (trains encoder); pos decoded from per-frame pooled tokens
-            if getattr(args, "flow_pred", False):
+            if getattr(args, "slot_mode", False):
+                # SLOT-MODE operative (R2, docs/SLOT_FOUR_BRAIN.md): the operative state is K
+                # object slots, not N grid tokens. (1) slots bind the token grid (learned JOINTLY
+                # -- post-hoc slot probes bind regions, not objects); (2) the op-predictor
+                # imagines SLOT dynamics (agent = a dedicated slot -> size-invariant, undiluted);
+                # (3) a feature-reconstruction loss organizes the binding (the objective without
+                # which slot attention never discovers objects). All self-supervised.
+                s = model.slots_of(z.reshape(B * W, N, D)).reshape(B, W, model.num_slots, D)
+                s_tgt = s[:, 1:W].detach() if _stopgrad else s[:, 1:W]
+                op_pred = model.op_predict_window(s, a)                     # [B,W,K,D] slot dynamics
+                if getattr(args, "change_weighted_op", False):
+                    # per-SLOT change weighting: the AGENT slot changes most under actions ->
+                    # the controllable slot dominates the prediction gradient by construction.
+                    with torch.no_grad():
+                        chg = (s[:, 1:W] - s[:, :W-1]).pow(2).sum(-1)          # [B,W-1,K]
+                        w = chg / (chg.mean(dim=-1, keepdim=True) + 1e-6)
+                        w = w.clamp(min=0.25, max=10.0)
+                    err = (op_pred[:, :W-1] - s_tgt).pow(2).mean(-1)
+                    L_op = (w * err).mean()
+                else:
+                    L_op = F.mse_loss(op_pred[:, :W-1], s_tgt)
+                # binding objective: reconstruct the (detached) token grid from the slots
+                recon, _ = model.slot_dec(s.reshape(B * W, model.num_slots, D))
+                L_rec = F.mse_loss(recon, z.detach().reshape(B * W, N, D))
+                L_op = L_op + args.slot_recon_weight * L_rec
+            elif getattr(args, "flow_pred", False):
                 # FLOW-MATCHING op-loss: encode context once (differentiable), learn the
                 # conditional velocity that transports noise -> the next latent. op_pred is a
                 # (no-grad) sample, used only for the dyn term / SIGReg-on-prediction below.
@@ -346,6 +378,14 @@ def build_parser():
                          "before EVERY predictor layer instead of once at the input. Targets the "
                          "manifold-mismatch symptom (right magnitude, wrong direction) by keeping "
                          "the action driving the prediction through the full depth.")
+    ap.add_argument("--slot-mode", action="store_true",
+                    help="R2 (docs/SLOT_FOUR_BRAIN.md): operative state = K object SLOTS instead of "
+                         "the token grid. Slot binding is learned JOINTLY with prediction via a "
+                         "feature-reconstruction loss (post-hoc slot probes bind regions, not "
+                         "objects). Agent = a dedicated slot -> size-invariant control state.")
+    ap.add_argument("--num-slots", type=int, default=6, help="number of object slots (slot mode)")
+    ap.add_argument("--slot-recon-weight", type=float, default=1.0,
+                    help="weight of the token-grid feature-reconstruction loss that organizes binding")
     ap.add_argument("--flow-pred", action="store_true",
                     help="FLOW-MATCHING op-predictor: replace the next-latent MSE head with a "
                          "conditional rectified-flow velocity field that transports noise to a "

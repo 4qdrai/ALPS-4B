@@ -32,9 +32,11 @@ class TemporalHierWorldModel(nn.Module):
                  op_depth=6, abs_depth=4, lambda_sigreg=0.1, sigreg_slices=256,
                  rag_sim_threshold=0.75, k_tac=2, k_str=4, max_frames=12,
                  use_projection_head=True, use_cls_pool=False, residual_pred=False,
-                 film_cond=False, flow_pred=False):
+                 film_cond=False, flow_pred=False, slot_mode=False, num_slots=6):
         super().__init__()
         self.flow_pred = flow_pred
+        self.slot_mode = slot_mode
+        self.num_slots = num_slots
         self.d_model = d_model
         self.k_tac, self.k_str = k_tac, k_str
         self.SINGLE_FRAME_T = 2
@@ -49,11 +51,21 @@ class TemporalHierWorldModel(nn.Module):
                                      patch_size=patch_size, max_patches=max_patches,
                                      use_projection_head=use_projection_head,
                                      use_cls_token=use_cls_pool)
-        # operative: causal history over spatial tokens, conditioned on action
+        # operative: causal history over spatial tokens, conditioned on action.
+        # In SLOT MODE the same predictor runs over K object slots instead of N grid tokens
+        # (CausalTemporalPredictor is token-count agnostic) -> the agent is a DEDICATED slot,
+        # so its dynamics are modeled undiluted, independent of pixel size. Binding is learned
+        # JOINTLY with prediction + feature-reconstruction (the post-hoc probe ablation showed
+        # position-entangled tokens make bolted-on slots bind regions, not objects).
         self.op_predictor = CausalTemporalPredictor(d_model, d_cond=d_action, depth=op_depth,
                                                     num_heads=enc_heads, max_frames=max_frames,
                                                     residual=residual_pred, film_cond=film_cond,
                                                     flow=flow_pred)
+        if slot_mode:
+            from alps.core.slot_readout import SlotAttention, SlotFeatureDecoder
+            n_tok = (128 // patch_size[1]) * (128 // patch_size[2])   # tokens per frame @128px
+            self.slot_attn = SlotAttention(d_model, num_slots=num_slots)
+            self.slot_dec = SlotFeatureDecoder(d_model, n_tok)
         self.pos_head = mlp(d_model, d_model, 2)
         # tactical: pooled history, conditioned on strategic concept
         self.tac_proj = nn.Linear(d_model, d_model)
@@ -102,6 +114,15 @@ class TemporalHierWorldModel(nn.Module):
     def pool(self, z):
         """[B,N,D] -> [B,D]. CLS token (index 0) when use_cls_pool, else mean over tokens."""
         return z[:, 0] if self.use_cls_pool else z.mean(dim=1)
+
+    def slots_of(self, z):
+        """[B,N,D] token grid -> [B,K,D] object slots (slot mode only). Drops a CLS token if
+        present. Slots are the OPERATIVE state: the predictor imagines slot dynamics."""
+        return self.slot_attn(z[:, 1:] if self.use_cls_pool else z)
+
+    def encode_frame_slots(self, frame):
+        """frame [B,3,H,W] -> [B,K,D] slots (the slot-mode control representation)."""
+        return self.slots_of(self.encode_frame(frame))
 
     def tok_pool(self, t):
         """[B,W,N,D] -> [B,W,D] (token-dim pool). CLS index 0 or mean, matching pool()."""

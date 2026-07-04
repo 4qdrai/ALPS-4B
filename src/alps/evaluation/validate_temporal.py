@@ -53,7 +53,9 @@ def load_model(path, device):
         patch_size=tuple(ck.get("patch_size", (2, 16, 16))),
         residual_pred=ck.get("residual_pred", False),
         film_cond=ck.get("film_cond", False),
-        flow_pred=ck.get("flow_pred", False)).to(device)
+        flow_pred=ck.get("flow_pred", False),
+        slot_mode=ck.get("slot_mode", False),
+        num_slots=ck.get("num_slots", 6)).to(device)
     msd = m.state_dict()
     sd = {k: v for k, v in ck["model_state_dict"].items() if k in msd and msd[k].shape == v.shape}
     m.load_state_dict(sd, strict=False); m.eval()
@@ -115,21 +117,25 @@ def gather(model, frames, positions, room_ids, idx, device, chunk=128):
 # ---------------- history-aware control ----------------
 class HistoryBuffer:
     """Rolling buffer of the last W frame latents + actions for the causal predictor."""
-    def __init__(self, model, W, device, readout=None):
+    def __init__(self, model, W, device, readout=None, encode=None):
         self.m, self.W, self.dev = model, W, device
         self.z, self.a = [], []
         # `readout(z[1,N,D]) -> [1,R]` maps tokens to the COMPACT control state. Default =
         # model.pool (one global vector). Pass model.spatial_readout for position-faithful
         # control under pure SSL (the global pool discards the small agent; the grid keeps it).
         self.readout = readout if readout is not None else model.pool
+        # `encode(frame [1,3,H,W]) -> state [1,M,D]` sets the CONTROL REPRESENTATION the
+        # predictor rolls in. Default = token grid; pass model.encode_frame_slots for the
+        # slot-mode operative (M = num_slots).
+        self.encode = encode if encode is not None else model.encode_frame
 
     def reset(self, frame):
-        z0 = self.m.encode_frame(frame.unsqueeze(0))     # [1,N,D]
+        z0 = self.encode(frame.unsqueeze(0))             # [1,M,D]
         self.z = [z0] * self.W
         self.a = [0] * self.W
 
     def push(self, frame, action):
-        z = self.m.encode_frame(frame.unsqueeze(0))
+        z = self.encode(frame.unsqueeze(0))
         self.z = (self.z + [z])[-self.W:]
         self.a = (self.a + [action])[-self.W:]
 
