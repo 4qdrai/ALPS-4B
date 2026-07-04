@@ -283,11 +283,13 @@ def _fit_softargmax(Zt, Y, device, iters=400):
 
 
 @torch.no_grad()
-def gather_pred_grids(m, frames, positions, actions, starts, tot, W, dev, n_win=3000):
-    """Harvest (op-predictor's imagined next-latent token grids [M,N,D], TRUE next positions
-    [M,2]) from the training corpus. Shared by every CALIBRATED readout fitter (soft-argmax,
-    slot): fitting on the predictor's OWN outputs removes the off-manifold distortion that a
-    real-frame-fit readout suffers when reading imagination."""
+def gather_pred_grids(m, frames, positions, actions, starts, tot, W, dev, n_win=3000, encode=None):
+    """Harvest (op-predictor's imagined next-state grids [M,M',D], TRUE next positions [M,2]) from
+    the training corpus. Shared by every CALIBRATED readout fitter (soft-argmax, slot): fitting on
+    the predictor's OWN outputs removes the off-manifold distortion a real-frame-fit readout
+    suffers when reading imagination. `encode` (default encode_frame -> token grid) can be
+    encode_frame_slots -> the operative rolls in SLOT space (slot-mode models)."""
+    encode = encode or m.encode_frame
     E = starts.shape[0]; rng = np.random.RandomState(1); ss = []
     for _ in range(n_win):
         e = rng.randint(E - 1); s0 = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else tot
@@ -298,7 +300,7 @@ def gather_pred_grids(m, frames, positions, actions, starts, tot, W, dev, n_win=
         sb = ss[c:c + bs]
         fidx = np.stack([sb + k for k in range(W + 1)], 1)                        # [B,W+1]
         fr = frames[torch.as_tensor(fidx.reshape(-1))].to(dev).float() / 255.
-        z = m.encode_frame(fr); N, D = z.shape[1], z.shape[2]
+        z = encode(fr); N, D = z.shape[1], z.shape[2]
         z = z.reshape(len(sb), W + 1, N, D)
         a_hist = F.one_hot(actions[torch.as_tensor(fidx[:, :W].reshape(-1))].to(dev).long(), 4).float().reshape(len(sb), W, 4)
         z_pred = m.op_predict_next(z[:, :W], a_hist)                              # [B,N,D] imagined next grid

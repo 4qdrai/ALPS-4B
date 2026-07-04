@@ -122,7 +122,16 @@ def main():
     dev = torch.device(a.device)
     m, W = load_model(a.model_path, dev)
     g = a.spatial_grid
-    readout = lambda z: m.spatial_readout(z, grid=g)
+    slot_model = getattr(m, "slot_mode", False)
+    if slot_model:
+        # R2: the control STATE is the model's own object slots. enc -> [B,K,D] slots; readout
+        # flattens them (K*D ~1152 dims, no overfit); the op-predictor rolls slot dynamics.
+        enc = m.encode_frame_slots
+        readout = lambda s: s.reshape(*s.shape[:-2], -1)
+        print(f"[slot-model] operative control in {m.num_slots}-slot object space")
+    else:
+        enc = m.encode_frame
+        readout = lambda z: m.spatial_readout(z, grid=g)
     frames, actions, positions, room_ids, starts = load_raw(a.data_path)
     tot = frames.shape[0]
     if not a.no_bn_calib:
@@ -135,11 +144,20 @@ def main():
         o = []
         for c in range(0, len(ix), bs):
             b = torch.as_tensor(np.asarray(ix[c:c + bs]))
-            o.append(readout(m.encode_frame(frames[b].to(dev).float() / 255.)).cpu())
+            o.append(readout(enc(frames[b].to(dev).float() / 255.)).cpu())
         return torch.cat(o)
 
     tr, va = idx[:6000], idx[6000:8000]
-    if a.readout == "slot":
+    if slot_model:
+        # ridge on the flattened MODEL slots (real frames -> position) + a calibrated twin on the
+        # predicted next-slots. Object binding is already in the model, so a linear probe suffices.
+        ridge = fit_ridge_decode(gr(tr), positions[torch.as_tensor(tr)], dev)
+        decode_state = lambda s: ridge(readout(s))
+        g1 = (ridge(gr(va)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
+        Zp, Yp = gather_pred_grids(m, frames, positions, actions, starts, tot, W, dev, encode=enc)
+        ridge_c = fit_ridge_decode(readout(Zp.to(dev).float()), Yp, dev)
+        decode_calib = lambda s: ridge_c(readout(s))
+    elif a.readout == "slot":
         # object-centric slot readout: size-invariant real-frame decode + a CALIBRATED twin fit
         # on the predictor's own outputs (aggregates the diffuse imagination the peak-centroid
         # readouts read flat -- R1 measured 21x the action_spread of soft-argmax).
@@ -170,8 +188,8 @@ def main():
         g1 = (ridge(gr(va)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
         ridge_c = fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W, dev)
         decode_calib = lambda grid: ridge_c(m.spatial_readout(grid, grid=g))
-    # decoded-state forward-dynamics probe uses the ridge; skip it in softargmax/slot modes (secondary row)
-    fwd = None if a.readout in ("softargmax", "slot") else \
+    # decoded-state forward-dynamics probe uses the token ridge; skip it in softargmax/slot/slot-model modes
+    fwd = None if (slot_model or a.readout in ("softargmax", "slot")) else \
         fit_forward_probe(m, frames, positions, actions, starts, tot, readout, ridge, dev)
 
     spreads, errs, dir_hits = [], [], 0
@@ -194,10 +212,10 @@ def main():
                          perception_radius=a.perception_radius, block_mode=a.block_mode, block_wall=a.block_wall, block_gate=a.block_gate,
                           block_radius=a.block_radius, block_step_scale=a.block_step_scale)
         eg.reset(start_room=0, goal_room=1); eg.agent_pos = target.copy(); eg.target_pos = target.copy()
-        goal_z = m.encode_frame(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))
+        goal_z = enc(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))
         goal_ro = readout(goal_z).squeeze(0)
-        goal_pool = m.pool(goal_z).squeeze(0)                 # pooled goal latent for inverse dynamics
-        buf = HistoryBuffer(m, W, dev, readout=readout); buf.reset(obs_to_frame(obs, dev))
+        goal_pool = m.pool(goal_z).squeeze(0)                 # pooled goal state for inverse dynamics
+        buf = HistoryBuffer(m, W, dev, readout=readout, encode=enc); buf.reset(obs_to_frame(obs, dev))
         for _ in range(40):
             if n >= a.n_steps:
                 break
@@ -211,7 +229,7 @@ def main():
             # actions (direction_acc ~1.0). If it does not, the failure is the control-loop
             # decode/readout/env (not the predictor); if it does, the predictor is the sole problem.
             pred_od = np.stack([decode_state(
-                m.encode_frame(obs_to_frame({"image": o["image"]}, dev).unsqueeze(0)))[0].cpu().numpy()
+                enc(obs_to_frame({"image": o["image"]}, dev).unsqueeze(0)))[0].cpu().numpy()
                 for o in nxt])                                                                             # [4,2]
             errs_od.append(float(np.linalg.norm(pred_od - true, axis=1).mean()))
             dir_hits_od += int(int(np.argmin(np.linalg.norm(pred_od - target, axis=1))) == ta)
@@ -233,7 +251,7 @@ def main():
             # predictor 1-step IMAGINATION accuracy (latent, for the action actually taken): does the
             # imagined next latent match the TRUE next latent? limited perception should sharpen this.
             tn = copy.deepcopy(env).step(ta)[0]
-            true_ro = readout(m.encode_frame(obs_to_frame({"image": tn["image"]}, dev).unsqueeze(0))).squeeze(0)
+            true_ro = readout(enc(obs_to_frame({"image": tn["image"]}, dev).unsqueeze(0))).squeeze(0)
             imag_err.append(float((buf.pooled_next_for_action(ta) - true_ro).norm()))
             ro_scale.append(float(true_ro.norm()))
             n += 1
