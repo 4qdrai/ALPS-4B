@@ -88,6 +88,51 @@ def fit_forward_probe(m, frames, positions, actions, starts, tot, readout, ridge
     return lambda dp, a: dec[a](dp)
 
 
+class _SlotEnc:
+    """Stateful RECURRENT slot encoder for online control (v2): each frame's slots initialize
+    from the previous frame's (SAVi binding, matching training's slots_of_window). `peek`
+    encodes a HYPOTHETICAL frame (oracle-decode / imagination rows) WITHOUT advancing the
+    chain — a stateful instrument must not be corrupted by counterfactual queries."""
+    def __init__(self, m):
+        self.m, self.s = m, None
+
+    def __call__(self, fr):
+        self.s = self.m.encode_frame_slots(fr, slots_init=self.s)
+        return self.s
+
+    def peek(self, fr):
+        return self.m.encode_frame_slots(fr, slots_init=self.s)
+
+    def reset(self):
+        self.s = None
+
+
+@torch.no_grad()
+def gather_slot_pairs(m, frames, positions, actions, starts, tot, W, dev, n_win=3000):
+    """Window-harvest RECURRENT slot states for probe fitting: returns
+    (S_real [M,K,D], Y_real) = the window's last REAL slot state + its position, and
+    (S_pred [M,K,D], Y_pred) = the op-predictor's imagined next slots + the TRUE next position.
+    Recurrent depth W matches control-time conditions (probes must be fit in the regime they
+    are used)."""
+    E = starts.shape[0]; rng = np.random.RandomState(1); ss = []
+    for _ in range(n_win):
+        e = rng.randint(E - 1); s0 = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else tot
+        if end - s0 >= W + 1:
+            ss.append(rng.randint(s0, end - W))
+    ss = np.array(ss); Sr, Yr, Sp, Yp, bs = [], [], [], [], 48
+    for c in range(0, len(ss), bs):
+        sb = ss[c:c + bs]
+        fidx = np.stack([sb + k for k in range(W + 1)], 1)                    # [B,W+1]
+        fr = frames[torch.as_tensor(fidx.reshape(-1))].to(dev).float() / 255.
+        z = m.encode_frame(fr); N, D = z.shape[1], z.shape[2]
+        s = m.slots_of_window(z.reshape(len(sb), W + 1, N, D))                # [B,W+1,K,D] recurrent
+        a_hist = F.one_hot(actions[torch.as_tensor(fidx[:, :W].reshape(-1))].to(dev).long(), 4).float().reshape(len(sb), W, 4)
+        s_pred = m.op_predict_next(s[:, :W], a_hist)                          # [B,K,D] imagined next slots
+        Sr.append(s[:, W - 1].cpu()); Yr.append(positions[torch.as_tensor(fidx[:, W - 1])])
+        Sp.append(s_pred.cpu()); Yp.append(positions[torch.as_tensor(fidx[:, W])])
+    return torch.cat(Sr), torch.cat(Yr), torch.cat(Sp), torch.cat(Yp)
+
+
 @torch.no_grad()
 def main():
     ap = argparse.ArgumentParser()
@@ -124,11 +169,12 @@ def main():
     g = a.spatial_grid
     slot_model = getattr(m, "slot_mode", False)
     if slot_model:
-        # R2: the control STATE is the model's own object slots. enc -> [B,K,D] slots; readout
-        # flattens them (K*D ~1152 dims, no overfit); the op-predictor rolls slot dynamics.
-        enc = m.encode_frame_slots
+        # R2 v2: the control STATE is the model's own object slots, tracked RECURRENTLY across
+        # the episode (stateful encoder, matching training's slots_of_window). readout flattens
+        # the K slots (K*D ~1152 dims, no overfit); the op-predictor rolls slot dynamics.
+        enc = _SlotEnc(m)
         readout = lambda s: s.reshape(*s.shape[:-2], -1)
-        print(f"[slot-model] operative control in {m.num_slots}-slot object space")
+        print(f"[slot-model] operative control in {m.num_slots}-slot object space (recurrent binding)")
     else:
         enc = m.encode_frame
         readout = lambda z: m.spatial_readout(z, grid=g)
@@ -149,13 +195,16 @@ def main():
 
     tr, va = idx[:6000], idx[6000:8000]
     if slot_model:
-        # ridge on the flattened MODEL slots (real frames -> position) + a calibrated twin on the
-        # predicted next-slots. Object binding is already in the model, so a linear probe suffices.
-        ridge = fit_ridge_decode(gr(tr), positions[torch.as_tensor(tr)], dev)
+        # probes fit on WINDOW-HARVESTED recurrent slot states (the regime control runs in):
+        # ridge on real slots -> position (decode_state) + a calibrated twin on the predictor's
+        # imagined next-slots (decode_calib). Binding is in the model, so linear probes suffice.
+        Sr, Yr, Sp, Yp = gather_slot_pairs(m, frames, positions, actions, starts, tot, W, dev,
+                                           n_win=6000)
+        nfit = int(len(Sr) * 0.8)
+        ridge = fit_ridge_decode(readout(Sr[:nfit].to(dev).float()), Yr[:nfit], dev)
         decode_state = lambda s: ridge(readout(s))
-        g1 = (ridge(gr(va)) - positions[torch.as_tensor(va)].to(dev)).norm(dim=1).mean().item()
-        Zp, Yp = gather_pred_grids(m, frames, positions, actions, starts, tot, W, dev, encode=enc)
-        ridge_c = fit_ridge_decode(readout(Zp.to(dev).float()), Yp, dev)
+        g1 = (ridge(readout(Sr[nfit:].to(dev).float())) - Yr[nfit:].to(dev)).norm(dim=1).mean().item()
+        ridge_c = fit_ridge_decode(readout(Sp.to(dev).float()), Yp, dev)
         decode_calib = lambda s: ridge_c(readout(s))
     elif a.readout == "slot":
         # object-centric slot readout: size-invariant real-frame decode + a CALIBRATED twin fit
@@ -212,7 +261,10 @@ def main():
                          perception_radius=a.perception_radius, block_mode=a.block_mode, block_wall=a.block_wall, block_gate=a.block_gate,
                           block_radius=a.block_radius, block_step_scale=a.block_step_scale)
         eg.reset(start_room=0, goal_room=1); eg.agent_pos = target.copy(); eg.target_pos = target.copy()
-        goal_z = enc(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))
+        if hasattr(enc, "reset"):
+            enc.reset()                                        # fresh recurrent chain per episode
+        enc_peek = enc.peek if hasattr(enc, "peek") else enc   # counterfactual encodes must not
+        goal_z = enc_peek(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))  # advance the chain
         goal_ro = readout(goal_z).squeeze(0)
         goal_pool = m.pool(goal_z).squeeze(0)                 # pooled goal state for inverse dynamics
         buf = HistoryBuffer(m, W, dev, readout=readout, encode=enc); buf.reset(obs_to_frame(obs, dev))
@@ -229,7 +281,7 @@ def main():
             # actions (direction_acc ~1.0). If it does not, the failure is the control-loop
             # decode/readout/env (not the predictor); if it does, the predictor is the sole problem.
             pred_od = np.stack([decode_state(
-                enc(obs_to_frame({"image": o["image"]}, dev).unsqueeze(0)))[0].cpu().numpy()
+                enc_peek(obs_to_frame({"image": o["image"]}, dev).unsqueeze(0)))[0].cpu().numpy()
                 for o in nxt])                                                                             # [4,2]
             errs_od.append(float(np.linalg.norm(pred_od - true, axis=1).mean()))
             dir_hits_od += int(int(np.argmin(np.linalg.norm(pred_od - target, axis=1))) == ta)
@@ -251,7 +303,7 @@ def main():
             # predictor 1-step IMAGINATION accuracy (latent, for the action actually taken): does the
             # imagined next latent match the TRUE next latent? limited perception should sharpen this.
             tn = copy.deepcopy(env).step(ta)[0]
-            true_ro = readout(enc(obs_to_frame({"image": tn["image"]}, dev).unsqueeze(0))).squeeze(0)
+            true_ro = readout(enc_peek(obs_to_frame({"image": tn["image"]}, dev).unsqueeze(0))).squeeze(0)
             imag_err.append(float((buf.pooled_next_for_action(ta) - true_ro).norm()))
             ro_scale.append(float(true_ro.norm()))
             n += 1

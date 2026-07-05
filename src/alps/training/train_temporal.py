@@ -142,7 +142,7 @@ def train(args):
     for epoch in range(1, args.epochs + 1):
         t0 = time.perf_counter()
         order = rng.permutation(n)
-        agg = {k: 0.0 for k in ["loss", "op", "dyn", "pos", "tac", "str", "vq", "sub", "sig", "col", "inv"]}
+        agg = {k: 0.0 for k in ["loss", "op", "dyn", "pos", "tac", "str", "vq", "sub", "sig", "col", "inv", "rec"]}
         nb = 0
         for b0 in range(0, n - args.batch_size + 1, args.batch_size):
             bw = FIDX[order[b0:b0 + args.batch_size]]      # [B,W]
@@ -166,16 +166,22 @@ def train(args):
             # forces stop-grad even under --lewm-ssl, for diagnostics.)
             _stopgrad = (not args.lewm_ssl) or getattr(args, "stopgrad_target", False)
             _tgt = z[:, 1:W].detach() if _stopgrad else z[:, 1:W]
+            L_rec = torch.zeros((), device=device)          # slot-mode binding loss (logged as 'rec')
             # operative (trains encoder); pos decoded from per-frame pooled tokens
             if getattr(args, "slot_mode", False):
-                # SLOT-MODE operative (R2, docs/SLOT_FOUR_BRAIN.md): the operative state is K
-                # object slots, not N grid tokens. (1) slots bind the token grid (learned JOINTLY
-                # -- post-hoc slot probes bind regions, not objects); (2) the op-predictor
-                # imagines SLOT dynamics (agent = a dedicated slot -> size-invariant, undiluted);
-                # (3) a feature-reconstruction loss organizes the binding (the objective without
-                # which slot attention never discovers objects). All self-supervised.
-                s = model.slots_of(z.reshape(B * W, N, D)).reshape(B, W, model.num_slots, D)
-                s_tgt = s[:, 1:W].detach() if _stopgrad else s[:, 1:W]
+                # SLOT-MODE operative v2 (R2, docs/SLOT_FOUR_BRAIN.md): the operative state is K
+                # object slots, not N grid tokens. v2 fixes over v1 (which showed rising op loss
+                # + slots that didn't encode position): (1) RECURRENT binding -- slots_of_window
+                # chains slot identity across the window (v1's per-frame stochastic init let
+                # identities permute -> moving prediction target); (2) the slot prediction target
+                # is ALWAYS detached (slots are a bottleneck on top of the SIGReg-protected token
+                # space; without their own anti-collapse term an undetached target invites
+                # "make slots trivial to predict"); (3) SIGReg on the slot embeddings themselves
+                # (anti-collapse, same single mechanism as everywhere else); (4) inverse dynamics
+                # moves to SLOT pools -- grounds the controllable object INTO a slot (the piece
+                # v1 cut). Feature-reconstruction organizes binding as before. All self-supervised.
+                s = model.slots_of_window(z)                                # [B,W,K,D] recurrent
+                s_tgt = s[:, 1:W].detach()                                  # target discipline
                 op_pred = model.op_predict_window(s, a)                     # [B,W,K,D] slot dynamics
                 if getattr(args, "change_weighted_op", False):
                     # per-SLOT change weighting: the AGENT slot changes most under actions ->
@@ -191,7 +197,6 @@ def train(args):
                 # binding objective: reconstruct the (detached) token grid from the slots
                 recon, _ = model.slot_dec(s.reshape(B * W, model.num_slots, D))
                 L_rec = F.mse_loss(recon, z.detach().reshape(B * W, N, D))
-                L_op = L_op + args.slot_recon_weight * L_rec
             elif getattr(args, "flow_pred", False):
                 # FLOW-MATCHING op-loss: encode context once (differentiable), learn the
                 # conditional velocity that transports noise -> the next latent. op_pred is a
@@ -266,6 +271,14 @@ def train(args):
                 tac_pred_p = model.tac_pred_proj(tac_pred.reshape(B * W, D))
                 str_pred_p = model.str_pred_proj(str_pred.reshape(B * W, D))
                 L_sig_pred = model.sigreg(tac_pred_p) + model.sigreg(str_pred_p)
+                if getattr(args, "slot_mode", False):
+                    # SIGReg on the SLOT POOL (v2): anti-collapse for the slot state with the
+                    # SAME row count/scale as every other SIGReg term. Per-slot-row variants
+                    # (raw or /K) produce a statistic so large it dominates the global grad
+                    # clip and starves all other losses (measured: sig 11-31, inv frozen at
+                    # random, op exploding). Per-slot degeneracy is guarded by the recon loss
+                    # (collapsed slots cannot reconstruct varied grids).
+                    L_sig_pred = L_sig_pred + model.sigreg(s.mean(dim=2).reshape(B * W, D))
                 if not getattr(args, "flow_pred", False):
                     # op_pred is a differentiable MSE prediction -> SIGReg it too. In flow mode
                     # op_pred is a no-grad sample, so its SIGReg term carries no predictor
@@ -289,7 +302,11 @@ def train(args):
             # missing pressure under pure SSL: predicting a_k from (pool(z_k), pool(z_{k+1}))
             # is only possible if the pooled latent encodes the controllable agent state.
             if args.inv_dyn:
-                zp_seq = model.tok_pool(z)                                          # [B,W,D]
+                # v2: in slot mode the inverse head reads SLOT pools, not token pools -- the
+                # gradient must flow into the SLOTS so one of them is forced to carry the
+                # controllable (action-determined) state. Also makes eval (m.pool on the slot
+                # control state) consistent with training (v1 mismatch invalidated the row).
+                zp_seq = s.mean(dim=2) if getattr(args, "slot_mode", False) else model.tok_pool(z)
                 inv_logits = model.inverse_action(zp_seq[:, :W-1], zp_seq[:, 1:])   # [B,W-1,A]
                 L_inv = F.cross_entropy(inv_logits.reshape(-1, inv_logits.shape[-1]),
                                         a_idx[:, :W-1].reshape(-1))
@@ -298,20 +315,21 @@ def train(args):
 
             loss = (L_op + args.dyn_weight * L_dyn + args.pos_weight * (L_pos + L_tacpos)
                     + L_tac + L_str + vq_tot + L_sub + L_sig + 0.01 * moe_tot
-                    + args.collapse_weight * L_col + args.inv_weight * L_inv)
+                    + args.collapse_weight * L_col + args.inv_weight * L_inv
+                    + getattr(args, "slot_recon_weight", 1.0) * L_rec)
             opt.zero_grad(set_to_none=True); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step()
 
             agg["loss"] += loss.item(); agg["op"] += L_op.item(); agg["dyn"] += L_dyn.item()
             agg["pos"] += L_pos.item(); agg["tac"] += float(L_tac); agg["str"] += float(L_str)
             agg["vq"] += float(vq_tot); agg["sub"] += float(L_sub)
-            agg["sig"] += float(L_sig); agg["inv"] += float(L_inv); nb += 1
+            agg["sig"] += float(L_sig); agg["inv"] += float(L_inv); agg["rec"] += float(L_rec); nb += 1
 
         nb = max(1, nb)
         print(f"  ep {epoch:03d}/{args.epochs:03d} | loss {agg['loss']/nb:.3f} | op {agg['op']/nb:.3f} "
               f"dyn {agg['dyn']/nb:.3f} pos {agg['pos']/nb:.3f} tac {agg['tac']/nb:.3f} "
               f"str {agg['str']/nb:.3f} vq {agg['vq']/nb:.3f} sub {agg['sub']/nb:.3f} "
-              f"sig {agg['sig']/nb:.3f} inv {agg['inv']/nb:.3f} | {time.perf_counter()-t0:.1f}s")
+              f"sig {agg['sig']/nb:.3f} inv {agg['inv']/nb:.3f} rec {agg['rec']/nb:.3f} | {time.perf_counter()-t0:.1f}s")
         if getattr(args, "save_every", 0) and epoch % args.save_every == 0:
             _save_ckpt(f"epoch {epoch}")          # periodic checkpoint -> crash-safe long runs
 

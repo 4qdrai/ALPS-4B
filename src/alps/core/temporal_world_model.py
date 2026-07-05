@@ -115,14 +115,29 @@ class TemporalHierWorldModel(nn.Module):
         """[B,N,D] -> [B,D]. CLS token (index 0) when use_cls_pool, else mean over tokens."""
         return z[:, 0] if self.use_cls_pool else z.mean(dim=1)
 
-    def slots_of(self, z):
+    def slots_of(self, z, slots_init=None):
         """[B,N,D] token grid -> [B,K,D] object slots (slot mode only). Drops a CLS token if
-        present. Slots are the OPERATIVE state: the predictor imagines slot dynamics."""
-        return self.slot_attn(z[:, 1:] if self.use_cls_pool else z)
+        present. Slots are the OPERATIVE state: the predictor imagines slot dynamics.
+        `slots_init` = previous frame's slots (SAVi recurrent binding)."""
+        return self.slot_attn(z[:, 1:] if self.use_cls_pool else z, slots_init=slots_init)
 
-    def encode_frame_slots(self, frame):
-        """frame [B,3,H,W] -> [B,K,D] slots (the slot-mode control representation)."""
-        return self.slots_of(self.encode_frame(frame))
+    def slots_of_window(self, z_win):
+        """[B,W,N,D] -> [B,W,K,D] with RECURRENT binding: slots at frame t initialize from the
+        slots at t-1, so slot identity is temporally consistent and slot DYNAMICS are a
+        well-posed prediction target (v1's independent per-frame init let identities permute).
+        The handoff is DETACHED: identity consistency is a forward-pass property; backprop
+        through the W-step slot-attention chain is an RNN that destabilizes training
+        (measured: op 0.86->6.4 in 4 epochs with full BPTT). Truncated-BPTT-1, SAVi-style."""
+        outs, s = [], None
+        for t in range(z_win.shape[1]):
+            s = self.slots_of(z_win[:, t], slots_init=(s.detach() if s is not None else None))
+            outs.append(s)
+        return torch.stack(outs, dim=1)
+
+    def encode_frame_slots(self, frame, slots_init=None):
+        """frame [B,3,H,W] -> [B,K,D] slots (the slot-mode control representation).
+        Pass the previous step's slots as `slots_init` for recurrent online binding."""
+        return self.slots_of(self.encode_frame(frame), slots_init=slots_init)
 
     def tok_pool(self, t):
         """[B,W,N,D] -> [B,W,D] (token-dim pool). CLS index 0 or mean, matching pool()."""

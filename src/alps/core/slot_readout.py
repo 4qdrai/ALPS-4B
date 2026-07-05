@@ -37,15 +37,22 @@ class SlotAttention(nn.Module):
         self.mlp = nn.Sequential(nn.Linear(dim, hidden), nn.ReLU(), nn.Linear(hidden, dim))
         self.norm_in = nn.LayerNorm(dim); self.norm_slots = nn.LayerNorm(dim); self.norm_mlp = nn.LayerNorm(dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:      # x [B,N,D] -> slots [B,K,D]
+    def forward(self, x: torch.Tensor, slots_init: torch.Tensor = None) -> torch.Tensor:
+        """x [B,N,D] -> slots [B,K,D]. `slots_init` (SAVi-style recurrent binding): initialize
+        from the PREVIOUS frame's slots so slot IDENTITY is consistent across a sequence — the
+        v1 per-frame (stochastic) init let identities permute frame-to-frame, which turns the
+        slot-dynamics prediction target into a moving target (measured: rising op loss)."""
         B, N, D = x.shape
         x = self.norm_in(x); k = self.to_k(x); v = self.to_v(x)
-        mu = self.slots_mu.expand(B, -1, -1)
-        if self.training:
-            slots = mu + self.slots_logsigma.exp().expand(B, -1, -1) * torch.randn_like(mu)
+        if slots_init is not None:
+            slots = slots_init
         else:
-            slots = mu                                        # deterministic at eval; symmetry is
-            # broken by the per-slot learned inits, not by sampling
+            mu = self.slots_mu.expand(B, -1, -1)
+            if self.training:
+                slots = mu + self.slots_logsigma.exp().expand(B, -1, -1) * torch.randn_like(mu)
+            else:
+                slots = mu                                    # deterministic at eval; symmetry is
+                # broken by the per-slot learned inits, not by sampling
         for _ in range(self.iters):
             q = self.to_q(self.norm_slots(slots))
             attn = torch.softmax((q @ k.transpose(1, 2)) * self.scale, dim=1)     # softmax over SLOTS (compete)

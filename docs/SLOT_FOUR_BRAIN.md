@@ -119,6 +119,37 @@ Object binding must be learned JOINTLY with the representation: R2 is required, 
 is its empirical justification.** (The recon decoder + deterministic per-slot-init machinery
 built here carries directly into R2's slot bottleneck.)
 
+## 9. R2 v1 post-mortem and the v2 design
+
+**R2 v1** (`--slot-mode`, commit 89bf075; first run `_slot09`, depth-10/25ep) trained but showed a
+**rising op loss** (0.60→1.17) and a diagnostic inversion: predicted slots carried
+action-conditioned position (calibrated 0.62) while real-frame slots did NOT encode position
+(G1 1.55, oracle 0.28), with a collapsed slot norm (~11 vs ~10² for tokens). Three design flaws,
+each a named requirement in the slot-dynamics literature (SAVi/STEVE/SOLD):
+
+1. **No temporal slot consistency** — v1 extracted slots per frame from (stochastic, at train
+   time) learned inits, so slot IDENTITY could permute frame-to-frame → the slot-dynamics
+   prediction target was a moving target (the rising loss).
+2. **No slot-level action grounding** — inverse dynamics still read token pools; nothing forced
+   any slot to carry the controllable object (and the eval inverse row was invalidated by the
+   train/eval representation mismatch).
+3. **No collapse protection / target discipline on slots** — tokens get SIGReg, slots got
+   nothing, and the prediction target was not detached → the "make slots trivial to predict"
+   shortcut was open (the low readout norm says it was taken). Also: the logged `op` folded the
+   reconstruction loss in, hiding which term rose.
+
+**v2 (this commit) fixes all four, preserving the core principles (fully unsupervised,
+SIGReg-single-mechanism, tactical/strategic wiring untouched):**
+- `slots_of_window`: **SAVi-style recurrent binding** — slots at frame t initialize from t-1.
+- Inverse dynamics reads **slot pools** in slot mode (grounds the controllable slot; eval-consistent).
+- **SIGReg on the slot embeddings** (same mechanism as every other latent space) + the slot
+  prediction target is **always detached**.
+- `rec` logged separately from `op`; online control uses a stateful recurrent encoder with a
+  non-mutating `peek` for counterfactual rows (instrument discipline).
+
+Gate unchanged: slot-model diagnostic `CALIBRATED direction_acc ≥ 0.6` **and** `ORACLE-DECODE
+≥ 0.9` on the radius-0.9 switch-gate = size problem solved by the representation.
+
 ## 9. Key references
 
 Slot / object‑centric: Slot Attention (Locatello 2020); [SOLD — slot object‑centric latent dynamics for RL](https://arxiv.org/html/2410.08822v2); [Slot‑MPC](https://arxiv.org/pdf/2605.14937); OCVP.
