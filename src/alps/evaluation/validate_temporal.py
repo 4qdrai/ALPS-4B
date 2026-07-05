@@ -57,7 +57,8 @@ def load_model(path, device):
         slot_mode=ck.get("slot_mode", False),
         num_slots=ck.get("num_slots", 6),
         slot_dec_hidden=ck.get("slot_dec_hidden", None),
-        slot_dec_depth=ck.get("slot_dec_depth", 2)).to(device)
+        slot_dec_depth=ck.get("slot_dec_depth", 2),
+        slot_motion=ck.get("slot_motion", False)).to(device)
     msd = m.state_dict()
     sd = {k: v for k, v in ck["model_state_dict"].items() if k in msd and msd[k].shape == v.shape}
     m.load_state_dict(sd, strict=False); m.eval()

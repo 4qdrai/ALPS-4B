@@ -97,7 +97,8 @@ def train(args):
         slot_mode=getattr(args, "slot_mode", False),
         num_slots=getattr(args, "num_slots", 6),
         slot_dec_hidden=getattr(args, "slot_dec_hidden", None),
-        slot_dec_depth=getattr(args, "slot_dec_depth", 2)).to(device)
+        slot_dec_depth=getattr(args, "slot_dec_depth", 2),
+        slot_motion=getattr(args, "slot_motion", False)).to(device)
     if getattr(args, "slot_mode", False):
         print(f"[pred] SLOT MODE ON (R2): operative = {args.num_slots}-slot object dynamics; "
               f"binding learned jointly via feature-reconstruction (weight {args.slot_recon_weight}).")
@@ -139,7 +140,8 @@ def train(args):
                     "slot_mode": getattr(args, "slot_mode", False),
                     "num_slots": getattr(args, "num_slots", 6),
                     "slot_dec_hidden": getattr(args, "slot_dec_hidden", None),
-                    "slot_dec_depth": getattr(args, "slot_dec_depth", 2)}, args.out)
+                    "slot_dec_depth": getattr(args, "slot_dec_depth", 2),
+                    "slot_motion": getattr(args, "slot_motion", False)}, args.out)
         print(f"[save] {args.out} ({tag})", flush=True)
 
     model.train()
@@ -413,6 +415,11 @@ def build_parser():
                          "fine patches -- the decoder must reconstruct 4x the tokens at patch-8)")
     ap.add_argument("--slot-dec-depth", type=int, default=2,
                     help="slot feature-decoder MLP depth (default 2 layers)")
+    ap.add_argument("--slot-motion", action="store_true",
+                    help="MOTION-CUED slot binding (SAVi's flow cue, label-free latent form): "
+                         "fuse each token with its temporal delta before slot attention. "
+                         "Appearance/recon binding alone demonstrably fails to discover the "
+                         "small moving agent (mask collapse); objects are what MOVE.")
     ap.add_argument("--flow-pred", action="store_true",
                     help="FLOW-MATCHING op-predictor: replace the next-latent MSE head with a "
                          "conditional rectified-flow velocity field that transports noise to a "

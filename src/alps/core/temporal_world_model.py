@@ -33,7 +33,7 @@ class TemporalHierWorldModel(nn.Module):
                  rag_sim_threshold=0.75, k_tac=2, k_str=4, max_frames=12,
                  use_projection_head=True, use_cls_pool=False, residual_pred=False,
                  film_cond=False, flow_pred=False, slot_mode=False, num_slots=6,
-                 slot_dec_hidden=None, slot_dec_depth=2):
+                 slot_dec_hidden=None, slot_dec_depth=2, slot_motion=False):
         super().__init__()
         self.flow_pred = flow_pred
         self.slot_mode = slot_mode
@@ -71,6 +71,14 @@ class TemporalHierWorldModel(nn.Module):
             # rises, slots churn, inv diverges (measured on the first patch-8 pod run).
             self.slot_dec = SlotFeatureDecoder(d_model, n_tok, hidden=slot_dec_hidden,
                                                depth=slot_dec_depth)
+            # MOTION-CUED binding (SAVi's flow cue, label-free latent form): slot attention
+            # sees each token fused with its TEMPORAL DELTA. Appearance/recon-driven binding
+            # demonstrably fails to discover the small moving agent (masks: region tiles at
+            # patch-16, whole-frame collapse at patch-8); objects are what MOVE COHERENTLY,
+            # and here the agent is the only mover -> the delta channel is a perfect cue.
+            self.slot_motion = slot_motion
+            if slot_motion:
+                self.slot_fuse = nn.Linear(2 * d_model, d_model)
         self.pos_head = mlp(d_model, d_model, 2)
         # tactical: pooled history, conditioned on strategic concept
         self.tac_proj = nn.Linear(d_model, d_model)
@@ -120,11 +128,17 @@ class TemporalHierWorldModel(nn.Module):
         """[B,N,D] -> [B,D]. CLS token (index 0) when use_cls_pool, else mean over tokens."""
         return z[:, 0] if self.use_cls_pool else z.mean(dim=1)
 
-    def slots_of(self, z, slots_init=None):
+    def slots_of(self, z, slots_init=None, z_prev=None):
         """[B,N,D] token grid -> [B,K,D] object slots (slot mode only). Drops a CLS token if
         present. Slots are the OPERATIVE state: the predictor imagines slot dynamics.
-        `slots_init` = previous frame's slots (SAVi recurrent binding)."""
-        return self.slot_attn(z[:, 1:] if self.use_cls_pool else z, slots_init=slots_init)
+        `slots_init` = previous frame's slots (SAVi recurrent binding). With slot_motion, the
+        attention input is each token fused with its TEMPORAL DELTA (zeros when no z_prev)."""
+        x = z[:, 1:] if self.use_cls_pool else z
+        if getattr(self, "slot_motion", False):
+            xp = (z_prev[:, 1:] if self.use_cls_pool else z_prev) if z_prev is not None else None
+            delta = (x - xp) if xp is not None else torch.zeros_like(x)
+            x = self.slot_fuse(torch.cat([x, delta], dim=-1))
+        return self.slot_attn(x, slots_init=slots_init)
 
     def slots_of_window(self, z_win):
         """[B,W,N,D] -> [B,W,K,D] with RECURRENT binding: slots at frame t initialize from the
@@ -132,10 +146,12 @@ class TemporalHierWorldModel(nn.Module):
         well-posed prediction target (v1's independent per-frame init let identities permute).
         The handoff is DETACHED: identity consistency is a forward-pass property; backprop
         through the W-step slot-attention chain is an RNN that destabilizes training
-        (measured: op 0.86->6.4 in 4 epochs with full BPTT). Truncated-BPTT-1, SAVi-style."""
+        (measured: op 0.86->6.4 in 4 epochs with full BPTT). Truncated-BPTT-1, SAVi-style.
+        With slot_motion each frame's tokens are fused with their temporal delta."""
         outs, s = [], None
         for t in range(z_win.shape[1]):
-            s = self.slots_of(z_win[:, t], slots_init=(s.detach() if s is not None else None))
+            s = self.slots_of(z_win[:, t], slots_init=(s.detach() if s is not None else None),
+                              z_prev=(z_win[:, t - 1] if t > 0 else None))
             outs.append(s)
         return torch.stack(outs, dim=1)
 
