@@ -32,7 +32,7 @@ from alps.training.train_hier import load_raw
 from alps.evaluation.validate_temporal import (load_model, fit_ridge_decode, HistoryBuffer, calibrate_bn,
                                                fit_softargmax_decode, fit_calibrated_softargmax,
                                                _gather_token_grids, gather_pred_grids)
-from alps.core.slot_readout import fit_slot_decode
+from alps.core.slot_readout import fit_slot_decode, fit_eq_slot_probe
 
 
 @torch.no_grad()
@@ -88,35 +88,71 @@ def fit_forward_probe(m, frames, positions, actions, starts, tot, readout, ridge
     return lambda dp, a: dec[a](dp)
 
 
-class _SlotEnc:
-    """Stateful RECURRENT slot encoder for online control (v2): each frame's slots initialize
-    from the previous frame's (SAVi binding, matching training's slots_of_window). `peek`
-    encodes a HYPOTHETICAL frame (oracle-decode / imagination rows) WITHOUT advancing the
-    chain — a stateful instrument must not be corrupted by counterfactual queries."""
-    def __init__(self, m):
-        self.m, self.s = m, None
+class SlotHistoryBuffer:
+    """Slot-mode control buffer that keeps slot computation IN THE TRAINED REGIME: the model
+    only ever chains slots over W-frame windows (slots_of_window), so control must too. An
+    unbounded episode-long chain drifts out of distribution (measured: probe G1 0.49 on
+    window slots, but 2.8 in a loop running a 40-step chain). Stores the last W token grids
+    and recomputes the W-frame slot chain each step; `peek_frame_slots` evaluates a
+    counterfactual next frame in the same regime without mutating state."""
+    def __init__(self, m, W, dev, readout):
+        self.m, self.W, self.dev, self.readout = m, W, dev, readout
+        self.zg, self.a = [], []
 
-    def __call__(self, fr):
-        self.s = self.m.encode_frame_slots(fr, slots_init=self.s)
-        return self.s
+    def reset(self, frame):
+        z = self.m.encode_frame(frame.unsqueeze(0))
+        self.zg = [z] * self.W; self.a = [0] * self.W
+        self._rebuild()
 
-    def peek(self, fr):
-        return self.m.encode_frame_slots(fr, slots_init=self.s)
+    def push(self, frame, action):
+        z = self.m.encode_frame(frame.unsqueeze(0))
+        self.zg = (self.zg + [z])[-self.W:]; self.a = (self.a + [action])[-self.W:]
+        self._rebuild()
 
-    def reset(self):
-        self.s = None
+    def _rebuild(self):
+        self.s = self.m.slots_of_window(torch.stack(self.zg, dim=1))    # [1,W,K,D]
+
+    @property
+    def cur_z(self):
+        return self.s[:, -1]                                            # [1,K,D]
+
+    def _a_hist(self, last_action):
+        return F.one_hot(torch.tensor(self.a[1:] + [last_action], device=self.dev), 4).float().unsqueeze(0)
+
+    def pooled_next_for_action(self, ai):
+        return self.readout(self.m.op_predict_next(self.s, self._a_hist(ai))).squeeze(0)
+
+    def rollout_decode(self, decode_state, action, K):
+        s_win, a = self.s, list(self.a)
+        s_next = s_win[:, -1]
+        for _ in range(max(1, int(K))):
+            a_hist = F.one_hot(torch.tensor(a[1:] + [action], device=self.dev), 4).float().unsqueeze(0)
+            s_next = self.m.op_predict_next(s_win, a_hist)              # [1,K,D]
+            s_win = torch.cat([s_win[:, 1:], s_next.unsqueeze(1)], dim=1)
+            a = (a + [action])[-self.W:]
+        return decode_state(s_next)[0]
+
+    def peek_frame_slots(self, frame):
+        """Slots for a HYPOTHETICAL next frame, computed in the trained window regime
+        (replaces the last grid, reruns the W-frame chain). Does not mutate state."""
+        z = self.m.encode_frame(frame)
+        zwin = torch.stack(self.zg[1:] + [z], dim=1)
+        return self.m.slots_of_window(zwin)[:, -1]                      # [1,K,D]
 
 
 @torch.no_grad()
-def gather_slot_pairs(m, frames, positions, actions, starts, tot, W, dev, n_win=3000):
+def gather_slot_pairs(m, frames, positions, actions, starts, tot, W, dev, n_win=3000, episodes=None):
     """Window-harvest RECURRENT slot states for probe fitting: returns
     (S_real [M,K,D], Y_real) = the window's last REAL slot state + its position, and
     (S_pred [M,K,D], Y_pred) = the op-predictor's imagined next slots + the TRUE next position.
     Recurrent depth W matches control-time conditions (probes must be fit in the regime they
-    are used)."""
+    are used). `episodes` restricts sampling to those episode indices -- probe fit/eval MUST be
+    split at the EPISODE level (stride-1 windows overlap 6/7 frames; a window-level split leaks
+    and inflated slot G1 0.556 vs the honest cross-episode 2.000)."""
     E = starts.shape[0]; rng = np.random.RandomState(1); ss = []
     for _ in range(n_win):
-        e = rng.randint(E - 1); s0 = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else tot
+        e = int(episodes[rng.randint(len(episodes))]) if episodes is not None else rng.randint(E - 1)
+        s0 = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else tot
         if end - s0 >= W + 1:
             ss.append(rng.randint(s0, end - W))
     ss = np.array(ss); Sr, Yr, Sp, Yp, bs = [], [], [], [], 48
@@ -169,12 +205,12 @@ def main():
     g = a.spatial_grid
     slot_model = getattr(m, "slot_mode", False)
     if slot_model:
-        # R2 v2: the control STATE is the model's own object slots, tracked RECURRENTLY across
-        # the episode (stateful encoder, matching training's slots_of_window). readout flattens
-        # the K slots (K*D ~1152 dims, no overfit); the op-predictor rolls slot dynamics.
-        enc = _SlotEnc(m)
+        # R2 v2: the control STATE is the model's own object slots, computed EXACTLY as in
+        # training (W-frame window chains via SlotHistoryBuffer -- an unbounded episode chain
+        # drifts out of the trained regime). readout flattens the K slots for latent-space rows.
+        enc = m.encode_frame
         readout = lambda s: s.reshape(*s.shape[:-2], -1)
-        print(f"[slot-model] operative control in {m.num_slots}-slot object space (recurrent binding)")
+        print(f"[slot-model] operative control in {m.num_slots}-slot object space (windowed recurrent binding)")
     else:
         enc = m.encode_frame
         readout = lambda z: m.spatial_readout(z, grid=g)
@@ -195,17 +231,21 @@ def main():
 
     tr, va = idx[:6000], idx[6000:8000]
     if slot_model:
-        # probes fit on WINDOW-HARVESTED recurrent slot states (the regime control runs in):
-        # ridge on real slots -> position (decode_state) + a calibrated twin on the predictor's
-        # imagined next-slots (decode_calib). Binding is in the model, so linear probes suffice.
+        # probes fit on WINDOW-HARVESTED recurrent slot states (the regime control runs in),
+        # using the PERMUTATION-EQUIVARIANT probe: slot assignment is arbitrary per episode, so
+        # a flat concatenation ridge is permutation-blind and mismeasures by >2x (G1 1.21 flat
+        # vs 0.533 equivariant on the same v2 slots). decode_state reads real slots,
+        # decode_calib the predictor's imagined next-slots.
+        E = starts.shape[0]
+        ep_perm = np.random.RandomState(7).permutation(E - 1)
+        ep_fit, ep_val = ep_perm[:int(len(ep_perm) * 0.8)], ep_perm[int(len(ep_perm) * 0.8):]
         Sr, Yr, Sp, Yp = gather_slot_pairs(m, frames, positions, actions, starts, tot, W, dev,
-                                           n_win=6000)
-        nfit = int(len(Sr) * 0.8)
-        ridge = fit_ridge_decode(readout(Sr[:nfit].to(dev).float()), Yr[:nfit], dev)
-        decode_state = lambda s: ridge(readout(s))
-        g1 = (ridge(readout(Sr[nfit:].to(dev).float())) - Yr[nfit:].to(dev)).norm(dim=1).mean().item()
-        ridge_c = fit_ridge_decode(readout(Sp.to(dev).float()), Yp, dev)
-        decode_calib = lambda s: ridge_c(readout(s))
+                                           n_win=5000, episodes=ep_fit)
+        Sv, Yv, _, _ = gather_slot_pairs(m, frames, positions, actions, starts, tot, W, dev,
+                                         n_win=1200, episodes=ep_val)
+        decode_state = fit_eq_slot_probe(Sr, Yr, dev)
+        g1 = (decode_state(Sv) - Yv.to(dev)).norm(dim=1).mean().item()   # HONEST: cross-episode
+        decode_calib = fit_eq_slot_probe(Sp, Yp, dev)
     elif a.readout == "slot":
         # object-centric slot readout: size-invariant real-frame decode + a CALIBRATED twin fit
         # on the predictor's own outputs (aggregates the diffuse imagination the peak-centroid
@@ -261,13 +301,18 @@ def main():
                          perception_radius=a.perception_radius, block_mode=a.block_mode, block_wall=a.block_wall, block_gate=a.block_gate,
                           block_radius=a.block_radius, block_step_scale=a.block_step_scale)
         eg.reset(start_room=0, goal_room=1); eg.agent_pos = target.copy(); eg.target_pos = target.copy()
-        if hasattr(enc, "reset"):
-            enc.reset()                                        # fresh recurrent chain per episode
-        enc_peek = enc.peek if hasattr(enc, "peek") else enc   # counterfactual encodes must not
-        goal_z = enc_peek(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))  # advance the chain
+        if slot_model:
+            buf = SlotHistoryBuffer(m, W, dev, readout); buf.reset(obs_to_frame(obs, dev))
+            enc_peek = buf.peek_frame_slots                    # counterfactuals in the trained window regime
+            gz = m.encode_frame(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))
+            goal_z = m.slots_of_window(torch.stack([gz] * W, dim=1))[:, -1]   # goal slots, same regime
+        else:
+            enc_peek = enc
+            goal_z = enc_peek(obs_to_frame({"image": eg.render()}, dev).unsqueeze(0))
+            buf = HistoryBuffer(m, W, dev, readout=readout, encode=enc)
+            buf.reset(obs_to_frame(obs, dev))
         goal_ro = readout(goal_z).squeeze(0)
         goal_pool = m.pool(goal_z).squeeze(0)                 # pooled goal state for inverse dynamics
-        buf = HistoryBuffer(m, W, dev, readout=readout, encode=enc); buf.reset(obs_to_frame(obs, dev))
         for _ in range(40):
             if n >= a.n_steps:
                 break

@@ -112,6 +112,43 @@ def _grids(m, frames, idx, dev, bs=128):
     return _gather_token_grids(m, frames, idx, dev)
 
 
+class EqSlotProbe(nn.Module):
+    """PERMUTATION-EQUIVARIANT position probe for MODEL slots: a shared per-slot position head
+    + a shared agent-selector, soft-summed -> slot ORDER cannot matter. The flat (concatenated)
+    ridge is permutation-SENSITIVE: slot assignment is arbitrary per episode, so the same probe
+    weights read different slots across episodes -> it mismeasured v2 by 2.3x (G1 1.21 flat vs
+    0.533 equivariant on identical slot states)."""
+    def __init__(self, dim: int):
+        super().__init__()
+        self.pos = nn.Sequential(nn.Linear(dim, dim), nn.ReLU(), nn.Linear(dim, 2))
+        self.sel = nn.Linear(dim, 1)
+
+    def forward(self, S: torch.Tensor) -> torch.Tensor:      # [..,K,D] -> [..,2]
+        shp = S.shape[:-2]
+        S = S.reshape(-1, S.shape[-2], S.shape[-1])
+        w = torch.softmax(self.sel(S).squeeze(-1), dim=-1)   # soft agent-slot selector
+        return (w.unsqueeze(-1) * self.pos(S)).sum(1).reshape(*shp, 2)
+
+
+def fit_eq_slot_probe(S: torch.Tensor, Y: torch.Tensor, dev, steps=1500, bs=256, lr=3e-3):
+    """Fit a frozen EqSlotProbe on slot states S [M,K,D] -> positions Y [M,2]. Label-free
+    instrument (positions are proprioception). Returns fn([..,K,D]) -> [..,2]."""
+    net = EqSlotProbe(S.shape[-1]).to(dev)
+    opt = torch.optim.Adam(net.parameters(), lr=lr)
+    S = S.to(dev).float(); Y = Y.to(dev).float()
+    with torch.enable_grad():
+        for _ in range(steps):
+            i = torch.randint(0, len(S), (bs,), device=dev)
+            loss = ((net(S[i]) - Y[i]) ** 2).sum(1).mean()
+            opt.zero_grad(); loss.backward(); opt.step()
+    net.eval()
+
+    @torch.no_grad()
+    def fn(s):
+        return net(s.to(dev).float())
+    return fn
+
+
 def fit_slot_decode(token_grids: torch.Tensor, Y: torch.Tensor, dev, num_slots=4, iters=3,
                     epochs=300, lr=3e-3, bs=256, recon_weight=1.0):
     """Fit a frozen SlotPositionReadout on token grids [M,N,D] -> position Y [M,2]. Returns
