@@ -32,7 +32,8 @@ class TemporalHierWorldModel(nn.Module):
                  op_depth=6, abs_depth=4, lambda_sigreg=0.1, sigreg_slices=256,
                  rag_sim_threshold=0.75, k_tac=2, k_str=4, max_frames=12,
                  use_projection_head=True, use_cls_pool=False, residual_pred=False,
-                 film_cond=False, flow_pred=False, slot_mode=False, num_slots=6):
+                 film_cond=False, flow_pred=False, slot_mode=False, num_slots=6,
+                 slot_dec_hidden=None, slot_dec_depth=2):
         super().__init__()
         self.flow_pred = flow_pred
         self.slot_mode = slot_mode
@@ -65,7 +66,11 @@ class TemporalHierWorldModel(nn.Module):
             from alps.core.slot_readout import SlotAttention, SlotFeatureDecoder
             n_tok = (128 // patch_size[1]) * (128 // patch_size[2])   # tokens per frame @128px
             self.slot_attn = SlotAttention(d_model, num_slots=num_slots)
-            self.slot_dec = SlotFeatureDecoder(d_model, n_tok)
+            # decoder capacity must scale with token count: the 2-layer/2D default (built for
+            # 64 tokens) loses the reconstruction tug-of-war at 256 tokens (patch-8) -> rec
+            # rises, slots churn, inv diverges (measured on the first patch-8 pod run).
+            self.slot_dec = SlotFeatureDecoder(d_model, n_tok, hidden=slot_dec_hidden,
+                                               depth=slot_dec_depth)
         self.pos_head = mlp(d_model, d_model, 2)
         # tactical: pooled history, conditioned on strategic concept
         self.tac_proj = nn.Linear(d_model, d_model)

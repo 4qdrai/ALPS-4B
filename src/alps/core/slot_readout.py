@@ -70,11 +70,15 @@ class SlotFeatureDecoder(nn.Module):
     the probe stalls at predict-the-mean, G1 ~2.1, at 400 AND 3000 steps). DINOSAUR-style:
     reconstruct the ENCODER'S OWN FEATURES, not pixels -> stays decoder-free w.r.t. pixels and
     fully self-supervised (the target is the model's own token grid)."""
-    def __init__(self, dim: int, n_tokens: int, hidden: int = None):
+    def __init__(self, dim: int, n_tokens: int, hidden: int = None, depth: int = 2):
         super().__init__()
         hidden = hidden or 2 * dim
         self.pos = nn.Parameter(torch.randn(1, 1, n_tokens, dim) * 0.02)          # per-token query
-        self.mlp = nn.Sequential(nn.Linear(dim, hidden), nn.ReLU(), nn.Linear(hidden, dim + 1))
+        layers, w = [], dim
+        for _ in range(max(1, depth - 1)):
+            layers += [nn.Linear(w, hidden), nn.ReLU()]; w = hidden
+        layers += [nn.Linear(w, dim + 1)]
+        self.mlp = nn.Sequential(*layers)
 
     def forward(self, slots: torch.Tensor):                   # [B,K,D] -> recon [B,N,D], masks [B,K,N]
         x = slots.unsqueeze(2) + self.pos                     # [B,K,N,D] broadcast slot to tokens

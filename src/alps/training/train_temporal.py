@@ -95,7 +95,9 @@ def train(args):
         film_cond=getattr(args, "film_cond", False),
         flow_pred=getattr(args, "flow_pred", False),
         slot_mode=getattr(args, "slot_mode", False),
-        num_slots=getattr(args, "num_slots", 6)).to(device)
+        num_slots=getattr(args, "num_slots", 6),
+        slot_dec_hidden=getattr(args, "slot_dec_hidden", None),
+        slot_dec_depth=getattr(args, "slot_dec_depth", 2)).to(device)
     if getattr(args, "slot_mode", False):
         print(f"[pred] SLOT MODE ON (R2): operative = {args.num_slots}-slot object dynamics; "
               f"binding learned jointly via feature-reconstruction (weight {args.slot_recon_weight}).")
@@ -135,7 +137,9 @@ def train(args):
                     "film_cond": getattr(args, "film_cond", False),
                     "flow_pred": getattr(args, "flow_pred", False),
                     "slot_mode": getattr(args, "slot_mode", False),
-                    "num_slots": getattr(args, "num_slots", 6)}, args.out)
+                    "num_slots": getattr(args, "num_slots", 6),
+                    "slot_dec_hidden": getattr(args, "slot_dec_hidden", None),
+                    "slot_dec_depth": getattr(args, "slot_dec_depth", 2)}, args.out)
         print(f"[save] {args.out} ({tag})", flush=True)
 
     model.train()
@@ -404,6 +408,11 @@ def build_parser():
     ap.add_argument("--num-slots", type=int, default=6, help="number of object slots (slot mode)")
     ap.add_argument("--slot-recon-weight", type=float, default=1.0,
                     help="weight of the token-grid feature-reconstruction loss that organizes binding")
+    ap.add_argument("--slot-dec-hidden", type=int, default=None,
+                    help="slot feature-decoder hidden width (default 2*d_model; scale up for "
+                         "fine patches -- the decoder must reconstruct 4x the tokens at patch-8)")
+    ap.add_argument("--slot-dec-depth", type=int, default=2,
+                    help="slot feature-decoder MLP depth (default 2 layers)")
     ap.add_argument("--flow-pred", action="store_true",
                     help="FLOW-MATCHING op-predictor: replace the next-latent MSE head with a "
                          "conditional rectified-flow velocity field that transports noise to a "

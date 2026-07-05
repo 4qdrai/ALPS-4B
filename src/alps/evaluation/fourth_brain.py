@@ -55,6 +55,9 @@ TIERS = ("operative", "tactical", "strategic", "fallback")
 
 
 # ---------------- helpers ----------------
+_ENV_KW = {}          # Block-Rooms variant kwargs, set by run() from CLI (must match training)
+
+
 @torch.no_grad()
 def predicted_pooled(model, buf, a, device, readout=None):
     """The readout latent the operative predictor expects after action `a` (pool by
@@ -69,7 +72,7 @@ def predicted_pooled(model, buf, a, device, readout=None):
 @torch.no_grad()
 def _goal_grid(model, seed, gr, goal_xy, complex_mode, device):
     """Render the goal IMAGE (agent at goal, key held in complex) -> encoded grid."""
-    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
     eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
     eg.agent_pos = goal_xy.copy()
     if complex_mode:
@@ -139,7 +142,7 @@ def run_episode_fb(model, W, seed, sr, gr, device, graph, ZC, policy, thr=None,
     given (--spatial), control is PREDICTOR-DECODED on the spatial readout (action chosen
     by the predicted decoded POSITION) instead of latent nearest-neighbour."""
     readout = readout if readout is not None else model.pool
-    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
     obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
     buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
@@ -254,7 +257,7 @@ def run_episode_rag(model, W, seed, sr, gr, device, decode_op, graph, featurize,
                           and APPLY it to the operative prediction (surprise-gated by the
                           RAG similarity threshold) -> memory steers control.
     Returns success (1/0)."""
-    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
     obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
     readout = readout if readout is not None else model.pool
@@ -380,6 +383,20 @@ def run(args):
     model, W = load_model(args.model_path, device)
     frames, actions, positions, room_ids, starts = load_raw(args.data_path)
     total = frames.shape[0]
+    # CRITICAL (instrument doctrine): every control step here encodes ONE frame; without BN
+    # running-stat calibration the encoder is batch-dependent and single-frame latents are off
+    # the probe's distribution (the bug that zeroed control project-wide). See encoders.py.
+    from alps.evaluation.validate_temporal import calibrate_bn
+    calibrate_bn(model, frames, device)
+    print("[calibrate_bn] encoder BN running stats populated (single-frame inference fixed)")
+    # Block-Rooms env variants must match training (see environment.py block_mode/wall/gate).
+    global _ENV_KW
+    _ENV_KW = dict(block_mode=getattr(args, "block_mode", False) or getattr(args, "block_wall", False)
+                   or getattr(args, "block_gate", False),
+                   block_wall=getattr(args, "block_wall", False),
+                   block_gate=getattr(args, "block_gate", False),
+                   block_radius=getattr(args, "block_radius", None),
+                   block_step_scale=getattr(args, "block_step_scale", None))
     rng = np.random.RandomState(1)
     idx = rng.permutation(total)[: args.limit_samples] if args.limit_samples else rng.permutation(total)
     ntr = int(len(idx) * 0.8); tr = idx[:ntr]
@@ -608,6 +625,11 @@ def main():
                          "the learning curve (gain by batch) and nominal interference")
     ap.add_argument("--n-batches", type=int, default=5,
                     help="number of batches for --h7-lifelong (default 5)")
+    ap.add_argument("--block-mode", action="store_true", help="Block-Rooms env (match training)")
+    ap.add_argument("--block-wall", action="store_true", help="Block-Rooms WALL+GAP (match training)")
+    ap.add_argument("--block-gate", action="store_true", help="Block-Rooms SWITCH-GATE (match training)")
+    ap.add_argument("--block-radius", type=float, default=None, help="block render radius (match training)")
+    ap.add_argument("--block-step-scale", type=float, default=None, help="block step scale (match training)")
     run(ap.parse_args())
 
 
