@@ -298,7 +298,11 @@ def gather_pred_grids(m, frames, positions, actions, starts, tot, W, dev, n_win=
         e = rng.randint(E - 1); s0 = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else tot
         if end - s0 >= W + 1:
             ss.append(rng.randint(s0, end - W))
-    ss = np.array(ss); Xs, Ys, bs = [], [], 48
+    # batch scales inversely with token count (predictor attention is O((W*N)^2)): bs=48 fits
+    # patch-16 (N=64) but OOMs 8GB at patch-8 (N=256). Probe N once to set a safe batch.
+    ss = np.array(ss); Xs, Ys = [], []
+    N0 = encode(frames[torch.as_tensor(ss[:1])].to(dev).float() / 255.).shape[1]
+    bs = max(4, int(48 * 64 / N0))
     for c in range(0, len(ss), bs):
         sb = ss[c:c + bs]
         fidx = np.stack([sb + k for k in range(W + 1)], 1)                        # [B,W+1]

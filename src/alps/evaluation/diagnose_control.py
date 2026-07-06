@@ -46,7 +46,12 @@ def fit_calibrated_decode(m, frames, positions, actions, starts, tot, readout, W
         e = rng.randint(E - 1); s = int(starts[e]); end = int(starts[e + 1]) if e + 1 < E else tot
         if end - s >= W + 1:
             ss.append(rng.randint(s, end - W))
-    ss = np.array(ss); Xs, Ys, bs = [], [], 64
+    # batch scales INVERSELY with token count: the predictor's block-causal attention over the
+    # W-frame context is O((W*N)^2) memory; bs=64 fits patch-16 (N=64) but OOMs 8GB at patch-8
+    # (N=256, ~16x). One encode probes N to set a safe batch (fixes the egocentric-patch8 OOM).
+    ss = np.array(ss); Xs, Ys = [], []
+    N0 = m.encode_frame(frames[torch.as_tensor(ss[:1])].to(dev).float() / 255.).shape[1]
+    bs = max(4, int(64 * 64 / N0))
     for c in range(0, len(ss), bs):
         sb = ss[c:c + bs]
         fidx = np.stack([sb + k for k in range(W + 1)], 1)              # [B,W+1]
