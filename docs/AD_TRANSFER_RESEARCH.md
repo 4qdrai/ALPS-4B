@@ -1,8 +1,14 @@
 # ALPS-4B → Autonomous Driving: A Research Program for Data-Efficient, Self-Supervised, Hierarchically-Imagining Driving Models
 
-**Status:** research proposal / transfer study (post-doc level), v1.0 — 2026-07-01
+**Status:** research proposal / transfer study (post-doc level), v1.1 — 2026-07-07
 **Author:** ALPS-4B project
-**Prerequisite reading:** `docs/PROJECT_HANDOFF.md`, `docs/BLOCK_ROOMS.md`, the 2026-06-30 harness-fix commits (`d9bac14`, `c030fe5`)
+**Prerequisite reading:** `docs/PROJECT_HANDOFF.md`, `docs/BLOCK_ROOMS.md`, `docs/SLOT_FOUR_BRAIN.md` (§8–10), the 2026-06-30 harness-fix commits (`d9bac14`, `c030fe5`)
+
+**v1.1 changelog (2026-07-06/07 findings, detailed in the new §3.5):**
+- **Egocentric observation directly validated as the control-enabling regime** — on egocentric Two-Rooms, predictor-decoded control is *usable* (calibrated direction_acc **0.69**, forward-dynamics **0.76**, both ≥ 0.6) where the top-down small-agent baseline was 0.19. This supersedes the earlier "egocentric Two-Rooms failed" claim in §3 (that verdict judged by the wrong metric, pre-fix). Commit `aa8e376`.
+- **The object-binding laws** (from an exhaustive slot-binding investigation, `docs/SLOT_FOUR_BRAIN.md` §10): appearance/reconstruction-driven slot binding *cannot* discover a small moving object in a minimal scene — two scale-free laws, **both of which invert on real driving video**. This reclassifies object-centric slots as a **real-video technique** (Stage 2), not a toy technique. Commits `7805e21`, `2e4c13a`.
+- **A data-contamination bug** (env flags didn't imply `block_mode`; commit `b373f1b`) invalidated every "gate-mode" measurement and, once fixed, revealed the small agent *is* sharply decodable (G1 **0.109** vs the contaminated ~2.0). New instrument-doctrine item I7 (§12).
+- **Refined control insight:** usable control needs **action-discrimination in the decoded-state space**, *not* low imagination-fidelity — control was usable at `imag rel 1.27` (> 1). This directly predicts driving works despite the horizon always importing new content (§3.5).
 
 ---
 
@@ -11,6 +17,8 @@
 ALPS-4B has now demonstrated, on a controlled testbed and after fixing a measurement-harness defect that had masked the result for the project's entire history, the complete mechanism this program is built on:
 
 > a **from-scratch, fully self-supervised** (SIGReg-only, no pretrained encoder, no labels, no reward) hierarchical world model whose **operative predictor imagines the latent consequence of each candidate action**, whose **imagination is decoded through a frozen probe calibrated on the predictor's own outputs** (direction accuracy **0.97**, position error **0.19 wu**), and whose **strategic layer routes through a latent transition graph** (+58 % over greedy on cross-room tasks).
+
+As of v1.1 the mechanism has been re-demonstrated under the **egocentric (agent-centered) observation model** — the one that transfers to driving — where predictor-imagined action-selection reaches usable control (**0.69/0.76** direction accuracy) precisely because every action now moves the whole visual field. In the same push, an exhaustive object-binding study established *why* the toy resisted object-centric slots and *why that reason evaporates on real video* (§3.5). These two results tighten the driving thesis rather than loosen it: the observation regime and the scene statistics that broke the toy are exactly the ones driving supplies for free.
 
 This document maps every proven edge, every measured failure mode, and every instrument-doctrine lesson onto **autonomous driving (AD)**, positions the result against the 2024–2026 literature, and specifies a **staged, falsifiable, low-budget experimental program** ("prove the edges before scale") with concrete datasets, commands, gates and compute budgets.
 
@@ -38,6 +46,9 @@ Every item below is **measured**, not hypothesized. These are the transferable a
 | A8 | **Consequence-dominance as a task-design law**: the SSL predictor learns action-conditioned dynamics only when the action's consequence is a dominant, observed fraction of the frame change | Two-Rooms dot (1 %) failed everywhere; Block-Rooms (14 %) succeeded | egocentric driving is consequence-dominant **by construction** (§5.1) |
 | A9 | **Imagination error as a self-monitor**: `imag relative` (‖imagined − true next latent‖/scale) discriminates familiar from unfamiliar dynamics | tracked across all runs; <1 = informative | free OOD/anomaly detector while driving (§7.4) |
 | A10 | **The instrument doctrine** (hard-won): oracle-decode rows, batch-consistency checks, episode-level splits — the measurement harness must be validated **before** the model is judged | the BatchNorm bug: same frame, batch-1 vs batch-128 encoding differed **115 %**; fixed → every "impossible" number moved at once | deployment inference is batch-1 streaming; §13 makes these checks mandatory |
+| **A11** | **Egocentric observation *makes control learnable*** — pinning the agent at frame-center so every action scrolls the whole field turns the action into the dominant, predictable frame change; the operative predictor then discriminates actions well enough for usable selection | egocentric Two-Rooms: calibrated direction_acc **0.69**, forward-dynamics **0.76** (both ≥ 0.6); `inv` 0.879→**0.138** — vs top-down small-agent 0.19 / action_spread 0.025 (§3.5) | **driving is egocentric by definition** — this is the single most load-bearing transfer result: the toy's hardest failure mode is the driving camera's default |
+| **A12** | **The object-binding laws** — appearance/recon-driven slot binding discovers an object only when (i) its consequence is a non-trivial fraction of the *binding* loss and (ii) scene entropy exceeds single-slot capacity; a minimal toy violates both, so slots collapse to one-slot-per-scene regardless of granularity, motion cue, or change-weighting | isolation loop (recon-only SlotAttention): **1 slot/image** at 192/64/32-dim slots and under change-weighted recon; full-model masks bind the multi-token *wall* but never the sub-token agent (`SLOT_FOUR_BRAIN.md` §10) | **both laws invert on driving**: high scene entropy forces decomposition, ego-motion makes movers (cars, pedestrians) dominate loss mass → **object-centric slots are a Stage-2 real-video asset, not a toy tool** — do *not* burn toy cycles on them |
+| **A13** | **Action-discrimination ≠ imagination fidelity** — usable control depends on separating candidate actions in the *decoded-state* space, not on low 1-step latent error; control was usable while `imag rel > 1` | egocentric: control usable at `imag rel` **1.27** (raw imagination worse than persistence) yet calibrated/forward-dynamics selection 0.69/0.76 | driving's horizon *always* imports unseen content (`imag` will stay > 1); A13 says that does **not** block control — decode the *action contrast*, not the full future |
 
 **The negative results are equally transferable:** pixel-space or full-token uniform MSE lets static background dominate (A8's converse); flow/diffusion sampling adds variance that hurts deterministic short-horizon control (bake-off: 0.44); global pooling erases the controllable state (A7's converse); an uncalibrated readout silently misreads imagination (A3's converse).
 
@@ -77,11 +88,75 @@ This is the pivotal scientific argument, and it inverts the difficulty story.
 
 **The consequence-dominance law (A8)** says SSL forward prediction learns the action exactly when the action's consequence dominates the observed frame change. Two-Rooms violated it (2-px dot, ~1 % change/step); we had to *engineer* Block-Rooms to satisfy it.
 
-**Egocentric driving satisfies it by construction.** From the driver camera, ego-motion moves *every pixel* (global optical flow ∝ speed & yaw-rate); a steering action visibly rotates the entire scene within 100–300 ms. The measured per-step frame change in driving video at 2–10 Hz is tens of percent — the Block-Rooms regime, not the dot regime. Our egocentric Two-Rooms attempt failed for a reason that **does not transfer**: in a 10-wu arena, scrolling constantly imports *unpredictable never-seen content* (imag 1.86). Roads are the opposite — the incoming content is the **road ahead, already visible** at depth; forward prediction is short-horizon warping plus bounded novelty at the horizon line. This is exactly the regime where LAW's latent prediction and V-JEPA-2-AC's action-conditioned prediction demonstrably work.
+**Egocentric driving satisfies it by construction, and we have now *directly demonstrated* the mechanism on the toy.** From the driver camera, ego-motion moves *every pixel* (global optical flow ∝ speed & yaw-rate); a steering action visibly rotates the entire scene within 100–300 ms. The measured per-step frame change in driving video at 2–10 Hz is tens of percent — the Block-Rooms regime, not the dot regime. When we render Two-Rooms **egocentrically** (agent pinned at frame-center, world scrolling under each action), predictor-decoded control jumps from unusable (0.19, top-down small agent) to **usable** (calibrated 0.69, forward-dynamics 0.76) — because the action is now the dominant predictable change and the operative predictor is *forced* to learn controllable dynamics (§3.5, A11). This retracts the v1.0 claim that "egocentric Two-Rooms failed": that verdict judged imagination *fidelity* (`imag 1.86`) instead of action *discrimination*, and predated the clean instrument. The refined truth (A13) is sharper and more favorable: even though scrolling imports unpredictable horizon content (so `imag` stays > 1), the action contrast in the decoded-state space is strong enough for maneuver selection. Roads are gentler still — the incoming content is the **road ahead, already visible** at depth; forward prediction is short-horizon warping plus bounded novelty at the horizon line. This is exactly the regime where LAW's latent prediction and V-JEPA-2-AC's action-conditioned prediction demonstrably work.
 
 Second inversion: **actions come for free.** Two-Rooms had to log simulator actions; driving gives centimeter odometry, IMU yaw-rate, CAN steering/throttle on every platform ([comma2k19](https://github.com/commaai/comma2k19) ships raw CAN). Proprioception is not annotation — the JEPA/LeWM unsupervised character is intact (A5).
 
 Third: **the hierarchy is not an artifact, it's the domain's own decomposition.** Michon's classic driving-task hierarchy — strategic (route), tactical (maneuver), operational (control) — is the canonical model of human driving cognition ([survey](https://www.frontiersin.org/journals/neurorobotics/articles/10.3389/fnbot.2025.1451923/full)), and it is *isomorphic* to the four-brain stack (§5). Hierarchical decomposition is also what game-theoretic planners use for tractability ([hierarchical games](https://arxiv.org/pdf/1810.05766)).
+
+---
+
+## 3.5 The 2026-07 findings in detail: contamination, the binding laws, the egocentric breakthrough
+
+This section records — in full, including the false starts — the investigation that produced A11–A13, because the *reasoning chain* transfers as much as the numbers. It was driven by a single owner demand: *"change the Two-Rooms task/environment to show it is solvable by our architecture, otherwise I'm not convinced."* The honest answer turned out to be **yes, by changing the observation model to the one driving already uses.**
+
+### 3.5.1 The contamination bug (why prior "small-agent" verdicts were void)
+
+`TwoRoomsEnv` never OR-ed `block_mode` with the derived flags (`block_wall`, `block_gate`), and the data generator passed them independently. **Consequence:** every dataset generated with only `--block-gate` (no explicit `--block-mode`) silently rendered the *classic* rooms environment (0.8-wu agent, 0.3 step, no key, no gate), while evaluation and control ran in the *real* block environment. Verified by rendering the stored training frames directly. This contaminated every "gate-mode" model and made all "the small radius-0.9 agent is undecodable" numbers **cross-domain artifacts**, not model limits. Fixed at the env root (`self.block_mode = block_mode or block_wall or block_gate or block_clutter`, commit `b373f1b`). Wall-mode results (which set `--block-mode` explicitly) and the open-block bake-off (calibrated **0.97**) were always clean.
+
+**On the fixed data, the small agent's position is sharply decodable: G1 = 0.109 wu** (was ~2.0 contaminated), oracle direction_acc 0.90. *Perception was never the problem.* → **Driving lesson / new doctrine item I7 (§12): a task is defined by the (data, env, model) triple; assert their identity mechanically. In AD this is the sensor-config / calibration / coordinate-frame match between the log the probe was fit on and the stream it runs on — the exact class of silent error that ends careers, now caught by a rendered-frame identity check.**
+
+### 3.5.2 The object-binding laws (why slots failed the toy, and why driving flips it)
+
+To get a *size-invariant* readout (an object slot binds by feature, not pixel count), we ran a full object-centric program: SAVi-style recurrent binding, inverse-dynamics + SIGReg on slots, a permutation-equivariant readout, a windowed control buffer, a motion cue (SAVi's flow, in label-free latent form), a scaled decoder, and a slot-dim bottleneck. Every full-model configuration produced the same masks: at patch-16 the slots tile the frame into *regions* and cleanly bind the multi-token **wall as an object**, but the sub-token **agent (14 px inside a 16 px patch) is never bound**; at patch-8 the masks collapse to *whole-frame* archetypes.
+
+The decisive evidence came from an **isolation loop** — a 30-minute harness that trains SlotAttention + decoder alone, reconstruction-only, on frozen encoder tokens:
+
+| isolated experiment | slots used / image | recon |
+|---|---|---|
+| recon-only, 192-dim slots | **1** (a different slot per scene = archetype clustering) | 0.02 |
+| slot-dim bottleneck 64 / 32 | **1** | 0.04 |
+| change-weighted recon (movers ×20) | **1** (agent reconstructed — by the same slot) | 0.02 |
+
+Two scale-free laws explain it:
+
+1. **Consequence-dominance at the *binding* level (A8 recurs).** The agent is ~1.5 % of the reconstruction loss mass; binding never *needs* it. Change-weighting the recon changes *what* is reconstructed, not *how many* slots share the work.
+2. **The decomposition threshold.** Slot attention decomposes only when scene entropy exceeds single-slot capacity. A minimal scene (archetype + one agent position ≈ tens of bits) sits *below the floor* — even a 32-dim slot absorbs the whole scene.
+
+**Both invert on real driving video** and this is the transferable payload: (i) a driving scene's entropy vastly exceeds any single slot → decomposition becomes *necessary*; (ii) ego-motion makes the movers that matter — other vehicles, pedestrians, cyclists — carry *dominant* loss mass, not 1.5 %. **Therefore object-centric slots are re-classified as a Stage-2 real-video asset (A12): introduce them where they work, do not spend toy cycles proving them where the scene is below threshold.** This is a genuinely useful negative result — it tells us *when* the object-centric branch of the four-brain earns its keep.
+
+### 3.5.3 The egocentric breakthrough (the answer to "make it solvable")
+
+The clean-data result isolated the *real* remaining gap: with perception solved (G1 0.109), the **operative predictor still ignored the action** — `action_spread` 0.025 wu, calibrated direction_acc 0.19. Cause, structural not incidental: in the god's-eye top-down view one action moves the small agent ~0.27 wu ≈ **2 % of the pixels**, so a self-supervised next-frame predictor gets almost no action gradient — consequence-dominance (A8) striking again, now at the *prediction* level, where change-weighting cannot help because the tiny agent's *appearance* barely shifts.
+
+The fix is the observation model driving already uses: **egocentric rendering** (agent pinned at frame-center; the position-locked textured floor, target, and walls scroll under each action; already built as `TwoRoomsEnv(egocentric=True)`). Measured, dense winning recipe (residual + change-weighted op + inverse-dynamics), enc-depth 4, patch-8, honest instrument (episode-split, `calibrate_bn`, oracle rows):
+
+| metric | top-down (small agent) | **egocentric** | reading |
+|---|---|---|---|
+| training `op` | — | 0.517 → **0.100** | sharpest operative convergence in the project |
+| training `inv` (action grounding) | — | 0.879 → **0.138** | the predictor learns what each action does |
+| `action_spread` | 0.025 (blind) | **0.220** | predictor now discriminates the 4 actions |
+| G1_spatial (position decode) | 0.109 | 0.305 | abs. position read from the scrolling texture (softer than a localized blob) |
+| ORACLE-DECODE direction_acc | 0.90 | 0.59 | instrument ceiling (limited by texture-read sharpness) |
+| **calibrated direction_acc** | **0.19** | **0.69** | **USABLE (≥ 0.6)** ✓ |
+| **forward-dynamics direction_acc** | — | **0.76** | independent confirmation ✓ |
+| latent-space (no-decode) direction_acc | — | 0.24 | pure goal-latent matching not yet there |
+| `imag rel` | — | 1.27 | raw 1-step imagination still > 1 |
+
+**Interpretation, and the three insights that transfer:**
+
+- **A11 — egocentric makes control learnable.** Every action scrolls the whole field, so the action becomes the dominant predictable change; the predictor is *forced* to model controllable dynamics. Two independent control readouts (calibrated 0.69, forward-dynamics 0.76) clear the usable bar; the top-down baseline (0.19) does not. **Driving is egocentric by definition — the toy's hardest failure mode is the driving camera's default.**
+- **A11 corollary — the small-agent problem *dissolves*.** With the agent at frame-center its pixel size is irrelevant; the owner's "shrink the agent" constraint and the entire slot-binding detour both evaporate under the correct observation model.
+- **A13 — control ≠ imagination fidelity.** Control was usable at `imag rel 1.27` (> 1, i.e. raw imagination worse than persistence) because selection reads the *action contrast* in the decoded-state space, not the full future. This directly predicts the driving case: the horizon always imports unseen content, `imag` will stay > 1, and that does **not** block maneuver selection.
+
+**Honest caveats (carried into the gates):** this is the enc-depth-4 *local* config (depth-10 hardening run queued on the A40, `_ego10.pt`); the no-decode pure-latent path (0.24) is not yet there, so control rides the decoded-state operative path (P1/P3, §5), not P2; and the oracle ceiling (0.59) — set by how sharply absolute position reads from the scrolling texture — currently caps headroom, so a stronger encoder lifts every number. None of these are transfer blockers; all are Stage-0/1 tuning.
+
+### 3.5.4 What this does to the program
+
+- **Stage 0 acquires a validated observation model and recipe** *before* any driving code: egocentric rendering + dense winning recipe + the decoded-state operative control path. The Stage-0 env should be egocentric-camera from the start (BEV remains the planning-isolation track).
+- **The mandatory instrument rows gain I7** (task-identity / sensor-config assertion, §12).
+- **The object-centric branch is scheduled for Stage 2** (A12), not Stage 0.
+- **`imag rel` is demoted from a gate to a diagnostic**: A13 shows it does not bound control; the binding metric is decoded-state action-discrimination (D2's `calibrated direction_acc`), which becomes the primary Stage-0 gate.
 
 ---
 
@@ -135,6 +210,9 @@ This is the question the harness saga answered most completely. The doctrine:
 | **P1. Calibrated frozen probe (primary)** | ridge/linear probe fit on **(imagined latent → true future ego-waypoint)** pairs harvested offline from the training corpus; frozen at deployment | direction_acc 0.97, err 0.19 wu — vs 0.66 for a real-frame-fit probe on the *same* predictions | decode the imagined latent of each candidate maneuver into metric waypoints; rank against the tactical sub-goal |
 | **P2. Latent-space selection (no decode)** | argmin ‖imagined − goal-latent‖ | 0.30–0.48 (weaker; goal latents are far and manifold-curved) | tie-breaking, and long-horizon strategic matching where metric decode is unnecessary |
 | **P3. Inverse-dynamics goal emission** | inv(z_now, z_subgoal) → action | 0.57–0.79 (strong, and cheapest: one forward pass, no per-action imagination) | fast-path operative control between imaginations; redundancy channel for the safety case |
+| **P4. Forward-dynamics probe (new, 2026-07)** | a frozen ridge `g(decoded_state, action) → next decoded_state` fit on observed transitions; rank actions by imagined next state | egocentric direction_acc **0.76** — the strongest control readout in the egocentric run, and *cheaper* than P1 (2-D→2-D, no per-action predictor imagination) | the decoded-state operational controller: because it lives in the low-D readout space it cannot overfit the 12k-D latent, and it composes with the strategic waypoint directly |
+
+**Egocentric corroboration (A11/A13):** on the driving-aligned egocentric observation model the same ranking holds with different absolute values — P1 calibrated **0.69**, P4 **0.76**, P2 (no-decode latent) **0.24**. Two lessons for the AD readout menu: (i) **P4 (forward-dynamics in decoded-state space) is a first-class control path**, often beating P1 at lower cost — add it to the driving diagnostic alongside P1/P3; (ii) **P2 (pure latent goal-matching) is the weakest and slowest to come online** — do not gate on it early; the metric operational controller (P1/P4) carries Stage 0–2, and P2 is a Stage-3 elegance target.
 
 **The trajectory head (P1 generalized):** train, *offline and frozen thereafter*, a ridge (later: 2-layer MLP with episode-split early stopping) from `spatial_readout(ẑ_{t+k})` to `Δpose_{t→t+k}` for k = 1…H. Because it is calibrated on imagined latents, the systematic manifold shift of imagination is absorbed into the probe weights (A3). Two probes are kept: `probe_real` (fit on real-frame encodings — reads *current* state and *goal* frames) and `probe_imag` (fit on predictor outputs — reads *imagination*); both emit the same metric space so they compose (`make_videos_4b` already implements this split: `decode_state` vs `decode_pred`).
 
@@ -191,7 +269,7 @@ Each gate names: metric, threshold, instrument checks (I1–I4 = §5.2 rows), an
 | ID | Hypothesis | Gate (falsifiable) | Ablation |
 |----|------------|--------------------|----------|
 | **D1 (repr.)** | From-scratch SSL encoder on driving BEV/video encodes ego-relative state decodable to < 0.5 m @1 s | `G1-traj`: frozen-probe ADE@1s < 0.5 m (BEV toy) / < 1.0 m (camera); **I2, I3 pass** | vs global-pool readout (A7) |
-| **D2 (imagination)** | The op-predictor imagines candidate-action futures usable for selection | `calibrated direction_acc > 0.7` on maneuver ranking; `imag rel < 0.8`; **I1 ≈ 1.0 first** | vs persistence baseline; vs flow head (expect A4 ordering) |
+| **D2 (imagination)** | The op-predictor imagines candidate-action futures usable for selection | `calibrated direction_acc > 0.7` **or** `forward-dynamics direction_acc > 0.7` (P4) on maneuver ranking; **I1 ≈ 1.0 first**. *`imag rel` is a diagnostic, not a gate* (A13: control was usable at `imag rel 1.27`) | vs persistence baseline; vs flow head (expect A4 ordering); top-down vs egocentric observation (expect A11 gap) |
 | **D3 (trajectory decode)** | Frozen imagination-calibrated probes decode multi-step trajectories | imagined-ADE@2s within 1.5× of oracle-decode ADE@2s | probe_real vs probe_imag on identical predictions (A3 gap must reproduce) |
 | **D4 (tactical)** | Maneuver-level imagine-and-select beats 1-step greedy | +X % success / PDMS-proxy on interactive scenarios (X target 15 %) | tactical off |
 | **D5 (strategic)** | Latent-graph routing solves topology tasks greedy fails | cross-junction / detour success: strategic ≫ operative (Two-Rooms +58 % analog); oracle-landmark run bounds it above | graph off; random waypoints |
@@ -207,9 +285,10 @@ Program rule (learned the hard way): **no architecture change may be motivated b
 
 ### Stage 0 — "Block-Roads" (1–2 weeks; RTX 4060/single A40; ~$50)
 
-*Purpose:* reproduce A1–A5 + A7 + D1–D3 on driving-like dynamics with the **existing repo, minimal changes**.
+*Purpose:* reproduce A1–A5 + A7 + A11 + D1–D3 on driving-like dynamics with the **existing repo, minimal changes**.
 
-- **Env:** [MetaDrive](https://ar5iv.labs.arxiv.org/html/2109.12674) top-down BEV observation (it natively renders ~128 px top-down; 300 FPS) — plug-compatible with our `[N,3,128,128]` pipeline. Fallback: `highway-env`. Vehicle = bicycle model; actions binned to 9 (3 steer × 3 accel).
+- **Observation model (validated by A11, non-negotiable):** run **two tracks** — (a) **egocentric forward camera** as the *control* track (the A11 regime: the ego is centered, the world scrolls under each action → action-dominant frame change → learnable control; this is the driving-native model and the one that carried the toy from 0.19 to 0.69/0.76), and (b) **top-down BEV** as the *planning-isolation* track (clean routing/graph experiments). Do **not** attempt control on top-down alone — it is the consequence-dominance-hostile regime (A8/A11). The Two-Rooms lesson: egocentric first, BEV for topology.
+- **Env:** [MetaDrive](https://ar5iv.labs.arxiv.org/html/2109.12674) renders both a forward camera and a ~128 px top-down BEV (300 FPS) — plug-compatible with our `[N,3,128,128]` pipeline. Fallback: `highway-env`. Vehicle = bicycle model; actions binned to 9 (3 steer × 3 accel).
 - **Data:** 500–1500 episodes × 60–120 steps (≈ 40–150 k frames — the *validated* Block-Rooms scale), mixed random+IDM heuristic policies, `--block-mode`-style generator port (`envs/driving_toy/data_generator.py`).
 - **Train:** the existing command family, unchanged: `train_temporal --lewm-ssl --inv-dyn --residual-pred --change-weighted-op --d-model 192 --enc-depth 10 --op-depth 8 --window 6 --stride 1 --epochs 30` (inverse head switched to 9-way CE, later 2-D regression).
 - **Gates:** D1 (`G1-traj` on ego Δpose), D2 (calibrated ranking of the 9 actions), D3 (2 s trajectory probe), all with I1–I4 rows. Diagnostic = `diagnose_control` ported (`--driving`).
@@ -278,6 +357,8 @@ The single most valuable — and most expensive — lesson of ALPS-4B: **for fou
 4. **I4 Persistence baselines** for every predictive metric (`imag relative` < 1 or no claim).
 5. **One lever per run**, n large enough that ±0.05 resolves (our n=200 runs produced 0.47/0.65 coin-flips that misdirected a week).
 6. **Dynamics audits before model audits:** measure the actual action→consequence distribution of the env/dataset (the block arena's wall-clipping made the "clean 2.1 wu step" really 1.6 ± 0.88 — we designed against a spec the env didn't implement).
+7. **I7 — Task-identity assertion (new, 2026-07).** A result is only meaningful if the *data the probe was fit on* and the *stream it runs on* are the **same task**: same environment variant, same sensor/observation config, same coordinate frame. Assert this **mechanically**, not by intent — a rendered-frame identity check at ingestion. The contamination bug (§3.5.1) had flags silently select the *classic* environment for data generation while control ran in the *block* environment; every "small-agent" number was cross-domain noise for weeks. In AD the analog is lethal: a probe fit on one vehicle's camera intrinsics/extrinsics, log rate, or ego-frame convention, silently applied to another. **Cross-domain contamination is invisible to every downstream metric — only an explicit identity check catches it.**
+8. **Inference-memory reality (new, 2026-07).** The block-causal predictor's attention is O((W·N)²) in token count; a probe-fit batch tuned for coarse patches (N=64) OOMs an 8 GB card at fine patches (N=256). We made the diagnostic's batch sizes scale inversely with token count. AD lesson: **the deployment memory envelope is a first-class constraint** — profile the streaming (batch-1) inference path at the *finest* patch/camera-count you intend to ship, not the training batch.
 
 ---
 
