@@ -150,6 +150,34 @@ SIGReg-single-mechanism, tactical/strategic wiring untouched):**
 Gate unchanged: slot-model diagnostic `CALIBRATED direction_acc ≥ 0.6` **and** `ORACLE-DECODE
 ≥ 0.9` on the radius-0.9 switch-gate = size problem solved by the representation.
 
+## 10. Terminal verdict on the toy (2026-07-06) — and why it strengthens the driving case
+
+The ISOLATION LOOP (slot-attention + decoder alone, reconstruction-only, frozen encoder — a
+30-minute iteration harness) produced termination-grade evidence:
+
+| isolated experiment | slots used per image | recon |
+|---|---|---|
+| recon-only, 192-dim slots | **1** (a different slot per scene = archetype clustering) | 0.02 |
+| slot-dim bottleneck 64 / 32 | **1** | 0.04 |
+| change-weighted recon (movers ×20) | **1** (the agent reconstructed well — by the same slot) | 0.02 |
+
+Combined with the full-model runs (v1, v2, config-C, +motion-cue: masks = region tiles at
+patch-16, whole-frame collapse at patch-8), the conclusion is complete:
+
+1. **Consequence-dominance (A8), at the binding level:** the agent is ~1.5 % of recon loss
+   mass; binding never needs it. Change-weighting fixes *what* is reconstructed, not *how
+   many* slots share the work.
+2. **Decomposition threshold:** slot attention decomposes only when scene entropy exceeds
+   single-slot capacity. This deliberately minimal toy (archetype + agent position ≈ tens of
+   bits) sits BELOW the floor — even 32-dim slots absorb whole scenes.
+
+Both laws are **toy artifacts that invert on real video**: high-entropy scenes force
+decomposition, and ego-motion gives movers dominant loss mass. The slot four-brain is a
+real-video architecture; the toy's positive result stands as the radius-1.1 hierarchy-
+supremacy proof (operative stalls / four-brain solves 5/5), which is loss-mass-legal.
+Slot work on the toy is CLOSED; the stack (recurrent binding, motion cue, change-weighted
+recon, equivariant/mask readouts, isolation harness) carries to driving Stage-0.
+
 ## 9. Key references
 
 Slot / object‑centric: Slot Attention (Locatello 2020); [SOLD — slot object‑centric latent dynamics for RL](https://arxiv.org/html/2410.08822v2); [Slot‑MPC](https://arxiv.org/pdf/2605.14937); OCVP.
