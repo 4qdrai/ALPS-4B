@@ -78,8 +78,11 @@ class HeuristicPolicy:
             # SWITCH-GATE route: fetch the key first (it's away from the goal), then thread the
             # gap, then head to the target. This makes the training data contain the key->gate->
             # goal topology the strategic graph learns to route (greedy never does this).
-            WX = TwoRoomsEnv.BLOCK_WALL_X
-            gap_c = 0.5 * (TwoRoomsEnv.BLOCK_GAP_LO + TwoRoomsEnv.BLOCK_GAP_HI)
+            # Read the LIVE env's wall/gap (clutter randomizes them per episode); scripted
+            # data-collection privilege only -- the model itself learns from pixels.
+            src = getattr(self, "env", TwoRoomsEnv)
+            WX = src.BLOCK_WALL_X
+            gap_c = 0.5 * (src.BLOCK_GAP_LO + src.BLOCK_GAP_HI)
             if not bool(obs.get("has_key", 0.0)):
                 goal = obs["key_pos"]
             elif (agent_pos[0] - WX) * (target_pos[0] - WX) < 0:   # still on the wrong side
@@ -170,6 +173,8 @@ class TrajectoryGenerator:
         block_gate: bool = False,
         block_radius: float = None,
         block_step_scale: float = None,
+        block_clutter: bool = False,
+        n_distractors: int = 4,
     ):
         self.num_episodes = num_episodes
         self.max_steps = max_steps
@@ -183,6 +188,8 @@ class TrajectoryGenerator:
         self.block_gate = block_gate
         self.block_radius = block_radius
         self.block_step_scale = block_step_scale
+        self.block_clutter = block_clutter
+        self.n_distractors = n_distractors
 
     def _rollout(self, obs_buf: Optional[np.ndarray] = None):
         """One deterministic pass over all episodes (fixed seed → identical
@@ -194,9 +201,11 @@ class TrajectoryGenerator:
         env = TwoRoomsEnv(seed=self.seed, complex_mode=self.complex_mode, egocentric=self.egocentric,
                           perception_radius=self.perception_radius, block_mode=self.block_mode,
                           block_wall=self.block_wall, block_gate=self.block_gate,
-                          block_radius=self.block_radius, block_step_scale=self.block_step_scale)
+                          block_radius=self.block_radius, block_step_scale=self.block_step_scale,
+                          block_clutter=self.block_clutter, n_distractors=self.n_distractors)
         random_policy = RandomMomentumPolicy(rng)
         heuristic_policy = HeuristicPolicy(rng, complex_mode=self.complex_mode, block_gate=self.block_gate)
+        heuristic_policy.env = env      # live wall/gap for clutter's per-episode layouts
 
         all_actions: List[int] = []
         all_positions: List[np.ndarray] = []
@@ -293,6 +302,8 @@ def generate_dataset(
     block_gate: bool = False,
     block_radius: float = None,
     block_step_scale: float = None,
+    block_clutter: bool = False,
+    n_distractors: int = 4,
 ) -> Dict[str, Any]:
     """Generate the dataset and save to disk."""
     generator = TrajectoryGenerator(
@@ -308,6 +319,8 @@ def generate_dataset(
         block_gate=block_gate,
         block_radius=block_radius,
         block_step_scale=block_step_scale,
+        block_clutter=block_clutter,
+        n_distractors=n_distractors,
     )
     dataset = generator.generate()
 
@@ -352,6 +365,11 @@ if __name__ == "__main__":
     parser.add_argument("--block-radius", type=float, default=None,
                         help="block (agent) render radius in wu (default 1.7 = ~9%% of frame). Smaller "
                              "= less biased/dominant; keep decode << step (pair with --block-step-scale).")
+    parser.add_argument("--block-clutter", action="store_true",
+                        help="CLUTTERED Block-Rooms: per-episode layout randomization (wall/gap/"
+                             "tint) + drifting distractor movers. Pushes scene entropy past the "
+                             "slot decomposition threshold; the agent is identified by the ACTION.")
+    parser.add_argument("--n-distractors", type=int, default=4)
     parser.add_argument("--block-step-scale", type=float, default=None,
                         help="per-action step = 0.3 * scale (default 7 -> 2.1 wu). Lower with a smaller "
                              "block for a natural task; step must stay >> decode error.")
@@ -371,4 +389,6 @@ if __name__ == "__main__":
         block_gate=args.block_gate,
         block_radius=args.block_radius,
         block_step_scale=args.block_step_scale,
+        block_clutter=args.block_clutter,
+        n_distractors=args.n_distractors,
     )

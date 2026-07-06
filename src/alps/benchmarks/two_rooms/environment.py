@@ -95,7 +95,8 @@ class TwoRoomsEnv:
     def __init__(self, seed: Optional[int] = None, complex_mode: bool = False,
                  hazards: bool = True, egocentric: bool = False, perception_radius: float = None,
                  block_mode: bool = False, block_wall: bool = False, block_gate: bool = False,
-                 block_radius: float = None, block_step_scale: float = None):
+                 block_radius: float = None, block_step_scale: float = None,
+                 block_clutter: bool = False, n_distractors: int = 4):
         """
         Args:
             seed: optional RNG seed for reproducibility.
@@ -113,15 +114,30 @@ class TwoRoomsEnv:
         self.complex_mode = complex_mode
         self.hazards = hazards
         self.egocentric = egocentric
-        self.block_mode = block_mode
         self.block_gate = block_gate
         self.block_wall = block_wall or block_gate   # the gate reuses the wall+gap structure
+        # block_wall/block_gate/block_clutter IMPLY block_mode. Without this OR, an env built
+        # with only block_gate=True silently ran the CLASSIC rooms env (flags ignored) -- the
+        # bug that made every '--block-gate'-only dataset classic-env data while control ran
+        # in the real block env (cross-domain probes -> all the 'marginal small-agent' numbers).
+        self.block_mode = block_mode or self.block_wall or block_clutter
         # tunable block geometry: the 1.7-radius / 2.1-step defaults made the agent dominate the
         # frame (~9%) and the decode trivial. Now that the BatchNorm harness is fixed, a much
         # smaller agent is decodable -- the only hard constraint is decode << step. Shrink the
         # agent and scale the step together for a natural, unbiased top-down task.
         self.block_radius = float(block_radius) if block_radius is not None else self.BLOCK_RENDER_RADIUS
         self.block_step_scale = float(block_step_scale) if block_step_scale is not None else self.BLOCK_STEP_SCALE
+        # CLUTTERED Block-Rooms ("busy" variant): per-episode LAYOUT RANDOMIZATION (wall x, gap
+        # position/width, floor tint) + N drifting DISTRACTOR movers. Purpose (measured, see
+        # SLOT_FOUR_BRAIN 10): the minimal scene sits below slot attention's decomposition
+        # threshold (one slot memorizes the archetype) and the lone small agent is ~1.5% of the
+        # recon loss mass. Randomized layouts push scene entropy past single-slot capacity;
+        # multiple movers make changing content dominate the loss -> binding becomes NECESSARY,
+        # and the agent is distinguished from distractors only by the ACTION (inverse dynamics).
+        # Same task, same architecture, no supervision added -- the falsifiable test of both laws.
+        self.block_clutter = block_clutter
+        self.n_distractors = int(n_distractors)
+        self._distractors = None
         # Limited perception (egocentric only): the agent observes only a disk of this radius (wu)
         # around itself; everything beyond is unobserved (background). This makes the far static
         # structure trivial-to-predict, so the ONLY non-trivial thing to predict is the local
@@ -164,6 +180,11 @@ class TwoRoomsEnv:
     #  Public API
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _unit(theta):
+        """angles [n] -> unit vectors [n,2]"""
+        return np.stack([np.cos(theta), np.sin(theta)], axis=1)
+
     def reset(
         self,
         start_room: Optional[int] = None,
@@ -177,6 +198,24 @@ class TwoRoomsEnv:
 
         if self.block_mode:
             lo, hi = 2.0, self.WORLD_SIZE - 2.0
+            if self.block_clutter:
+                # per-episode layout randomization (instance attrs shadow the class constants,
+                # so step-collision/render/key-placement all follow automatically)
+                self.BLOCK_WALL_X = float(self.rng.uniform(3.5, 6.5))
+                gap_c = float(self.rng.uniform(2.8, 7.2)); gap_w = float(self.rng.uniform(3.2, 4.8))
+                self.BLOCK_GAP_LO = max(0.6, gap_c - gap_w / 2)
+                self.BLOCK_GAP_HI = min(self.WORLD_SIZE - 0.6, gap_c + gap_w / 2)
+                self._floor_tint = self.rng.randint(-14, 15, 3)
+                # drifting distractor movers: uncontrolled, bounce off the arena bounds,
+                # pass through walls (visual/dynamic clutter only -- no obs entry, no labels)
+                n = self.n_distractors
+                self._distractors = {
+                    "pos": self.rng.uniform(lo, hi, (n, 2)).astype(np.float32),
+                    "vel": (self.rng.uniform(0.5, 1.1, (n, 1)) *
+                            self._unit(self.rng.uniform(-np.pi, np.pi, n))).astype(np.float32),
+                    "rad": self.rng.uniform(0.6, 1.0, n).astype(np.float32),
+                    "col": self.rng.randint(60, 240, (n, 3)),
+                }
             if self.block_wall:
                 # WALL+GAP: agent and target on OPPOSITE sides of the wall -> crossing the gap is
                 # required (greedy stalls at the wall; the four-brain routes through the gap).
@@ -264,6 +303,14 @@ class TwoRoomsEnv:
 
         # --- Wall collision & boundaries ---
         if self.block_mode:
+            if self.block_clutter and self._distractors is not None:
+                d = self._distractors
+                d["pos"] += d["vel"]
+                for k in range(2):                               # bounce off the arena bounds
+                    low = d["rad"]; high = self.WORLD_SIZE - d["rad"]
+                    out_lo = d["pos"][:, k] < low; out_hi = d["pos"][:, k] > high
+                    d["pos"][:, k] = np.clip(d["pos"][:, k], low, high)
+                    d["vel"][out_lo | out_hi, k] *= -1.0
             r = self.block_radius
             new_pos = np.clip(new_pos, r, self.WORLD_SIZE - r)   # keep the block fully in frame; open arena
             if self.block_gate and not self.has_key:
@@ -333,7 +380,10 @@ class TwoRoomsEnv:
         if self.block_mode:
             # Open, fully-observed arena: plain floor + target + the LARGE block (agent). The block's
             # big action-determined displacement is the dominant, observed, predictable change.
-            img[:] = self.COLOR_FLOOR
+            if self.block_clutter and getattr(self, "_floor_tint", None) is not None:
+                img[:] = np.clip(self.COLOR_FLOOR.astype(int) + self._floor_tint, 0, 255).astype(np.uint8)
+            else:
+                img[:] = self.COLOR_FLOOR
             if self.block_wall:
                 # vertical wall at BLOCK_WALL_X. For the switch-gate the gap is CLOSED (full wall)
                 # until the key is collected, then OPEN (gap [BLOCK_GAP_LO, BLOCK_GAP_HI]).
@@ -343,6 +393,11 @@ class TwoRoomsEnv:
                 else:
                     wall = col & ((self._grid_y < self.BLOCK_GAP_LO) | (self._grid_y > self.BLOCK_GAP_HI))
                 img[wall] = self.COLOR_WALL
+            if self.block_clutter and self._distractors is not None:
+                d = self._distractors
+                for i in range(len(d["rad"])):
+                    img = self._draw_circle_aa(img, d["pos"][i], float(d["rad"][i]),
+                                               d["col"][i].astype(np.uint8))
             if self.block_gate and not self.has_key:
                 img = self._draw_circle_aa(img, self.key_pos, self.BLOCK_KEY_RENDER_RADIUS, self.COLOR_KEY)
             img = self._draw_circle_aa(img, self.target_pos, self.TARGET_RENDER_RADIUS, self.COLOR_TARGET)
