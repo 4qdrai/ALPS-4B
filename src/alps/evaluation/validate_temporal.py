@@ -209,9 +209,19 @@ def fit_ridge_decode(X, Y, device, lam=10.0):
     X = X.to(device).float(); Y = Y.to(device).float()
     mu, sd = X.mean(0, keepdim=True), X.std(0, keepdim=True) + 1e-6
     Xs = torch.cat([(X - mu) / sd, torch.ones(len(X), 1, device=device)], 1)
-    A = Xs.t() @ Xs
-    eye = torch.eye(A.shape[0], device=device); eye[-1, -1] = 0.0
-    Wm = torch.linalg.solve(A + lam * eye, Xs.t() @ Y)
+    N, R = Xs.shape
+    # Solve in the SMALLER dimension: the primal Gram is [R,R], which at fine spatial grids
+    # (grid-16, patch-8 -> R~49k) is a 9 GB alloc that OOMs an 8 GB card. When N < R the dual
+    # form W = Xs^T (Xs Xs^T + lam I)^-1 Y solves an [N,N] system instead (the dual lightly
+    # regularizes the bias column too -- one dim out of R~49k, negligible for position decode).
+    # Picks whichever is cheaper -> fine grids work on any card.
+    if R <= N:
+        A = Xs.t() @ Xs
+        eye = torch.eye(R, device=device); eye[-1, -1] = 0.0        # don't regularize the bias
+        Wm = torch.linalg.solve(A + lam * eye, Xs.t() @ Y)
+    else:
+        G = Xs @ Xs.t()                                             # [N,N] dual Gram
+        Wm = Xs.t() @ torch.linalg.solve(G + lam * torch.eye(N, device=device), Y)
     def fn(z):
         z = z.to(device).float()
         flat = z.reshape(-1, z.shape[-1])                                  # robust to [k,1,R] etc.
