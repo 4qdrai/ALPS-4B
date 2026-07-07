@@ -161,6 +161,31 @@ def run(args):
               f"knockout-hit={names[int(hit_regime[e])]:<14s} dErr={np.round(delta[e], 3).tolist()}")
     print(f"diagonal dominance {diag_frac:.2f} -> H11 {'PASS' if out['H11_passed'] else 'FAIL'}")
     print(f"[report] {path}")
+
+    if getattr(args, "figure", False):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(1, 2, figsize=(4 + 1.1 * nR, 1.5 + 0.5 * nE))
+        # LEFT: routing specialization P(expert | regime); RIGHT: causal knockout delta-error.
+        for k, (M, ttl, cmap) in enumerate([
+                (usage_pr, "routing  P(expert | regime)", "viridis"),
+                (delta, "causal  knockout dErr (wu)", "magma")]):
+            im = ax[k].imshow(M, aspect="auto", cmap=cmap)
+            ax[k].set_xticks(range(nR)); ax[k].set_xticklabels(names, rotation=35, ha="right", fontsize=8)
+            ax[k].set_yticks(range(nE)); ax[k].set_yticklabels([f"E{e}" for e in range(nE)], fontsize=8)
+            ax[k].set_title(ttl, fontsize=9); fig.colorbar(im, ax=ax[k], fraction=0.046)
+            for e in range(nE):                      # mark each expert's home regime
+                ax[k].add_patch(plt.Rectangle((expert_home[e] - .5, e - .5), 1, 1,
+                                              fill=False, edgecolor="cyan", lw=1.6))
+        fig.suptitle(f"MoE expert specialization (H11)  |  MI {mi:.3f} nats  z {z:.1f}  "
+                     f"p {pval:.3f}  |  diagonal dominance {diag_frac:.2f}  "
+                     f"-> {'PASS' if out['H11_passed'] else 'FAIL'}", fontsize=9)
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+        fpath = os.path.join(args.save_dir, "moe_specialization_complex.png" if args.complex
+                             else "moe_specialization.png")
+        fig.savefig(fpath, dpi=130); plt.close(fig)
+        print(f"[figure] {fpath}  (cyan box = each expert's home regime; diagonal = specialization)")
     return out
 
 
@@ -173,6 +198,9 @@ def main():
     ap.add_argument("--limit-samples", type=int, default=5000)
     ap.add_argument("--n-perm", type=int, default=200)
     ap.add_argument("--complex", action="store_true")
+    ap.add_argument("--figure", action="store_true",
+                    help="render the expert-specialization figure (routing heatmap + causal "
+                         "knockout heatmap) as a PNG alongside the JSON (H11 made visible).")
     run(ap.parse_args())
 
 

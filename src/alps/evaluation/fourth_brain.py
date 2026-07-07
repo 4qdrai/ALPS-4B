@@ -85,6 +85,33 @@ def _annotate_fb_frame(img, tier, m1, m2, m3, thr, alarmed, fb_active):
     return np.array(canvas)
 
 
+def _annotate_titled(img, title, tcol, badge=None):
+    """Generic titled frame: a colored header strip + optional badge (used by the RAG
+    before/after video). Keeps the two panels' frame size identical for side-by-side stacking."""
+    from PIL import Image, ImageDraw
+    up = Image.fromarray(np.asarray(img, dtype=np.uint8)).resize((256, 256), Image.NEAREST)
+    canvas = Image.new("RGB", (256, 256 + 30), (18, 18, 18))
+    canvas.paste(up, (0, 30))
+    d = ImageDraw.Draw(canvas)
+    d.rectangle([0, 0, 255, 29], fill=tcol)
+    d.text((5, 2), title, fill=(255, 255, 255))
+    if badge:
+        d.text((5, 15), badge, fill=(255, 235, 90))
+    return np.array(canvas)
+
+
+def _save_sidebyside(framesL, framesR, path, fps=8):
+    """Pad two annotated-frame lists to equal length and save a side-by-side gif (before|after)."""
+    from PIL import Image
+    n = max(len(framesL), len(framesR))
+    def pad(fr):
+        return fr + [fr[-1]] * (n - len(fr)) if fr else [np.zeros((286, 256, 3), np.uint8)] * n
+    L, R = pad(list(framesL)), pad(list(framesR))
+    ims = [Image.fromarray(np.concatenate([a, np.full((a.shape[0], 6, 3), 18, np.uint8), b], axis=1))
+           for a, b in zip(L, R)]
+    ims[0].save(path, save_all=True, append_images=ims[1:], duration=int(1000 / fps), loop=0)
+
+
 @torch.no_grad()
 def predicted_pooled(model, buf, a, device, readout=None):
     """The readout latent the operative predictor expects after action `a` (pool by
@@ -281,7 +308,8 @@ def _result(success, steps, sr, gr, cx, m1s, m2s, m3s, alarms, fb_would, fb_acti
 
 @torch.no_grad()
 def run_episode_rag(model, W, seed, sr, gr, device, decode_op, graph, featurize, m1_thr,
-                    mode, complex_mode=False, max_steps=140, readout=None):
+                    mode, complex_mode=False, max_steps=140, readout=None,
+                    frames_out=None, title="", tcol=(60, 60, 70)):
     """Latent-RAG in the control loop, gated by the SELF-MONITOR surprise signal m1.
       mode 'experience' : act; when surprise m1 > thr (the monitor fires), WRITE memory
                           key=context-latent, value=correction (actual_next - predicted).
@@ -317,12 +345,23 @@ def run_episode_rag(model, W, seed, sr, gr, device, decode_op, graph, featurize,
         obs, _, done, info = env.step(best_a); buf.push(obs_to_frame(obs, device), best_a)
         za = readout(buf.cur_z).squeeze(0)
         m1 = float((best_pred - za).norm())
+        wrote = False
         if mode == "experience" and m1 > m1_thr:               # monitor fires -> memorize
             model.rag.write_memory(model.pool(ctx).squeeze(0),
                                    model.pool(buf.cur_z).squeeze(0) - model.pool(best_zn).squeeze(0))
+            wrote = True
+        if frames_out is not None:
+            # only badge "recalling memory" when memory is actually populated (the NO-MEMORY
+            # attempt runs recall mode too, but has nothing to retrieve -> no badge)
+            has_mem = int(model.rag.current_size.item()) > 0
+            badge = ("recalling memory" if (mode == "recall" and has_mem) else
+                     ("write memory" if wrote else None))
+            frames_out.append(_annotate_titled(obs["image"], title, tcol, badge))
         if wp < len(waypoints) - 1 and np.linalg.norm(obs["position"] - waypoints[wp]) < REACH:
             wp += 1
         if (done if complex_mode else (done or info["distance"] < REACH)):
+            if frames_out is not None:                          # hold the solved frame a beat
+                frames_out += [frames_out[-1]] * 6
             return 1
     return 0
 
@@ -516,7 +555,9 @@ def run(args):
     out["thresholds"] = {**th, "cal_success_rate": float(np.mean([r["success"] for r in cal]))}
 
     # ── --video: render the SELF-MONITOR -> ESCALATION -> FALLBACK story as gifs (H8-H10) ──
-    if getattr(args, "video", False):
+    # (--rag/--h7-lifelong route --video to their own before/after renderers below instead)
+    if getattr(args, "video", False) and not getattr(args, "rag", False) \
+            and not getattr(args, "h7_lifelong", False):
         from PIL import Image
         vdir = os.path.join(args.save_dir, "videos_fourthbrain")
         os.makedirs(vdir, exist_ok=True)
@@ -566,6 +607,44 @@ def run(args):
 
     # ── H7 RAG single-pass (--rag): original experience/recall/control ──
     if getattr(args, "rag", False):
+        if getattr(args, "video", False):
+            # SELF-LEARNING video: same layout BEFORE (empty memory) vs AFTER (memory written by
+            # surprise-gated experience) -> the agent improves with NO weight update.
+            vdir = os.path.join(args.save_dir, "videos_rag"); os.makedirs(vdir, exist_ok=True)
+            print(f"--- [rag-video] before/after self-learning clips -> {vdir} ---")
+            def _cfgv(base, n):
+                if args.complex:
+                    return [(0, 3, base + i) for i in range(n)]
+                return [(i % 2, (i % 2) if (i // 2) % 2 == 0 else 1 - (i % 2), base + i) for i in range(n)]
+            learn_v = _cfgv(5000, max(12, args.n_eval))
+            model.rag.current_size.zero_()                          # empty memory
+            befores = []
+            for sr_, gr_, seed_ in learn_v:                         # attempt 1: no memory
+                fb_ = []
+                ok_b = run_episode_rag(model, W, seed_, sr_, gr_, device, decode_op, graph,
+                                       featurize, th["m1"], "recall", args.complex, readout=readout,
+                                       frames_out=fb_, title="NO MEMORY (attempt 1)", tcol=(120, 55, 55))
+                befores.append((seed_, sr_, gr_, fb_, ok_b))
+            for sr_, gr_, seed_ in learn_v:                         # write memory on surprise
+                run_episode_rag(model, W, seed_, sr_, gr_, device, decode_op, graph, featurize,
+                                th["m1"], "experience", args.complex, readout=readout)
+            saved = 0
+            for seed_, sr_, gr_, fb_, ok_b in befores:              # attempt 2: memory recalled
+                if saved >= getattr(args, "n_video", 4):
+                    break
+                fa_ = []
+                ok_a = run_episode_rag(model, W, seed_, sr_, gr_, device, decode_op, graph,
+                                       featurize, th["m1"], "recall", args.complex, readout=readout,
+                                       frames_out=fa_, title="AFTER RAG RECALL (attempt 2)", tcol=(50, 120, 70))
+                if fb_ and fa_ and (getattr(args, "video_all", False) or (ok_a and not ok_b)):
+                    path = os.path.join(vdir, f"rag_{'complex' if args.complex else 'block'}_seed{seed_}.gif")
+                    _save_sidebyside(fb_, fa_, path, fps=getattr(args, "fps", 8))
+                    print(f"  [rag-video seed{seed_}] before {'SOLVED' if ok_b else 'stalled'} | "
+                          f"after {'SOLVED' if ok_a else 'stalled'}"
+                          f"{'  <<< LEARNED (no weight update)' if (ok_a and not ok_b) else ''} -> {path}")
+                    saved += 1
+            if saved == 0:
+                print("  [rag-video] no before-fail/after-solve pairs found (use --video-all to film all).")
         rg = gate_rag_selflearning(model, W, device, decode_op, graph, featurize,
                                    th["m1"], args.n_eval, complex_mode=args.complex, readout=readout)
         out["H7_rag_selflearning"] = rg
