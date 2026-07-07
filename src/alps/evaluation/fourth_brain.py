@@ -273,7 +273,7 @@ def run_episode_fb(model, W, seed, sr, gr, device, graph, ZC, policy, thr=None,
             consec, since_esc = 0, 0
             if tier < 2:
                 tier += 1; tiers_used.add(tier)
-                seg = plan_path(model, graph, buf, goal_lat, device); wp = 0
+                seg = plan_path(model, graph, buf, goal_lat, device, readout); wp = 0
             else:
                 if fb_would is None:
                     fb_would = s
