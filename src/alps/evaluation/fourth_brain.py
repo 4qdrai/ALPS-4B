@@ -57,6 +57,33 @@ TIERS = ("operative", "tactical", "strategic", "fallback")
 # ---------------- helpers ----------------
 _ENV_KW = {}          # Block-Rooms variant kwargs, set by run() from CLI (must match training)
 
+_TIER_STYLE = [("OPERATIVE", (40, 130, 60)), ("TACTICAL", (40, 90, 170)),
+               ("STRATEGIC", (190, 120, 30)), ("FALLBACK", (170, 40, 40))]
+
+
+def _annotate_fb_frame(img, tier, m1, m2, m3, thr, alarmed, fb_active):
+    """Render one monitored-episode frame with the SELF-MONITOR overlay: the active tier
+    (operative->tactical->strategic->fallback), the 3 label-free monitors (green=ok, red=firing
+    vs the calibrated threshold), and an ALARM/FALLBACK banner. This is the driving-safety story
+    made visible: the imagination-error monitor spikes on unfamiliar dynamics -> the stack
+    escalates -> falls back to the safe state."""
+    from PIL import Image, ImageDraw
+    name, tcol = _TIER_STYLE[min(tier, 3)]
+    up = Image.fromarray(np.asarray(img, dtype=np.uint8)).resize((256, 256), Image.NEAREST)
+    canvas = Image.new("RGB", (256, 256 + 48), (18, 18, 18))
+    canvas.paste(up, (0, 48))
+    d = ImageDraw.Draw(canvas)
+    d.rectangle([0, 0, 255, 47], fill=tcol)
+    d.text((5, 2), f"TIER: {'FALLBACK' if fb_active else name}", fill=(255, 255, 255))
+    ok, fire = (150, 220, 150), (255, 90, 90)
+    if thr is not None:
+        d.text((5, 18), f"m1 surprise {m1:5.2f}", fill=fire if m1 > thr["m1"] else ok)
+        d.text((5, 31), f"m2 offmanif {m2:5.2f}", fill=fire if m2 > thr["m2"] else ok)
+        d.text((140, 18), f"m3 stall {m3:5.2f}", fill=fire if m3 < thr["m3"] else ok)
+    if alarmed:
+        d.text((140, 31), "!! ALARM", fill=(255, 60, 60))
+    return np.array(canvas)
+
 
 @torch.no_grad()
 def predicted_pooled(model, buf, a, device, readout=None):
@@ -134,7 +161,7 @@ def auroc(scores, labels):
 @torch.no_grad()
 def run_episode_fb(model, W, seed, sr, gr, device, graph, ZC, policy, thr=None,
                    complex_mode=False, max_steps=140, alarm_k=2, patience=4, grace=6,
-                   stall_w=8, fallback="record", readout=None, decode_state=None):
+                   stall_w=8, fallback="record", readout=None, decode_state=None, frames_out=None):
     """LABEL-FREE control. policy in {operative, tactical, escalation}. Monitors are all
     on the readout latent: m1 surprise (pred vs actual), m2 off-manifold (dist to nearest
     landmark), m3 stall (readout displacement over a window). fallback: 'record' note
@@ -228,6 +255,11 @@ def run_episode_fb(model, W, seed, sr, gr, device, graph, ZC, policy, thr=None,
                     if fallback == "on":
                         pth = graph.shortest_path(cur, safe) or [safe]
                         fb_seg, fb_wp = (pth[1:] if len(pth) > 1 else pth), 0
+
+        if frames_out is not None:
+            cur_tier = 3 if fb_active else tier
+            frames_out.append(_annotate_fb_frame(obs["image"], cur_tier, m1, m2, m3, thr,
+                                                  alarmed, fb_active))
 
         reached = done if complex_mode else (done or info["distance"] < REACH)
         if reached and not fb_active:
@@ -483,6 +515,36 @@ def run(args):
           "m3": _q([v for r in good for v in r["m3"]], 0.10, 0.0)}
     out["thresholds"] = {**th, "cal_success_rate": float(np.mean([r["success"] for r in cal]))}
 
+    # ── --video: render the SELF-MONITOR -> ESCALATION -> FALLBACK story as gifs (H8-H10) ──
+    if getattr(args, "video", False):
+        from PIL import Image
+        vdir = os.path.join(args.save_dir, "videos_fourthbrain")
+        os.makedirs(vdir, exist_ok=True)
+        print(f"--- [video] rendering monitored episodes (escalation+fallback) to {vdir} ---")
+        n_saved = 0
+        for sr, gr, seed in cfgs(6000, max(40, args.n_eval * 3)):
+            if n_saved >= getattr(args, "n_video", 4):
+                break
+            fo = []
+            r = run_episode_fb(model, W, seed, sr, gr, device, graph, ZC, "escalation",
+                               thr=th, complex_mode=args.complex, alarm_k=args.alarm_k,
+                               patience=args.patience, grace=args.grace, stall_w=args.stall_w,
+                               fallback="on", readout=readout, decode_state=decode_state,
+                               frames_out=fo)
+            escalated = max(r["tiers_used"]) >= 1        # tier moved past bare operative
+            if fo and (getattr(args, "video_all", False) or escalated):
+                gif = os.path.join(vdir, f"fb_{'complex' if args.complex else 'block'}_seed{seed}.gif")
+                ims = [Image.fromarray(f) for f in fo]
+                ims[0].save(gif, save_all=True, append_images=ims[1:],
+                            duration=int(1000 / getattr(args, "fps", 8)), loop=0)
+                print(f"  [video seed{seed}] tiers={r['tiers_used']} fb_exec={r['fb_executed']} "
+                      f"safe_reached={r['safe_reached']} -> {gif}")
+                n_saved += 1
+        if n_saved == 0:
+            print("  [video] no escalation episodes found (model rarely triggers); "
+                  "use --video-all to film all attempts.")
+        return out
+
     # ── H7 RAG lifelong (--h7-lifelong): learning curve across batches ──
     if getattr(args, "h7_lifelong", False):
         print("--- [H7 LIFELONG] RAG self-learning across episode batches ---")
@@ -630,6 +692,13 @@ def main():
     ap.add_argument("--block-gate", action="store_true", help="Block-Rooms SWITCH-GATE (match training)")
     ap.add_argument("--block-radius", type=float, default=None, help="block render radius (match training)")
     ap.add_argument("--block-step-scale", type=float, default=None, help="block step scale (match training)")
+    ap.add_argument("--video", action="store_true",
+                    help="render the self-monitor -> escalation -> fallback story as gifs "
+                         "(H8-H10 made visible: monitors spike -> tier escalates -> fallback).")
+    ap.add_argument("--video-all", action="store_true",
+                    help="film every episode, not just ones where the monitor escalated")
+    ap.add_argument("--n-video", type=int, default=4, help="number of monitored gifs to save")
+    ap.add_argument("--fps", type=int, default=8)
     run(ap.parse_args())
 
 
