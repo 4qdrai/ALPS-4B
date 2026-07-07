@@ -131,17 +131,19 @@ The clean-data result isolated the *real* remaining gap: with perception solved 
 
 The fix is the observation model driving already uses: **egocentric rendering** (agent pinned at frame-center; the position-locked textured floor, target, and walls scroll under each action; already built as `TwoRoomsEnv(egocentric=True)`). Measured, dense winning recipe (residual + change-weighted op + inverse-dynamics), enc-depth 4, patch-8, honest instrument (episode-split, `calibrate_bn`, oracle rows):
 
-| metric | top-down (small agent) | **egocentric** | reading |
-|---|---|---|---|
-| training `op` | — | 0.517 → **0.100** | sharpest operative convergence in the project |
-| training `inv` (action grounding) | — | 0.879 → **0.138** | the predictor learns what each action does |
-| `action_spread` | 0.025 (blind) | **0.220** | predictor now discriminates the 4 actions |
-| G1_spatial (position decode) | 0.109 | 0.305 | abs. position read from the scrolling texture (softer than a localized blob) |
-| ORACLE-DECODE direction_acc | 0.90 | 0.59 | instrument ceiling (limited by texture-read sharpness) |
-| **calibrated direction_acc** | **0.19** | **0.69** | **USABLE (≥ 0.6)** ✓ |
-| **forward-dynamics direction_acc** | — | **0.76** | independent confirmation ✓ |
-| latent-space (no-decode) direction_acc | — | 0.24 | pure goal-latent matching not yet there |
-| `imag rel` | — | 1.27 | raw 1-step imagination still > 1 |
+| metric | top-down (small agent) | egocentric d4 (local) | **egocentric d10 (pod, `_ego10`)** | reading |
+|---|---|---|---|---|
+| training `op` | — | 0.517 → 0.100 | 0.520 → **0.081** | sharpest operative convergence in the project; stable at depth-10 (lr 7e-4 guard held) |
+| training `inv` (action grounding) | — | 0.879 → 0.138 | 0.718 → **0.035** | near-perfect action grounding |
+| `action_spread` (calibrated) | 0.025 (blind) | 0.220 | **0.220** | predictor discriminates the 4 actions |
+| G1_spatial (position decode) | 0.109 | 0.305 | **0.152** | 2× sharper decode from the scrolling texture at depth-10 |
+| ORACLE-DECODE direction_acc | 0.90 | 0.59 | **0.78** | **instrument ceiling lifted** by the sharper encoder — exactly as predicted |
+| **calibrated direction_acc** | **0.19** | 0.69 | **0.76** | **USABLE (≥ 0.6)** ✓ — now at 97 % of the 0.78 oracle ceiling |
+| **forward-dynamics direction_acc** | — | 0.76 | **0.77** | independent confirmation ✓ |
+| latent-space (no-decode) direction_acc | — | 0.24 | **0.32** | pure goal-latent matching still weakest, but improving |
+| `imag rel` | — | 1.27 | **1.006** | raw imagination now ≈ persistence (was worse); improving toward < 1 |
+
+**The decisive reading of the depth-10 run:** calibrated control (**0.76**) has closed to within **0.02 of the oracle-decode ceiling (0.78)** — i.e. *the predictor's imagined action-selection is now as good as decoding the real next frame*. The predictor is no longer the bottleneck; the instrument ceiling (how sharply absolute position reads from the scrolling texture) is. Every number moved the predicted direction when we scaled depth-4 → depth-10, which validates the mechanism *and* its scaling response: **lift the ceiling (sharper encoder / finer readout) and the control follows it up.**
 
 **Interpretation, and the three insights that transfer:**
 
@@ -149,7 +151,7 @@ The fix is the observation model driving already uses: **egocentric rendering** 
 - **A11 corollary — the small-agent problem *dissolves*.** With the agent at frame-center its pixel size is irrelevant; the owner's "shrink the agent" constraint and the entire slot-binding detour both evaporate under the correct observation model.
 - **A13 — control ≠ imagination fidelity.** Control was usable at `imag rel 1.27` (> 1, i.e. raw imagination worse than persistence) because selection reads the *action contrast* in the decoded-state space, not the full future. This directly predicts the driving case: the horizon always imports unseen content, `imag` will stay > 1, and that does **not** block maneuver selection.
 
-**Honest caveats (carried into the gates):** this is the enc-depth-4 *local* config (depth-10 hardening run queued on the A40, `_ego10.pt`); the no-decode pure-latent path (0.24) is not yet there, so control rides the decoded-state operative path (P1/P3, §5), not P2; and the oracle ceiling (0.59) — set by how sharply absolute position reads from the scrolling texture — currently caps headroom, so a stronger encoder lifts every number. None of these are transfer blockers; all are Stage-0/1 tuning.
+**Honest caveats (carried into the gates):** the depth-10 hardening run (`_ego10`, 20 ep, A40, backed up to HF) is now **done and confirmed the scaling prediction** — G1 0.305→0.152, oracle ceiling 0.59→0.78, calibrated control 0.69→0.76, `imag rel` 1.27→1.006 — with stable training (no divergence; the lr-7e-4/batch-32 guard held). Remaining honest gaps, all Stage-0/1 tuning, none transfer blockers: the no-decode pure-latent path (0.32) still trails, so control rides the decoded-state operative path (P1/P4, §5), not P2; and control is now ceiling-bound (0.76 of 0.78), so the next lever is *lifting the ceiling* — a finer readout / sharper encoder — not the predictor.
 
 ### 3.5.4 What this does to the program
 
