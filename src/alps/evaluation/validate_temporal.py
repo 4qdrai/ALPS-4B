@@ -348,7 +348,7 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
     episode), the goal, the per-step execution lookahead, the advancement check -- while keeping
     the graph topology/routing EXACT. Sweeping σ finds the decode precision at which the edge
     (strategic >> operative) collapses = the target a real decoder must beat."""
-    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
     obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
     _rng = np.random.RandomState((seed * 131 + 7) & 0x7fffffff)
@@ -358,7 +358,7 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
     is_cross = True if complex_mode else (sr != gr)
     opt = max_steps if complex_mode else _oracle_path_len(sr, gr, seed)
     buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
-    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
     eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
     eg.agent_pos = goal_xy.copy()
     if complex_mode:
@@ -488,12 +488,12 @@ def gate_complex(model, W, graph, decode_op, device, n_episodes=30, max_steps=20
     from alps.benchmarks.two_rooms.data_generator import HeuristicPolicy
 
     def run(strategy, seed):
-        env = TwoRoomsEnv(seed=seed, complex_mode=True, hazards=False); obs = env.reset()
+        env = TwoRoomsEnv(seed=seed, complex_mode=True, hazards=False, **_ENV_KW); obs = env.reset()
         goal_xy = obs["target"].copy()
         buf = HistoryBuffer(model, W, device); buf.reset(obs_to_frame(obs, device))
         waypoints, wp = None, 0
         if strategy == "graph":
-            eg = TwoRoomsEnv(seed=seed, complex_mode=True, hazards=False); eg.reset()
+            eg = TwoRoomsEnv(seed=seed, complex_mode=True, hazards=False, **_ENV_KW); eg.reset()
             eg.agent_pos = goal_xy.copy(); eg.has_key = True
             zs = model.pool(buf.cur_z).squeeze(0).cpu().numpy()
             zg = model.pool(model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))).squeeze(0).cpu().numpy()
@@ -646,7 +646,7 @@ def run_episode_4b(model, W, seed, sr, gr, device, decode_op, graph, featurize,
                   through key-acquisition on its own (keyed/unkeyed are distinct latent
                   nodes connected only by real pickup transitions) -- no key labels.
     `decode_op` is accepted for signature compatibility but NOT used for control."""
-    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
     obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     goal_xy = obs["target"].copy()
     is_cross = True if complex_mode else (sr != gr)
@@ -655,7 +655,7 @@ def run_episode_4b(model, W, seed, sr, gr, device, decode_op, graph, featurize,
     buf = HistoryBuffer(model, W, device, readout=readout); buf.reset(obs_to_frame(obs, device))
 
     # GOAL is specified as a goal IMAGE -> goal LATENT (no labels).
-    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
     eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
     eg.agent_pos = goal_xy.copy()
     if complex_mode:
@@ -689,12 +689,12 @@ def run_episode_4b(model, W, seed, sr, gr, device, decode_op, graph, featurize,
 def _bfs_oracle_cfg(sr, gr, seed, complex_mode, max_steps=250):
     """BFS-optimal success on the EXACT (sr, gr, seed) config (matches the ablation)."""
     from alps.benchmarks.two_rooms.optimal_planner import bfs_actions
-    pl = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    pl = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
     pl.reset() if complex_mode else pl.reset(start_room=sr, goal_room=gr)
     plan = bfs_actions(pl)
     if plan is None:
         return False
-    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+    env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
     env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
     for a in plan[:max_steps]:
         _, _, done, info = env.step(int(a))
@@ -736,7 +736,7 @@ def run_episode(model, W, env, sr, gr, seed, device, decode_op, decode_tac=None,
 
     h_goal, waypoints, wp_idx = None, None, 0
     if strategy in ("subgoal", "graph"):
-        eg = TwoRoomsEnv(seed=seed); eg.reset(start_room=gr, goal_room=gr); eg.agent_pos = goal_xy.copy()
+        eg = TwoRoomsEnv(seed=seed, **_ENV_KW); eg.reset(start_room=gr, goal_room=gr); eg.agent_pos = goal_xy.copy()
         z_goal = model.encode_frame(obs_to_frame({"image": eg.render()}, device).unsqueeze(0))
         if strategy == "subgoal":
             h_goal, _ = model.tac_encode(z_goal)
@@ -764,8 +764,22 @@ def run_episode(model, W, env, sr, gr, seed, device, decode_op, decode_tac=None,
     return EpisodeResult(False, max_steps, opt, max_steps, sr != gr)
 
 
+_ENV_KW = {}   # observation/env-variant kwargs threaded into every TwoRoomsEnv here (set by run()
+               # from CLI); MUST match the training data's rendering or the probes read a
+               # different task (see instrument doctrine I7 / the block_mode contamination bug).
+
+
 def run(args):
     device = torch.device(args.device)
+    global _ENV_KW
+    _ENV_KW = dict(egocentric=getattr(args, "egocentric", False),
+                   perception_radius=getattr(args, "perception_radius", None),
+                   block_mode=getattr(args, "block_mode", False) or getattr(args, "block_wall", False)
+                   or getattr(args, "block_gate", False),
+                   block_wall=getattr(args, "block_wall", False),
+                   block_gate=getattr(args, "block_gate", False),
+                   block_radius=getattr(args, "block_radius", None),
+                   block_step_scale=getattr(args, "block_step_scale", None))
     model, W = load_model(args.model_path, device)
     frames, actions, positions, room_ids, starts = load_raw(args.data_path)
     total = frames.shape[0]
@@ -1263,13 +1277,13 @@ def gate_tactical_emitter(model, W, fine_graph, coarse_graph, decode_op, device,
 
     def run_emitter(strategy, seed, sr, gr):
         """strategy in {coarse, emitter, fine}."""
-        env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+        env = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
         obs = env.reset() if complex_mode else env.reset(start_room=sr, goal_room=gr)
         goal_xy = obs["target"].copy()
         buf = HistoryBuffer(model, W, device); buf.reset(obs_to_frame(obs, device))
 
         # Goal latent (label-free: render goal image)
-        eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False)
+        eg = TwoRoomsEnv(seed=seed, complex_mode=complex_mode, hazards=False, **_ENV_KW)
         eg.reset() if complex_mode else eg.reset(start_room=gr, goal_room=gr)
         eg.agent_pos = goal_xy.copy()
         if complex_mode:
@@ -1375,6 +1389,17 @@ def main():
     ap.add_argument("--fine-k", type=int, default=24,
                     help="TACTICAL (fine) landmarks: reachable sub-regions that thread doors.")
     ap.add_argument("--complex", action="store_true", help="4-room key-gated complex mode")
+    ap.add_argument("--egocentric", action="store_true",
+                    help="agent-centered observation (world scrolls under each action) -- the "
+                         "driving-aligned regime that makes control learnable (A11). MUST match "
+                         "the training data's rendering.")
+    ap.add_argument("--perception-radius", type=float, default=None,
+                    help="limited perception disk radius in wu (egocentric POMDP; match training)")
+    ap.add_argument("--block-mode", action="store_true", help="Block-Rooms env (match training)")
+    ap.add_argument("--block-wall", action="store_true", help="Block-Rooms wall+gap (match training)")
+    ap.add_argument("--block-gate", action="store_true", help="Block-Rooms switch-gate (match training)")
+    ap.add_argument("--block-radius", type=float, default=None, help="block render radius (match training)")
+    ap.add_argument("--block-step-scale", type=float, default=None, help="block step scale (match training)")
     ap.add_argument("--spatial", action="store_true",
                     help="Four-brain control on a coarse SPATIAL readout (grid x grid) "
                          "instead of the global pool, so graph nodes are position-faithful "
