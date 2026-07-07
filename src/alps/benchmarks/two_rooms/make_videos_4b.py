@@ -307,7 +307,15 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
     # block_mode reset is random (opposite sides under block_wall), so sr/gr are ignored there.
     cfgs = [(0, 3, 2000 + i) for i in range(40)] if complex_mode else \
            [(0, 1, 1000 + i) for i in range(40)]  # cross-room / cross-wall configs
-    made = 0
+    def _save_clip(op, fb, seed, ok_op, ok_fb):
+        out = _hstack(op, fb)
+        path = os.path.join(save_dir, f"fourbrain_{tag}_seed{seed}.gif")
+        _save(out, path, fps=args.fps)
+        print(f"  [{tag} seed{seed}] operative {'SOLVED' if ok_op else 'stalled'} | "
+              f"four-brain {'SOLVED' if ok_fb else 'stalled'}"
+              f"{'  <<< DOMINANCE' if (ok_fb and not ok_op) else ''}")
+
+    made, backups = 0, []
     for sr, gr, seed in cfgs:
         if made >= n_clips:
             break
@@ -315,12 +323,18 @@ def make_clips(model_path, data_path, complex_mode, save_dir, device, args, n_cl
         if not ok_fb and not args.include_failures:
             continue   # prefer clips where the Four-Brain actually solves (the proof)
         op, ok_op = record_fn(seed, sr, gr, "operative")
-        out = _hstack(op, fb)
-        path = os.path.join(save_dir, f"fourbrain_{tag}_seed{seed}.gif")
-        _save(out, path, fps=args.fps)
-        print(f"  [{tag} seed{seed}] operative {'SOLVED' if ok_op else 'stalled'} | "
-              f"four-brain {'SOLVED' if ok_fb else 'stalled'}")
-        made += 1
+        # --contrast: film the DOMINANCE clips first (operative stalls, four-brain solves);
+        # hold "both solved" clips as backfill so the proof video actually shows the edge.
+        if getattr(args, "contrast", False) and ok_fb and ok_op and not args.include_failures:
+            backups.append((sr, gr, seed)); continue
+        _save_clip(op, fb, seed, ok_op, ok_fb); made += 1
+    if getattr(args, "contrast", False) and made < n_clips:
+        for sr, gr, seed in backups:                       # backfill with both-solved clips
+            if made >= n_clips:
+                break
+            fb, ok_fb = record_fn(seed, sr, gr, "fourbrain")
+            op, ok_op = record_fn(seed, sr, gr, "operative")
+            _save_clip(op, fb, seed, ok_op, ok_fb); made += 1
     if made == 0:
         print(f"  [{tag}] no Four-Brain successes to film (model likely undertrained; "
               f"use --include-failures to film attempts).")
@@ -342,6 +356,10 @@ def main():
     ap.add_argument("--fps", type=int, default=12)
     ap.add_argument("--n-clips", type=int, default=3)
     ap.add_argument("--include-failures", action="store_true")
+    ap.add_argument("--contrast", action="store_true",
+                    help="Film the DOMINANCE clips first: operative STALLS while four-brain "
+                         "SOLVES (the actual proof of the hierarchy edge). 'Both solved' clips "
+                         "are held as backfill only if too few contrast clips are found.")
     ap.add_argument("--simple-only", action="store_true")
     ap.add_argument("--complex-only", action="store_true")
     ap.add_argument("--spatial", action="store_true",
