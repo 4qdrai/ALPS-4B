@@ -335,7 +335,7 @@ def fit_calibrated_softargmax(m, frames, positions, actions, starts, tot, W, dev
 @torch.no_grad()
 def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
                         strategy, complex_mode=False, max_steps=140, ctrl_k=3,
-                        true_pos_exec=False, pos_noise=0.0, replan_every=0):
+                        true_pos_exec=False, pos_noise=0.0, replan_every=0, decode_calib=None):
     """4B edge under PURE SSL via predictor-based DECODED control on the spatial readout.
     The TRAINED op predictor predicts the next latent grid; decode_state (spatial_readout
     + frozen ridge) reads the predicted agent POSITION (action-sensitive, unlike the coarse
@@ -408,7 +408,13 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
                 e2 = copy.deepcopy(env); o2, _, _, _ = e2.step(a)              # oracle exec: true next pos
                 pos_a = jit(o2["position"])                                    # + simulated decode error
             else:
-                pos_a = buf.rollout_decode(decode_state, a, ctrl_k).cpu().numpy()   # K-step-ahead decoded pos
+                # A3 calibrated-decode doctrine: the rollout decodes the predictor's IMAGINED
+                # grid, which is off the real-frame manifold; read it through decode_calib (a
+                # probe fit on the predictor's OWN outputs) not the real-frame decode. Using the
+                # real-frame ridge here collapses control (0.76 calibrated -> ~0 raw = the
+                # diagnose_control-vs-gate discrepancy). Real observations (goal/current) still
+                # use decode_state (real-frame).
+                pos_a = buf.rollout_decode(decode_calib or decode_state, a, ctrl_k).cpu().numpy()
             d = float(np.linalg.norm(pos_a - sub))
             if d < best_d:
                 best_d, best_a = d, a
@@ -426,7 +432,7 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
 @torch.no_grad()
 def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, readout,
                             device, n_episodes, complex_mode=False, ctrl_k=3,
-                            true_pos_exec=False, pos_noise=0.0, replan_every=0):
+                            true_pos_exec=False, pos_noise=0.0, replan_every=0, decode_calib=None):
     """3-tier ablation under pure SSL with predictor-based decoded control on the spatial
     readout: operative (greedy) vs strategic (coarse graph) vs tactical (fine graph).
     Complex mode = key->door->goal (the graph routes through the key landmark).
@@ -448,7 +454,7 @@ def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, re
         res = [run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout,
                                    gph, strat, complex_mode=complex_mode, ctrl_k=ctrl_k,
                                    true_pos_exec=true_pos_exec, pos_noise=pos_noise,
-                                   replan_every=replan_every)
+                                   replan_every=replan_every, decode_calib=decode_calib)
                for sr, gr, seed in cfgs]
         out[name] = summarize(res)
         sv = out[name].get("cross_room_success", out[name])
@@ -938,6 +944,18 @@ def run(args):
                 return gph
             print(f"  [spatial] building graphs (k-means on {g*g*model.d_model}-d readout)...", flush=True)
         coarse_graph, fine_graph = build_sp(args.coarse_k), build_sp(args.fine_k)
+        # A3 CALIBRATED DECODE for the predictor-based control: the rollout decodes the
+        # predictor's IMAGINED grids, which sit off the real-frame manifold, so fit the control
+        # decoder on the predictor's OWN outputs (imagined grid -> true next pos). readout4b
+        # maps a grid into the space decode_state consumes; _calib recalibrates there. This is
+        # the fix for gate control 0 vs diagnose_control 0.76 on the same model.
+        _Zp, _Yp = gather_pred_grids(model, frames, positions, actions, starts, total, W, device, n_win=3000)
+        _Xp = torch.cat([readout4b(_Zp[c:c + 128].to(device)).detach().cpu().float()
+                         for c in range(0, len(_Zp), 128)])
+        _calib = fit_ridge_decode(_Xp, _Yp, device)
+        decode_calib = (lambda grid: _calib(readout4b(grid)))
+        gc = (decode_calib(_Zp[:cv].to(device)) - _Yp[:cv].to(device)).norm(dim=1).mean().item()
+        print(f"--- [A3 CALIBRATED-DECODE] control decode {gc:.3f}wu (real-frame {sg1:.3f}wu) ---", flush=True)
         if getattr(args, "noise_sweep", False):
             # DECODE-NOISE SWEEP: on the proven Track B (oracle topology), inject decoder noise σ
             # into landmarks+execution and find where the edge (strategic - operative) collapses
@@ -966,7 +984,8 @@ def run(args):
                                      readout4b, device, args.n_episodes, complex_mode=args.complex,
                                      ctrl_k=getattr(args, "ctrl_k", 3),
                                      true_pos_exec=getattr(args, "true_pos_exec", False),
-                                     replan_every=getattr(args, "replan_every", 0))
+                                     replan_every=getattr(args, "replan_every", 0),
+                                     decode_calib=decode_calib)
     else:
         def build(k):
             return build_graph_raw(model, decode_op, frames, positions, room_ids, starts,
