@@ -335,7 +335,7 @@ def fit_calibrated_softargmax(m, frames, positions, actions, starts, tot, W, dev
 @torch.no_grad()
 def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, graph,
                         strategy, complex_mode=False, max_steps=140, ctrl_k=3,
-                        true_pos_exec=False, pos_noise=0.0):
+                        true_pos_exec=False, pos_noise=0.0, replan_every=0):
     """4B edge under PURE SSL via predictor-based DECODED control on the spatial readout.
     The TRAINED op predictor predicts the next latent grid; decode_state (spatial_readout
     + frozen ridge) reads the predicted agent POSITION (action-sensitive, unlike the coarse
@@ -378,21 +378,29 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
     goal_pos = goal_xy.copy() if true_pos_exec else decode_state(goal_grid)[0].cpu().numpy()
     if true_pos_exec:
         goal_pos = jit(goal_pos)                      # simulated goal decode error (fixed)
-    waypoints, wp = [goal_pos], 0
-    if strategy == "graph":
-        sn = graph.node_of_latent(readout(buf.cur_z).squeeze(0).cpu().numpy())
-        gn = graph.node_of_latent(readout(goal_grid).squeeze(0).cpu().numpy())
+    gn = graph.node_of_latent(readout(goal_grid).squeeze(0).cpu().numpy()) if strategy == "graph" else None
+
+    def _plan_from(cur_readout_np):
+        """(Re)compute the graph route from the CURRENT node to the goal -> waypoint positions.
+        Track B (true_pos_exec) uses each node's TRUE mean position (oracle landmarks) to isolate
+        ROUTING from decode noise; Track A steers to the decoded positions it actually has.
+        CLOSED-LOOP control re-invokes this from the agent's CURRENT node so decode drift is
+        corrected each replan instead of accumulating over the long multi-room route."""
+        sn = graph.node_of_latent(cur_readout_np)
         path = graph.shortest_path(sn, gn) or [gn]
         seg = path[1:] if len(path) > 1 else path[:]
-        # Track B (true_pos_exec) uses each node's TRUE mean position as its waypoint (oracle
-        # landmarks) so the test isolates the graph's ROUTING (which nodes, in which order)
-        # from decode noise in the landmark positions themselves. If the graph STILL loses to
-        # greedy here, the routing/topology is broken (not decode). Track A (decoded control)
-        # must steer to the decoded positions it actually has access to.
         node_xy = graph.true_xy if true_pos_exec else graph.decoded_xy
-        wp_xy = [(jit(node_xy[n]) if true_pos_exec else node_xy[n]) for n in seg]
-        waypoints = wp_xy + [goal_pos]
+        return [(jit(node_xy[n]) if true_pos_exec else node_xy[n]) for n in seg] + [goal_pos]
+
+    waypoints, wp = [goal_pos], 0
+    if strategy == "graph":
+        waypoints = _plan_from(readout(buf.cur_z).squeeze(0).cpu().numpy())
     for s in range(max_steps):
+        # CLOSED-LOOP self-correction (receding horizon): re-route from the CURRENT node every
+        # `replan_every` steps -> corrects decode drift instead of letting it accumulate over the
+        # long route (the open-loop failure that zeroed strategic on the multi-room complex task).
+        if replan_every and strategy == "graph" and not true_pos_exec and s and s % replan_every == 0:
+            waypoints = _plan_from(readout(buf.cur_z).squeeze(0).cpu().numpy()); wp = 0
         sub = waypoints[min(wp, len(waypoints) - 1)]
         best_a, best_d = 0, 1e30
         for a in range(4):
@@ -418,7 +426,7 @@ def run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout, g
 @torch.no_grad()
 def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, readout,
                             device, n_episodes, complex_mode=False, ctrl_k=3,
-                            true_pos_exec=False, pos_noise=0.0):
+                            true_pos_exec=False, pos_noise=0.0, replan_every=0):
     """3-tier ablation under pure SSL with predictor-based decoded control on the spatial
     readout: operative (greedy) vs strategic (coarse graph) vs tactical (fine graph).
     Complex mode = key->door->goal (the graph routes through the key landmark).
@@ -439,7 +447,8 @@ def gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state, re
     for name, (gph, strat) in plan.items():
         res = [run_episode_spatial(model, W, seed, sr, gr, device, decode_state, readout,
                                    gph, strat, complex_mode=complex_mode, ctrl_k=ctrl_k,
-                                   true_pos_exec=true_pos_exec, pos_noise=pos_noise)
+                                   true_pos_exec=true_pos_exec, pos_noise=pos_noise,
+                                   replan_every=replan_every)
                for sr, gr, seed in cfgs]
         out[name] = summarize(res)
         sv = out[name].get("cross_room_success", out[name])
@@ -956,7 +965,8 @@ def run(args):
         fb = gate_four_brain_spatial(model, W, coarse_graph, fine_graph, decode_state,
                                      readout4b, device, args.n_episodes, complex_mode=args.complex,
                                      ctrl_k=getattr(args, "ctrl_k", 3),
-                                     true_pos_exec=getattr(args, "true_pos_exec", False))
+                                     true_pos_exec=getattr(args, "true_pos_exec", False),
+                                     replan_every=getattr(args, "replan_every", 0))
     else:
         def build(k):
             return build_graph_raw(model, decode_op, frames, positions, room_ids, starts,
@@ -1427,6 +1437,11 @@ def main():
                     help="spatial control lookahead: roll the predictor K steps per action so "
                          "each decision compares ~K*0.27wu apart (beats the ~0.55wu decode "
                          "noise). 1 = old 1-step control.")
+    ap.add_argument("--replan-every", type=int, default=0,
+                    help="CLOSED-LOOP control: re-route the strategic/tactical plan from the "
+                         "agent's CURRENT decoded node every N steps (receding horizon), so "
+                         "decode drift is corrected instead of accumulating over the long "
+                         "multi-room route. 0 = open-loop fixed plan (old). Try 3-5.")
     ap.add_argument("--true-pos-exec", action="store_true",
                     help="Track B (decode-INDEPENDENT planning proof): keep the unsupervised "
                          "spatial-graph plans but execute the low level with the env's TRUE "
