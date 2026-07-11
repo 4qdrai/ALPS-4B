@@ -569,7 +569,8 @@ def make_featurize(decode_op, key_w, key_scale, device):
 
 @torch.no_grad()
 def build_graph_semantic(model, decode_op, key_w, key_scale, frames, positions, room_ids,
-                         starts, total, device, k=8, S=2, max_eps=500, has_keys=None):
+                         starts, total, device, k=8, S=2, max_eps=500, has_keys=None,
+                         readout=None):
     """COARSE strategic graph whose landmarks live in DECODED (x, y[, has_key]) space
     rather than raw 128-d latent space. Raw-latent k-means is NOT position-faithful
     (non-positional variance dominates -> far positions and key states collapse into
@@ -584,6 +585,7 @@ def build_graph_semantic(model, decode_op, key_w, key_scale, frames, positions, 
     built at a small stride so the pickup transition is captured locally (large stride
     creates spurious unkeyed->keyed-goal shortcut edges that skip the key)."""
     from alps.core.latent_graph import LatentGraph, _kmeans
+    readout = readout if readout is not None else model.pool   # spatial_readout for position-faithful nodes
     per_z, per_xy, per_rm, per_hk, per_pick = [], [], [], [], []
     E = starts.shape[0]
     for e in range(min(E, max_eps)):
@@ -592,7 +594,7 @@ def build_graph_semantic(model, decode_op, key_w, key_scale, frames, positions, 
         if len(seq) < 2:
             continue
         f = frames[torch.tensor(seq)].to(device).float() / 255.0
-        per_z.append(model.pool(model.encode_frame(f)).cpu().numpy())
+        per_z.append(readout(model.encode_frame(f)).cpu().numpy())
         per_xy.append(positions[torch.tensor(seq)].numpy())
         per_rm.append(room_ids[torch.tensor(seq)].numpy())
         if has_keys is not None:
