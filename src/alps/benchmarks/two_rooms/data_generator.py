@@ -152,6 +152,37 @@ class HeuristicPolicy:
             return 3 if dx > 0 else 2  # right / left
 
 
+class WallExplorerPolicy:
+    """Generate the wall-CONSEQUENCE experience the predictor needs to learn the obstacle is
+    solid: drive to the wall, RAM it (blocked -> x clamped, agent doesn't move), slide along it
+    toward the door, then cross. Teaches 'action into the solid wall -> no progress; slide ->
+    continue; at the door -> pass'. Measured: the default heuristic+random recipe leaves only
+    ~3% wall-collision transitions, so the predictor imagines moving THROUGH the wall and control
+    stalls against it; mixing in this policy boosts the collision experience toward ~20%."""
+    DOOR = (4.5, 5.5); WALLX = 5.0
+
+    def __init__(self, rng: np.random.RandomState):
+        self.rng = rng
+
+    def reset(self) -> None:
+        pass
+
+    def __call__(self, obs: Dict[str, Any]) -> int:
+        x, y = obs["position"]
+        into = 3 if x < self.WALLX else 2                 # push toward the wall (right if left of it)
+        away = 2 if x < self.WALLX else 3
+        if abs(x - self.WALLX) > 0.6:                     # far: approach the wall (+ y exploration)
+            return into if self.rng.rand() < 0.7 else self.rng.randint(0, TwoRoomsEnv.NUM_ACTIONS)
+        if self.DOOR[0] <= y <= self.DOOR[1]:             # at the door: thread it (crosses)
+            return into
+        r = self.rng.rand()                               # at the wall, NOT at the door:
+        if r < 0.55:
+            return into                                   # RAM the wall -> BLOCKED (the key example)
+        if r < 0.85:
+            return 0 if y < 5.0 else 1                    # slide toward the door center
+        return away                                       # back off -> more approach/ram cycles
+
+
 # ---------------------------------------------------------------------------
 #  Trajectory Generator
 # ---------------------------------------------------------------------------
@@ -164,6 +195,7 @@ class TrajectoryGenerator:
         num_episodes: int = 5000,
         max_steps: int = 100,
         heuristic_fraction: float = 0.30,
+        wall_explore_fraction: float = 0.0,
         seed: int = 42,
         complex_mode: bool = False,
         egocentric: bool = False,
@@ -179,6 +211,7 @@ class TrajectoryGenerator:
         self.num_episodes = num_episodes
         self.max_steps = max_steps
         self.heuristic_fraction = heuristic_fraction
+        self.wall_explore_fraction = wall_explore_fraction
         self.seed = seed
         self.complex_mode = complex_mode
         self.egocentric = egocentric
@@ -206,6 +239,7 @@ class TrajectoryGenerator:
         random_policy = RandomMomentumPolicy(rng)
         heuristic_policy = HeuristicPolicy(rng, complex_mode=self.complex_mode, block_gate=self.block_gate)
         heuristic_policy.env = env      # live wall/gap for clutter's per-episode layouts
+        wall_policy = WallExplorerPolicy(rng)   # collision-experience generator (see --wall-explore-fraction)
 
         all_actions: List[int] = []
         all_positions: List[np.ndarray] = []
@@ -216,8 +250,13 @@ class TrajectoryGenerator:
         t_start = time.time()
         global_step = 0
         for ep in range(self.num_episodes):
-            use_heuristic = rng.rand() < self.heuristic_fraction
-            policy = heuristic_policy if use_heuristic else random_policy
+            r = rng.rand()
+            if r < self.heuristic_fraction:
+                policy = heuristic_policy
+            elif r < self.heuristic_fraction + self.wall_explore_fraction:
+                policy = wall_policy          # deliberately ram+slide the wall (collision experience)
+            else:
+                policy = random_policy
             policy.reset()
 
             obs = env.reset()
@@ -293,6 +332,7 @@ def generate_dataset(
     num_episodes: int = 5000,
     max_steps: int = 100,
     heuristic_fraction: float = 0.30,
+    wall_explore_fraction: float = 0.0,
     seed: int = 42,
     complex_mode: bool = False,
     egocentric: bool = False,
@@ -310,6 +350,7 @@ def generate_dataset(
         num_episodes=num_episodes,
         max_steps=max_steps,
         heuristic_fraction=heuristic_fraction,
+        wall_explore_fraction=wall_explore_fraction,
         seed=seed,
         complex_mode=complex_mode,
         egocentric=egocentric,
@@ -344,6 +385,8 @@ if __name__ == "__main__":
     parser.add_argument("--num-episodes", type=int, default=5000)
     parser.add_argument("--max-steps", type=int, default=100)
     parser.add_argument("--heuristic-fraction", type=float, default=0.30)
+    parser.add_argument("--wall-explore-fraction", type=float, default=0.0,
+                        help="fraction of episodes using the WallExplorer policy (ram+slide the wall) to generate the collision experience that teaches the predictor the wall is solid; try 0.3 (default recipe leaves only ~3%% wall-collision transitions).")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--complex-mode", action="store_true", help="Enable 4-room complex navigation mode")
     parser.add_argument("--egocentric", action="store_true",
@@ -380,6 +423,7 @@ if __name__ == "__main__":
         num_episodes=args.num_episodes,
         max_steps=args.max_steps,
         heuristic_fraction=args.heuristic_fraction,
+        wall_explore_fraction=args.wall_explore_fraction,
         seed=args.seed,
         complex_mode=args.complex_mode,
         egocentric=args.egocentric,
